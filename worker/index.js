@@ -12,7 +12,7 @@ import {
 import { handleAdminRequest } from "./admin.js";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
@@ -44,7 +44,7 @@ export default {
       .filter(Boolean);
 
     try {
-      await handleUpdate(update, { env, tg, adminIds });
+      await handleUpdate(update, { env, tg, adminIds, ctx });
     } catch (e) {
       console.error("handleUpdate error:", e);
     }
@@ -62,8 +62,8 @@ async function isChatAdmin(tg, chatId, userId) {
   }
 }
 
-async function handleUpdate(update, ctx) {
-  const { env, tg, adminIds } = ctx;
+async function handleUpdate(update, hctx) {
+  const { env, tg, adminIds, ctx } = hctx;
   // 广告号常见套路：先发一条无害消息，过审后再编辑成广告，绕过只监听 message 的机器人
   const msg = update.message || update.edited_message;
   if (!msg || msg.chat.type === "private") return;
@@ -107,6 +107,7 @@ async function handleUpdate(update, ctx) {
     await punish({
       tg,
       env,
+      ctx,
       chatId,
       chatTitle: msg.chat.title || "",
       userId,
@@ -118,7 +119,27 @@ async function handleUpdate(update, ctx) {
   }
 }
 
-async function punish({ tg, env, chatId, chatTitle, userId, messageId, name, text, reasons }) {
+// 群里发一条处理通知；NOTIFY_GROUP=false 时完全不发，
+// NOTIFY_AUTO_DELETE_SECONDS>0 时发出后自动撤回，避免刷屏
+async function announce(tg, env, ctx, chatId, text) {
+  if ((env.NOTIFY_GROUP || "true") === "false") return;
+
+  const sent = await tg("sendMessage", { chat_id: chatId, text });
+  const deleteAfter = Number(env.NOTIFY_AUTO_DELETE_SECONDS ?? 8);
+
+  if (deleteAfter > 0 && sent && sent.message_id && ctx) {
+    ctx.waitUntil(
+      (async () => {
+        await new Promise((r) => setTimeout(r, deleteAfter * 1000));
+        try {
+          await tg("deleteMessage", { chat_id: chatId, message_id: sent.message_id });
+        } catch {}
+      })()
+    );
+  }
+}
+
+async function punish({ tg, env, ctx, chatId, chatTitle, userId, messageId, name, text, reasons }) {
   try {
     await tg("deleteMessage", { chat_id: chatId, message_id: messageId });
   } catch (e) {
@@ -144,14 +165,14 @@ async function punish({ tg, env, chatId, chatTitle, userId, messageId, name, tex
   if (action === "kick") {
     await tg("banChatMember", { chat_id: chatId, user_id: userId });
     await tg("unbanChatMember", { chat_id: chatId, user_id: userId });
-    await tg("sendMessage", { chat_id: chatId, text: `🚫 已将 ${name} 移出群聊（疑似广告）\n原因: ${reasons.join("; ")}` });
+    await announce(tg, env, ctx, chatId, `🚫 已将 ${name} 移出群聊（疑似广告）\n原因: ${reasons.join("; ")}`);
     await log("kick");
     return;
   }
 
   if (action === "ban") {
     await tg("banChatMember", { chat_id: chatId, user_id: userId });
-    await tg("sendMessage", { chat_id: chatId, text: `⛔ 已封禁 ${name}（疑似广告）\n原因: ${reasons.join("; ")}` });
+    await announce(tg, env, ctx, chatId, `⛔ 已封禁 ${name}（疑似广告）\n原因: ${reasons.join("; ")}`);
     await log("ban");
     return;
   }
@@ -160,20 +181,23 @@ async function punish({ tg, env, chatId, chatTitle, userId, messageId, name, tex
   if (count >= warnThreshold) {
     if (escalateAction === "ban") {
       await tg("banChatMember", { chat_id: chatId, user_id: userId });
-      await tg("sendMessage", { chat_id: chatId, text: `⛔ ${name} 已达到 ${warnThreshold} 次警告，封禁处理\n原因: ${reasons.join("; ")}` });
+      await announce(tg, env, ctx, chatId, `⛔ ${name} 已达到 ${warnThreshold} 次警告，封禁处理\n原因: ${reasons.join("; ")}`);
       await log("ban (escalated)");
     } else {
       await tg("banChatMember", { chat_id: chatId, user_id: userId });
       await tg("unbanChatMember", { chat_id: chatId, user_id: userId });
-      await tg("sendMessage", { chat_id: chatId, text: `🚫 ${name} 已达到 ${warnThreshold} 次警告，移出群聊\n原因: ${reasons.join("; ")}` });
+      await announce(tg, env, ctx, chatId, `🚫 ${name} 已达到 ${warnThreshold} 次警告，移出群聊\n原因: ${reasons.join("; ")}`);
       await log("kick (escalated)");
     }
     await resetWarnings(env, chatId, userId);
   } else {
-    await tg("sendMessage", {
-      chat_id: chatId,
-      text: `⚠️ 检测到广告消息已删除，已警告 ${name}（${count}/${warnThreshold}）\n原因: ${reasons.join("; ")}`,
-    });
+    await announce(
+      tg,
+      env,
+      ctx,
+      chatId,
+      `⚠️ 检测到广告消息已删除，已警告 ${name}（${count}/${warnThreshold}）\n原因: ${reasons.join("; ")}`
+    );
     await log(`warn (${count}/${warnThreshold})`);
   }
 }
