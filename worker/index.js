@@ -64,7 +64,8 @@ async function isChatAdmin(tg, chatId, userId) {
 
 async function handleUpdate(update, ctx) {
   const { env, tg, adminIds } = ctx;
-  const msg = update.message;
+  // 广告号常见套路：先发一条无害消息，过审后再编辑成广告，绕过只监听 message 的机器人
+  const msg = update.message || update.edited_message;
   if (!msg || msg.chat.type === "private") return;
 
   const chatId = msg.chat.id;
