@@ -1,0 +1,14 @@
+name = "tg-ad-guard-bot"
+main = "worker/index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+ACTION = "ban"
+WARN_THRESHOLD = "3"
+ESCALATE_ACTION = "kick"
+NEW_MEMBER_GUARD_MINUTES = "10"
+ENABLE_PROFILE_HEURISTIC = "true"
+
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "aa82aec00b2240768ed4f75b0ffe5362"

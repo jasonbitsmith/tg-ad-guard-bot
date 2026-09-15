@@ -1,0 +1,19 @@
+{
+  "name": "tg-ad-guard-bot",
+  "version": "1.0.0",
+  "description": "Telegram group ad/spam guard bot",
+  "type": "module",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
