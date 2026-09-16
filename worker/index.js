@@ -8,6 +8,8 @@ import {
   addWarning,
   resetWarnings,
   addLog,
+  bumpRepeat,
+  resetRepeat,
 } from "./kv.js";
 import { handleAdminRequest } from "./admin.js";
 
@@ -103,7 +105,14 @@ async function handleUpdate(update, hctx) {
     keywords,
   });
 
-  if (isSpam) {
+  // 同一用户短时间内反复刷同一条内容（比如招募"跑分/收米"这类黑话），
+  // 即使关键词没命中也当广告处理
+  const repeatThreshold = Number(env.FLOOD_REPEAT_THRESHOLD || 3);
+  const repeatCount = await bumpRepeat(env, chatId, userId, text);
+  const isFlood = repeatCount >= repeatThreshold;
+
+  if (isSpam || isFlood) {
+    const finalReasons = isFlood ? [...reasons, `重复刷屏消息(相同内容已发 ${repeatCount} 次)`] : reasons;
     await punish({
       tg,
       env,
@@ -114,8 +123,9 @@ async function handleUpdate(update, hctx) {
       messageId: msg.message_id,
       name: displayName || msg.from.username || String(userId),
       text,
-      reasons,
+      reasons: finalReasons,
     });
+    await resetRepeat(env, chatId, userId);
   }
 }
 

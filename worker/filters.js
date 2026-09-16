@@ -3,7 +3,7 @@ export const DEFAULT_KEYWORDS = [
   "刷单", "点赞赚钱", "无需经验", "无押金", "免费领取", "招聘", "招代理",
   "招团队", "加v", "加V", "加微信", "加w", "私聊我", "接单", "包吃住",
   "日入", "月入过万", "抢红包", "稳赚", "菠菜", "博彩", "彩票", "六合彩",
-  "空投", "USDT", "搭建团队", "代收代付", "跑分", "洗钱",
+  "空投", "USDT", "搭建团队", "代收代付", "跑分", "洗钱", "收米", "替我收米",
 ];
 
 const EMOJI_REGEX =
@@ -25,6 +25,12 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
   const hitKeywords = keywords.filter((w) => body.includes(w));
   if (hitKeywords.length > 0) {
     reasons.push(`命中关键词: ${hitKeywords.join(", ")}`);
+  }
+
+  // 很多广告号把"看我简介"之类的引流话术写在昵称里，而不是消息正文
+  const nameHitKeywords = keywords.filter((w) => (displayName || "").includes(w));
+  if (nameHitKeywords.length > 0) {
+    reasons.push(`昵称命中关键词: ${nameHitKeywords.join(", ")}`);
   }
 
   const hasUrl = URL_REGEX.test(body);

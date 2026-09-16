@@ -35,6 +35,31 @@ export async function resetWarnings(env, chatId, userId) {
   await env.BOT_KV.delete(`warn:${chatId}:${userId}`);
 }
 
+const FLOOD_WINDOW = 60 * 30; // 30 分钟内重复算刷屏
+
+function normalizeText(text) {
+  return (text || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+// 同一用户在窗口期内重复发送相同/近似内容，返回目前累计的重复次数
+export async function bumpRepeat(env, chatId, userId, text) {
+  const key = `flood:${chatId}:${userId}`;
+  const norm = normalizeText(text);
+  if (!norm) return 0;
+
+  const raw = await env.BOT_KV.get(key);
+  const prev = raw ? JSON.parse(raw) : null;
+
+  const data = prev && prev.text === norm ? { text: norm, count: prev.count + 1 } : { text: norm, count: 1 };
+
+  await env.BOT_KV.put(key, JSON.stringify(data), { expirationTtl: FLOOD_WINDOW });
+  return data.count;
+}
+
+export async function resetRepeat(env, chatId, userId) {
+  await env.BOT_KV.delete(`flood:${chatId}:${userId}`);
+}
+
 const LOG_TTL = DAY * 30;
 
 export async function addLog(env, entry) {
