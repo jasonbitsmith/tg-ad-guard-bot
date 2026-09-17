@@ -86,7 +86,7 @@ async function handleUpdate(update, hctx) {
   const isPrivileged = adminIds.includes(String(userId)) || (await isChatAdmin(tg, chatId, userId));
 
   if (text.startsWith("/")) {
-    const handled = await handleCommand({ text, msg, tg, env, isPrivileged });
+    const handled = await handleCommand({ text, msg, tg, env, ctx, isPrivileged });
     if (handled) return;
   }
 
@@ -212,7 +212,7 @@ async function punish({ tg, env, ctx, chatId, chatTitle, userId, messageId, name
   }
 }
 
-async function handleCommand({ text, msg, tg, env, isPrivileged }) {
+async function handleCommand({ text, msg, tg, env, ctx, isPrivileged }) {
   const chatId = msg.chat.id;
   const [cmdRaw, ...rest] = text.trim().split(/\s+/);
   const cmd = cmdRaw.split("@")[0];
@@ -262,12 +262,30 @@ async function handleCommand({ text, msg, tg, env, isPrivileged }) {
       await tg("sendMessage", { chat_id: chatId, text: `请回复某条消息使用 ${cmd}` });
       return true;
     }
+
+    try {
+      await tg("deleteMessage", { chat_id: chatId, message_id: reply.message_id });
+    } catch (e) {
+      console.warn("删除消息失败:", e.message);
+    }
+
     await tg("banChatMember", { chat_id: chatId, user_id: reply.from.id });
     if (cmd === "/kick") {
       await tg("unbanChatMember", { chat_id: chatId, user_id: reply.from.id });
     }
+
     const name = reply.from.first_name || reply.from.id;
-    await tg("sendMessage", { chat_id: chatId, text: `已${cmd === "/ban" ? "封禁" : "移出"} ${name}` });
+    await announce(tg, env, ctx, chatId, `已${cmd === "/ban" ? "封禁" : "移出"} ${name}（管理员手动处理）`);
+    await addLog(env, {
+      ts: new Date().toISOString(),
+      chatId,
+      chatTitle: msg.chat.title || "",
+      userId: reply.from.id,
+      userName: name,
+      text: (reply.text || reply.caption || "").slice(0, 300),
+      reasons: ["管理员手动处理"],
+      action: cmd === "/ban" ? "ban (manual)" : "kick (manual)",
+    });
     return true;
   }
 
