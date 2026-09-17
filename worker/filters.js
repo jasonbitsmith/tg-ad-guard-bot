@@ -9,6 +9,9 @@ export const DEFAULT_KEYWORDS = [
 const EMOJI_REGEX =
   /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu;
 const URL_REGEX = /(https?:\/\/|t\.me\/|telegram\.me\/|www\.)\S+/i;
+// t.me/+xxx 或 t.me/joinchat/xxx 是私密邀请链接的专属格式，正常分享公开频道/机器人
+// 用的是 t.me/用户名，不会长这样——邀请链接本身就是"拉人进群/频道"的广告行为，足够可信
+const INVITE_LINK_REGEX = /(t\.me|telegram\.me)\/(joinchat\/|\+)\S+/i;
 const CONTACT_REGEX = /(加[vVwW微]|微信[:：]?\s*\w+|QQ[:：]?\s*\d+|电报[:：]?\s*@?\w+)/;
 const BRACKET_AD_REGEX = /[【\[][^】\]]{0,20}[】\]]/;
 // 广告号常见的"【拍照*一百*-张】"这类价目式括号：括号内带星号/价格分隔符，
@@ -38,11 +41,15 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
 
   const hasUrl = URL_REGEX.test(body);
   const hasContact = CONTACT_REGEX.test(body);
+  const hasInviteLink = INVITE_LINK_REGEX.test(body);
   if (hasUrl && (hitKeywords.length > 0 || hasContact)) {
     reasons.push("含链接且伴随广告特征");
   }
   if (hasContact) {
     reasons.push("含联系方式(加V/微信/QQ等)");
+  }
+  if (hasInviteLink) {
+    reasons.push("含 Telegram 邀请链接");
   }
 
   const density = emojiDensity(body);
