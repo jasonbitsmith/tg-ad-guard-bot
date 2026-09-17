@@ -11,6 +11,9 @@ const EMOJI_REGEX =
 const URL_REGEX = /(https?:\/\/|t\.me\/|telegram\.me\/|www\.)\S+/i;
 const CONTACT_REGEX = /(加[vVwW微]|微信[:：]?\s*\w+|QQ[:：]?\s*\d+|电报[:：]?\s*@?\w+)/;
 const BRACKET_AD_REGEX = /[【\[][^】\]]{0,20}[】\]]/;
+// 广告号常见的"【拍照*一百*-张】"这类价目式括号：括号内带星号/价格分隔符，
+// 正常用户起名几乎不会用这种格式，单独出现就足够可信
+const STRICT_BRACKET_AD_REGEX = /[【\[][^】\]]*[*＊][^】\]]*[】\]]/;
 
 function emojiDensity(text) {
   if (!text) return 0;
@@ -45,10 +48,17 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
   const density = emojiDensity(body);
   const nameDensity = emojiDensity(displayName || "");
   const nameHasBracketAd = BRACKET_AD_REGEX.test(displayName || "");
+  const nameHasStrictBracketAd = STRICT_BRACKET_AD_REGEX.test(displayName || "");
 
   if (enableProfileHeuristic) {
-    if ((nameDensity > 0.15 || nameHasBracketAd) && (hitKeywords.length > 0 || density > 0.15)) {
-      reasons.push("疑似广告号画像(昵称表情/广告括号 + 招聘类文案)");
+    // 括号内带星号/价目样式（如"【拍照*一百*-张】"）是极强信号，单独出现就判定，
+    // 不要求正文再命中关键词——否则广告号只要正文写得含糊就能绕过去
+    if (nameHasStrictBracketAd) {
+      reasons.push("疑似广告号画像(昵称含价目式广告括号)");
+    } else if ((nameHasBracketAd || nameDensity > 0.15) && (hitKeywords.length > 0 || density > 0.15)) {
+      // 普通【】括号昵称较常见（比如"【已认证】""[VIP]"），单独出现不够可信，
+      // 需要正文再有关键词或表情轰炸才判定，避免误伤正常用户
+      reasons.push("疑似广告号画像(昵称括号/表情 + 招聘类文案)");
     }
   }
 
