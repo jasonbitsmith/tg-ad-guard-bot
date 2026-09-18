@@ -1,7 +1,7 @@
 export const DEFAULT_KEYWORDS = [
   "日结", "急招", "兼职", "看我简介", "看简介", "有人带", "拍照采集",
   "刷单", "点赞赚钱", "无需经验", "无押金", "免费领取", "招聘", "招代理",
-  "招团队", "加v", "加V", "加微信", "加w", "私聊我", "接单", "包吃住",
+  "招团队", "加v", "加V", "加微信", "加w", "接单", "包吃住",
   "日入", "月入过万", "抢红包", "稳赚", "菠菜", "博彩", "彩票", "六合彩",
   "空投", "USDT", "搭建团队", "代收代付", "跑分", "洗钱", "收米", "替我收米",
 ];
@@ -18,15 +18,30 @@ const BRACKET_AD_REGEX = /[【\[][^】\]]{0,20}[】\]]/;
 // 正常用户起名几乎不会用这种格式，单独出现就足够可信
 const STRICT_BRACKET_AD_REGEX = /[【\[][^】\]]*[*＊][^】\]]*[】\]]/;
 
+// 零宽字符：广告号常把它们插进关键词中间（比如"收​米"）来躲避字符串匹配，
+// 肉眼完全看不出来。匹配前统一清除。
+const INVISIBLE_REGEX = /[​‌‍⁠﻿­]/g;
+// 间隔号/项目符号：同样常被插在关键词字与字之间拆词（比如"做·完·结算"）
+const OBFUSCATION_DOT_REGEX = /[·•・∙‧]/g;
+
+function clean(s) {
+  return (s || "").replace(INVISIBLE_REGEX, "").replace(OBFUSCATION_DOT_REGEX, "");
+}
+
 function emojiDensity(text) {
   if (!text) return 0;
   const emojiCount = (text.match(EMOJI_REGEX) || []).length;
   return emojiCount / Math.max(text.length, 1);
 }
 
+function emojiCount(text) {
+  return (text.match(EMOJI_REGEX) || []).length;
+}
+
 export function checkMessage({ text, displayName, isNewMember, enableProfileHeuristic, keywords }) {
   const reasons = [];
-  const body = text || "";
+  const body = clean(text);
+  const name = clean(displayName);
 
   const hitKeywords = keywords.filter((w) => body.includes(w));
   if (hitKeywords.length > 0) {
@@ -34,7 +49,7 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
   }
 
   // 很多广告号把"看我简介"之类的引流话术写在昵称里，而不是消息正文
-  const nameHitKeywords = keywords.filter((w) => (displayName || "").includes(w));
+  const nameHitKeywords = keywords.filter((w) => name.includes(w));
   if (nameHitKeywords.length > 0) {
     reasons.push(`昵称命中关键词: ${nameHitKeywords.join(", ")}`);
   }
@@ -53,23 +68,31 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
   }
 
   const density = emojiDensity(body);
-  const nameDensity = emojiDensity(displayName || "");
-  const nameHasBracketAd = BRACKET_AD_REGEX.test(displayName || "");
-  const nameHasStrictBracketAd = STRICT_BRACKET_AD_REGEX.test(displayName || "");
+  const nameDensity = emojiDensity(name);
+  const nameEmojiCount = emojiCount(name);
+  const nameHasBracketAd = BRACKET_AD_REGEX.test(name);
+  const nameHasStrictBracketAd = STRICT_BRACKET_AD_REGEX.test(name);
+  // 昵称里连续出现 2 个以上星号（比如"拍*违*停""一*百*元/张"）是这类价目式
+  // 广告名的核心特征，即使去掉了【】括号也一样成立
+  const nameAsteriskCount = (name.match(/[*＊]/g) || []).length;
 
   if (enableProfileHeuristic) {
-    // 括号内带星号/价目样式（如"【拍照*一百*-张】"）是极强信号，单独出现就判定，
-    // 不要求正文再命中关键词——否则广告号只要正文写得含糊就能绕过去
-    if (nameHasStrictBracketAd) {
-      reasons.push("疑似广告号画像(昵称含价目式广告括号)");
-    } else if ((nameHasBracketAd || nameDensity > 0.15) && (hitKeywords.length > 0 || density > 0.15)) {
-      // 普通【】括号昵称较常见（比如"【已认证】""[VIP]"），单独出现不够可信，
-      // 需要正文再有关键词或表情轰炸才判定，避免误伤正常用户
+    if (nameHasStrictBracketAd || nameAsteriskCount >= 2) {
+      // 极强信号，单独出现就判定，不要求正文再命中关键词——
+      // 否则广告号只要正文写得含糊就能绕过去
+      reasons.push("疑似广告号画像(昵称含价目式广告标记)");
+    } else if (
+      (nameHasBracketAd || nameEmojiCount >= 3) &&
+      (hitKeywords.length > 0 || density > 0.15)
+    ) {
+      // 普通【】括号昵称、或只带一两个装饰表情的昵称都很常见（"【已认证】""井鱼🐟"），
+      // 单独出现不够可信，需要正文再有关键词或表情轰炸才判定，避免误伤正常用户
       reasons.push("疑似广告号画像(昵称括号/表情 + 招聘类文案)");
     }
   }
 
-  if (isNewMember) {
+  // 表情轰炸类判定要求正文有一定长度，避免把"😂"这种正常的单条表情回复误判为广告
+  if (isNewMember && body.length >= 8) {
     if (density > 0.2) {
       reasons.push("新成员消息表情符号密度过高");
     }
