@@ -15,3 +15,6 @@ FLOOD_REPEAT_THRESHOLD = "3"
 [[kv_namespaces]]
 binding = "BOT_KV"
 id = "aa82aec00b2240768ed4f75b0ffe5362"
+
+[observability]
+enabled = true

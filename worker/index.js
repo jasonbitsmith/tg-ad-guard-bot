@@ -49,6 +49,24 @@ export default {
       await handleUpdate(update, { env, tg, adminIds, ctx });
     } catch (e) {
       console.error("handleUpdate error:", e);
+      // 处理过程中任何未捕获的异常都会导致这条消息静默漏检（catch 之后直接返回 OK），
+      // 之前排查漏网广告时吃过这个亏——没有持久化日志根本看不到出错现场。
+      // 这里额外写一条 error 记录到我们自己的 KV，保证后台随时能查到。
+      try {
+        const msg = update.message || update.edited_message;
+        await addLog(env, {
+          ts: new Date().toISOString(),
+          chatId: msg?.chat?.id ?? null,
+          chatTitle: msg?.chat?.title || "",
+          userId: msg?.from?.id ?? null,
+          userName: msg?.from?.first_name || msg?.from?.username || "",
+          text: (msg?.text || msg?.caption || "").slice(0, 300),
+          reasons: [`处理出错: ${e?.message || String(e)}`],
+          action: "error",
+        });
+      } catch (logErr) {
+        console.error("记录错误日志也失败了:", logErr);
+      }
     }
 
     return new Response("OK");
