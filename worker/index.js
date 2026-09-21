@@ -114,6 +114,9 @@ async function handleUpdate(update, hctx) {
   const joinMinutes = await minutesSinceJoin(env, chatId, userId);
   const isNewMember = joinMinutes <= Number(env.NEW_MEMBER_GUARD_MINUTES || 10);
   const keywords = await getKeywords(env);
+  // 新旧两版 Bot API 都要认：新版用 forward_origin，旧版用 forward_from_chat
+  const isForwardedFromChannel =
+    msg.forward_origin?.type === "channel" || msg.forward_from_chat?.type === "channel";
 
   const { isSpam, reasons } = checkMessage({
     text,
@@ -121,6 +124,7 @@ async function handleUpdate(update, hctx) {
     isNewMember,
     enableProfileHeuristic: (env.ENABLE_PROFILE_HEURISTIC || "true") === "true",
     keywords,
+    isForwardedFromChannel,
   });
 
   // 同一用户短时间内反复刷同一条内容（比如招募"跑分/收米"这类黑话），

@@ -19,6 +19,12 @@ const BRACKET_AD_REGEX = /[【\[][^】\]]{0,20}[】\]]/;
 // 正常用户起名几乎不会用这种格式，单独出现就足够可信
 const STRICT_BRACKET_AD_REGEX = /[【\[][^】\]]*[*＊][^】\]]*[】\]]/;
 
+// 交易所邀请码返利广告常见套路：从某个"喊单/交易信号"频道转发一张收益截图卡片，
+// 配文带 #代币 + 涨幅百分比/"倍"。真正的邀请码文字通常写在图片里（OCR 不到），
+// 能拿到的只有转发配文，所以用"涨幅数字 + 倍数"这种财经话术特征来判断
+const GAIN_PERCENT_REGEX = /[+＋]?\d{2,4}(\.\d+)?\s*%/;
+const MULTIPLIER_WORD_REGEX = /\d+\s*倍/g;
+
 // 零宽字符：广告号常把它们插进关键词中间（比如"收​米"）来躲避字符串匹配，
 // 肉眼完全看不出来。匹配前统一清除。
 const INVISIBLE_REGEX = /[​‌‍⁠﻿­]/g;
@@ -39,7 +45,14 @@ function emojiCount(text) {
   return (text.match(EMOJI_REGEX) || []).length;
 }
 
-export function checkMessage({ text, displayName, isNewMember, enableProfileHeuristic, keywords }) {
+export function checkMessage({
+  text,
+  displayName,
+  isNewMember,
+  enableProfileHeuristic,
+  keywords,
+  isForwardedFromChannel,
+}) {
   const reasons = [];
   const body = clean(text);
   const name = clean(displayName);
@@ -89,6 +102,15 @@ export function checkMessage({ text, displayName, isNewMember, enableProfileHeur
       // 普通【】括号昵称、或只带一两个装饰表情的昵称都很常见（"【已认证】""井鱼🐟"），
       // 单独出现不够可信，需要正文再有关键词或表情轰炸才判定，避免误伤正常用户
       reasons.push("疑似广告号画像(昵称括号/表情 + 招聘类文案)");
+    }
+  }
+
+  // 从频道转发的"涨幅%/翻倍"喊单卡片：单独一条正常聊天提到涨幅很常见，
+  // 但"转发自频道 + 涨幅数字/倍数话术"这个组合基本只在这类返利广告里出现
+  if (isForwardedFromChannel) {
+    const multiplierCount = (body.match(MULTIPLIER_WORD_REGEX) || []).length;
+    if (GAIN_PERCENT_REGEX.test(body) || multiplierCount >= 2) {
+      reasons.push("转发自频道且含涨幅/倍数话术(疑似交易所返利广告)");
     }
   }
 
