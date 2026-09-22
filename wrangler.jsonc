@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tg-ad-guard-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "keep_vars": true,
+  "secrets": {
+    "required": ["BOT_TOKEN", "ADMIN_IDS", "ADMIN_PASSWORD", "WEBHOOK_SECRET", "WEBHOOK_VERIFY_TOKEN"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "BOT_KV",
+      "id": "aa82aec00b2240768ed4f75b0ffe5362"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GUARD_STATE",
+        "class_name": "GuardState"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "guard-v2",
+      "new_sqlite_classes": [
+        "GuardState"
+      ]
+    }
+  ],
+  "vars": {
+    "ACTION": "warn",
+    "ESCALATE_ACTION": "mute",
+    "WARN_THRESHOLD": "3",
+    "NOTIFY_GROUP": "false",
+    "NOTIFY_AUTO_DELETE_SECONDS": "8",
+    "ENABLE_PROFILE_HEURISTIC": "true",
+    "FLOOD_REPEAT_THRESHOLD": "3",
+    "NEW_MEMBER_GUARD_MINUTES": "10"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
+  }
+}

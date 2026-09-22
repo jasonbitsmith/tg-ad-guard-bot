@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "status": 200,
+  "errors": [],
+  "result": {
+    "modified_on": "2026-09-22T12:34:51.376432Z",
+    "etag": "d9dd404663b5e910bb776d865ffbcdfc38d2ea119aa3778f4832f4e881f9bdad",
+    "handlers": [
+      "fetch"
+    ]
+  }
+}

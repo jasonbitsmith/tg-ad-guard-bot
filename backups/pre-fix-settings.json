@@ -1,0 +1,261 @@
+{
+  "settings": {
+    "placement": {},
+    "compatibility_date": "2024-09-23",
+    "compatibility_flags": [],
+    "usage_model": "standard",
+    "tags": [],
+    "tail_consumers": [],
+    "logpush": false,
+    "observability": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "redact_query_string": false,
+      "logs": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "persist": true,
+        "invocation_logs": true
+      },
+      "traces": {
+        "enabled": false,
+        "persist": true,
+        "head_sampling_rate": 1
+      }
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    },
+    "bindings": [
+      {
+        "name": "ACTION",
+        "text": "ban",
+        "type": "plain_text"
+      },
+      {
+        "name": "ADMIN_IDS",
+        "type": "secret_text"
+      },
+      {
+        "name": "ADMIN_PASSWORD",
+        "type": "secret_text"
+      },
+      {
+        "name": "BOT_KV",
+        "namespace_id": "aa82aec00b2240768ed4f75b0ffe5362",
+        "type": "kv_namespace"
+      },
+      {
+        "name": "BOT_TOKEN",
+        "type": "secret_text"
+      },
+      {
+        "name": "ENABLE_PROFILE_HEURISTIC",
+        "text": "true",
+        "type": "plain_text"
+      },
+      {
+        "name": "ESCALATE_ACTION",
+        "text": "kick",
+        "type": "plain_text"
+      },
+      {
+        "name": "FLOOD_REPEAT_THRESHOLD",
+        "text": "3",
+        "type": "plain_text"
+      },
+      {
+        "name": "NEW_MEMBER_GUARD_MINUTES",
+        "text": "10",
+        "type": "plain_text"
+      },
+      {
+        "name": "NOTIFY_AUTO_DELETE_SECONDS",
+        "text": "8",
+        "type": "plain_text"
+      },
+      {
+        "name": "NOTIFY_GROUP",
+        "text": "false",
+        "type": "plain_text"
+      },
+      {
+        "name": "WARN_THRESHOLD",
+        "text": "3",
+        "type": "plain_text"
+      },
+      {
+        "name": "WEBHOOK_SECRET",
+        "type": "secret_text"
+      },
+      {
+        "name": "WEBHOOK_VERIFY_TOKEN",
+        "type": "secret_text"
+      }
+    ]
+  },
+  "deployments": {
+    "deployments": [
+      {
+        "id": "cabf0f39-08b1-47e6-b71c-1f81da664f86",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "d4af349e-cf0f-42cd-9ea0-7f416fb56f5e",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-21T12:41:00.640915Z"
+      },
+      {
+        "id": "b5e23d71-575a-4efb-a423-18aea619446f",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "0b1eb9fc-3b4c-411b-8574-c7a7f1935ad4",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-21T12:02:01.274988Z"
+      },
+      {
+        "id": "a467d41b-0325-4c82-9008-e86134d071fe",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "30336246-2799-481c-afc2-34f1bbfbf400",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-18T05:31:02.013541Z"
+      },
+      {
+        "id": "1ab53994-1e70-4708-a454-f8e44d44c652",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "348ebf65-874c-4c66-9c40-9275d92a29b3",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-18T05:30:05.708471Z"
+      },
+      {
+        "id": "2714b177-5635-43d2-908a-8e7b37fc07b4",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "9aede6e2-0182-4a66-ae94-6cd3f75ea17c",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-17T04:41:58.837367Z"
+      },
+      {
+        "id": "1e95113c-66a8-4f92-9c98-6b3356ecadfd",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "c0ff1066-52c9-4ae1-b595-371124e56a2a",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-17T04:29:42.962541Z"
+      },
+      {
+        "id": "ef8e95f4-df82-4fe4-acd6-4889b69328c8",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "09c83add-a0f9-4c6f-b261-fe3ca0cec955",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-17T04:21:55.528487Z"
+      },
+      {
+        "id": "0dd88859-302d-494b-9d0b-fa7e5450f167",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "480834f1-9113-4696-947d-3c4e96dafaf9",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-16T17:10:50.222567Z"
+      },
+      {
+        "id": "ca7e50e2-c7e2-4f79-844b-0362c36c1240",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "6b45a163-06ab-479c-a2f7-36c109b11cd4",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-15T19:51:12.422981Z"
+      },
+      {
+        "id": "cec86b59-2b7d-4575-8fc7-b0f215cb3cbc",
+        "source": "wrangler",
+        "strategy": "percentage",
+        "author_email": "bjgylm@gmail.com",
+        "annotations": {
+          "workers/triggered_by": "deployment"
+        },
+        "versions": [
+          {
+            "version_id": "11e351b1-ad67-4a0b-9e33-63617a02dd18",
+            "percentage": 100
+          }
+        ],
+        "created_on": "2026-09-15T19:49:52.356992Z"
+      }
+    ]
+  }
+}

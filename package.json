@@ -1,0 +1,1 @@
+{"name":"tg-ad-guard-bot","private":true,"type":"module","scripts":{"test":"node --test test/*.test.js","check":"wrangler deploy --dry-run --outdir dist","types":"wrangler types"},"devDependencies":{"@cloudflare/workers-types":"^5.20260922.1","miniflare":"^5.20260921.0-alpha","wrangler":"^4.136.2"}}

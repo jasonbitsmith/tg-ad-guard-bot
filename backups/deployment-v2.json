@@ -1,0 +1,49 @@
+{
+  "result": {
+    "created_on": "2026-09-15T19:12:54.259178Z",
+    "modified_on": "2026-09-22T12:21:20.486792Z",
+    "id": "tg-ad-guard-bot",
+    "tag": "d8c187d24069461390c9363ff22c282e",
+    "entry_point": "index.js",
+    "tags": [],
+    "deployment_id": "c30df8d27b404b6892afa30ad8c26457",
+    "tail_consumers": null,
+    "logpush": false,
+    "observability": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "logs": {
+        "enabled": true,
+        "head_sampling_rate": null,
+        "persist": null,
+        "invocation_logs": false
+      }
+    },
+    "has_assets": false,
+    "has_modules": true,
+    "etag": "37896bfdcba732a86886a40aa4f9d67e6914160442c8bbd3a0a5962689d41db4",
+    "handlers": [
+      "fetch"
+    ],
+    "named_handlers": [
+      {
+        "name": "GuardState",
+        "handlers": [
+          "class"
+        ]
+      }
+    ],
+    "last_deployed_from": "api",
+    "migration_tag": "guard-v2",
+    "compatibility_date": "2026-09-22",
+    "compatibility_flags": [
+      "nodejs_compat"
+    ],
+    "usage_model": "standard",
+    "startup_time_ms": 2
+  },
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "status": 200
+}
