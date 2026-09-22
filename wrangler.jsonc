@@ -6,6 +6,13 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "routes": [
+    {
+      "pattern": "bot.jasonselect.com",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": true,
   "keep_vars": true,
   "secrets": {
     "required": ["BOT_TOKEN", "ADMIN_IDS", "ADMIN_PASSWORD", "WEBHOOK_SECRET", "WEBHOOK_VERIFY_TOKEN"]

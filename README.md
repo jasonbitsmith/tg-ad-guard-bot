@@ -1,6 +1,6 @@
 # TG 群管理机器人修正版
 
-线上 Worker：`tg-ad-guard-bot`。后台：https://tg-ad-guard-bot.bjgylm.workers.dev/admin
+线上 Worker：`tg-ad-guard-bot`。后台自定义域名：`https://bot.jasonselect.com/admin`。
 
 ## 本次部署验证
 
