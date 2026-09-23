@@ -25,6 +25,12 @@ test('跨境电商专用卡推销会被处理，正常平台讨论不误删', ()
   assert.ok(classify(msg('有人用亚马逊吗？想交流一下开店经验'), DEFAULT_KEYWORDS).score < 4);
   assert.ok(classify(msg('速卖通和 eBay 哪个更适合新手？'), DEFAULT_KEYWORDS).score < 4);
 });
+test('招揽口号叠加日收入承诺会被处理，普通收入讨论不误删', () => {
+  assert.ok(classify(msg('有码来吃肉 一天8K'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('带你吃肉，每日 1.2w，想来的私聊'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('有人了解这个岗位一天 8K 的说法是否真实吗？'), DEFAULT_KEYWORDS).score < 4);
+  assert.ok(classify(msg('今天和朋友吃肉，花了 8K 买服务器'), DEFAULT_KEYWORDS).score < 4);
+});
 test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
   assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/path'), 'example.com');
