@@ -4,10 +4,11 @@ import { classify, DEFAULT_KEYWORDS, extractDomains, parseCommand, normalize, no
 import { telegram, secureEqual } from '../src/telegram.js';
 
 const msg = text => ({ text, from: { id: 1, first_name: '群友' } });
-test('风险讨论和单一泛关键词不会进入自动处罚', () => {
-  for (const text of ['请警惕刷单骗局，不要转账','有人了解 USDT 的风险吗？','周末有兼职经验分享吗？','欢迎大家交流','我们正在招聘工程师']) {
-    assert.ok(classify(msg(text), DEFAULT_KEYWORDS).score < 4, text);
+test('黑名单关键词首次命中即要求删除，非关键词普通聊天不处理', () => {
+  for (const text of ['请警惕刷单骗局，不要转账','有人了解 USDT 的风险吗？','周末有兼职经验分享吗？','我们正在招聘工程师']) {
+    assert.equal(classify(msg(text), DEFAULT_KEYWORDS).deleteOnKeyword, true, text);
   }
+  assert.equal(classify(msg('欢迎大家交流'), DEFAULT_KEYWORDS).deleteOnKeyword, false);
 });
 test('引流和收益承诺组合触发处理，零宽字符与大小写不能绕过', () => {
   assert.ok(classify(msg('刷\u200b单 稳赚 无押金 私聊我 https://example.test'), DEFAULT_KEYWORDS).score >= 7);

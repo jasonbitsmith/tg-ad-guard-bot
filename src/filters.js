@@ -75,7 +75,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group. Other high-risk content keeps the warning/mute policy.
   const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch;
-  return { score, reasons, hits, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
+  return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
 export function validateWord(word) {

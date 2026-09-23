@@ -54,9 +54,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   async function tick(chatId, force = false) { const r=await mf.dispatchFetch('https://bot.test/__test', { method:'POST',body:JSON.stringify({chatId,force}) }); assert.equal(r.status,200,await r.clone().text());return r.json(); }
   const actions = chatId => calls.filter(c => c.params.chat_id === chatId && ['deleteMessage','restrictChatMember','banChatMember','unbanChatMember'].includes(c.method));
 
-  await t.test('验证头缺失拒绝，风险讨论不处罚', async () => {
+  await t.test('验证头缺失拒绝，黑名单词首次命中即删除', async () => {
     const r=await mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',body:'{}'}); assert.equal(r.status,403);
-    await send(update(-101,'请警惕刷单骗局，不要转账')); await tick(-101); assert.equal(actions(-101).length,0);
+    await send(update(-101,'请警惕刷单骗局，不要转账')); await tick(-101); assert.equal(actions(-101).filter(x=>x.method==='deleteMessage').length,1);
   });
   await t.test('同一 update 并发投递不会重复删除或计警告', async () => {
     const u=update(-102,'兼职招聘 私聊我');

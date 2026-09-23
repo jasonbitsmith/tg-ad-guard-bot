@@ -216,9 +216,9 @@ export class GuardState extends DurableObject {
         verdict.reasons.push('10 分钟内多个账号重复相同内容');
       }
     }
-    if (!verdict.score) return empty;
+    if (!verdict.score && !verdict.deleteOnKeyword) return empty;
     const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
-    if (verdict.score < 4) return { ops: [], entry: { ...entry, action: 'review' } };
+    if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
     if (msg.sender_chat) return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     if (verdict.permanentBan) {
@@ -251,7 +251,7 @@ export class GuardState extends DurableObject {
     }
     if (['addword','removeword','listwords'].includes(command)) {
       const config = await this.config();
-      if (command === 'listwords') return reply(`本群关键词（辅助评分，不会单词命中即封禁）：\n${config.keywords.join('、')}`);
+      if (command === 'listwords') return reply(`本群黑名单关键词（命中即删消息）：\n${config.keywords.join('、')}`);
       let word;
       try { word = validateWord(arg); } catch (e) { return reply(e.message); }
       if (command === 'addword') {
