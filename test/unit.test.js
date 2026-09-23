@@ -28,8 +28,15 @@ test('跨境电商专用卡推销会被处理，正常平台讨论不误删', ()
 test('招揽口号叠加日收入承诺会被处理，普通收入讨论不误删', () => {
   assert.ok(classify(msg('有码来吃肉 一天8K'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('带你吃肉，每日 1.2w，想来的私聊'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('帮我收米 一天赚8K'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('来收米 一天1W'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('有人了解这个岗位一天 8K 的说法是否真实吗？'), DEFAULT_KEYWORDS).score < 4);
   assert.ok(classify(msg('今天和朋友吃肉，花了 8K 买服务器'), DEFAULT_KEYWORDS).score < 4);
+});
+test('拍照日结兼职招揽会被处理', () => {
+  assert.ok(classify(msg('拍·照兼职📱 日·结7百左右💰'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('日结 700，拍照即可做'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('拍照留档，日结费用已报销'), DEFAULT_KEYWORDS).score < 4);
 });
 test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
   assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);

@@ -204,6 +204,18 @@ export class GuardState extends DurableObject {
       verdict.score = Math.max(4, verdict.score);
       verdict.reasons.push(repeat >= policy.repeatThreshold ? `60 秒内相同内容 ${repeat} 次（含交替刷屏）` : `60 秒内消息 ${samples.length} 条`);
     }
+    // Coordinated spam often rotates accounts to evade per-sender flood limits.
+    // Keep a short group-scoped fingerprint window only for substantial text.
+    if (fingerprint.length >= 6) {
+      const key = `groupflood:${fingerprint.slice(0, 160)}`;
+      let groupSamples = this.read(key, []).filter(x => x.at > Date.now() - 10 * 60000 && x.id !== msg.message_id);
+      groupSamples.push({ id: msg.message_id, at: Date.now(), senderId });
+      groupSamples = groupSamples.slice(-50); this.write(key, groupSamples, 15 * 60000);
+      if (new Set(groupSamples.map(x => x.senderId)).size >= 2) {
+        verdict.score = Math.max(4, verdict.score);
+        verdict.reasons.push('10 分钟内多个账号重复相同内容');
+      }
+    }
     if (!verdict.score) return empty;
     const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (verdict.score < 4) return { ops: [], entry: { ...entry, action: 'review' } };

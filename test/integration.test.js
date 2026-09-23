@@ -104,6 +104,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     for(const text of ['AAAA','BBBB','AAAA','BBBB','AAAA']) {await send(update(-108,text));await tick(-108);}
     assert.equal(actions(-108).filter(x=>x.method==='deleteMessage').length,1);
   });
+  await t.test('多个账号重复同一文本会触发群级刷屏处理', async () => {
+    await send(update(-116,'帮我收米 一天赚8K',{from:{id:71,first_name:'甲'}}));await tick(-116);
+    await send(update(-116,'帮我收米 一天赚8K',{from:{id:72,first_name:'乙'}}));const data=await tick(-116);
+    assert.equal(actions(-116).filter(x=>x.method==='deleteMessage').length,2);
+    assert.ok(data.data.logs.some(x=>x.reasons?.includes('10 分钟内多个账号重复相同内容')));
+  });
   await t.test('频道身份广告删消息，不封禁伪造 from 用户', async () => {
     await send(update(-109,'兼职招聘 私聊我',{sender_chat:{id:-999,title:'外部频道'},from:{id:88,is_bot:true}}));await tick(-109);
     assert.deepEqual(actions(-109).map(x=>x.method),['deleteMessage']);
