@@ -15,7 +15,7 @@ const LEGACY_CHATS = [
   { id: '-1003336565693', title: 'Jason海外收款互助交流群' },
   { id: '-1003495086337', title: 'Jason - 数字生活指南' },
 ];
-const HELP = '群管理指令（管理员使用）\n/status 状态及权限检查\n/addword 词、/removeword 词、/listwords（仅本群）\n回复消息或指定用户 ID：\n/warnings、/clearwarn、/allow、/unallow、/unban、/unmute\n/ban 手动封禁、/kick 移出（会涉及删除历史消息）\n自动策略：低风险记录；中风险删消息并计警告；3 次警告或高风险临时禁言 10 分钟。不会自动永久封禁。';
+const HELP = '群管理指令（管理员使用）\n/status 状态及权限检查\n/addword 词、/removeword 词、/listwords（仅本群）\n回复消息或指定用户 ID：\n/warnings、/clearwarn、/allow、/unallow、/unban、/unmute\n/ban 手动封禁、/kick 移出（会涉及删除历史消息）\n自动策略：低风险记录；中风险删消息并计警告；3 次警告或高风险临时禁言 10 分钟。已确认的收米日薪、拍照日结批量广告会直接永久封禁。';
 
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
@@ -221,6 +221,10 @@ export class GuardState extends DurableObject {
     if (verdict.score < 4) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
     if (msg.sender_chat) return { ops, entry: { ...entry, action: 'delete-channel-message' } };
+    if (verdict.permanentBan) {
+      ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
+      return { ops, entry: { ...entry, action: 'delete-and-permanent-ban' } };
+    }
     const count = this.read(`warn:${senderId}`, 0) + 1;
     ops.push({ local: 'warning', userId: senderId, messageId: msg.message_id, count });
     // Never replace a restriction imposed by a human administrator with a shorter/lighter one.
@@ -243,7 +247,7 @@ export class GuardState extends DurableObject {
       const me = await this.me(tg);
       const member = await this.member(tg, chatId, me.id);
       const policy = await this.config();
-      return reply(`运行正常 · v2\n自动永久封禁：关闭\n警告阈值：${policy.warnThreshold} 次（24 小时内继续违规会续期）\n临时禁言：${policy.muteMinutes} 分钟\n删消息权限：${member.can_delete_messages ? '有' : '无'}\n限制成员权限：${member.can_restrict_members ? '有' : '无'}\n群类型：${msg.chat.type}（普通群不支持临时禁言）\n词库：本群独立 ${policy.keywords.length} 个词\n群内自动通知：关闭，处理结果在后台查看`);
+      return reply(`运行正常 · v2\n收米日薪、拍照日结批量广告：直接永久封禁\n警告阈值：${policy.warnThreshold} 次（24 小时内继续违规会续期）\n临时禁言：${policy.muteMinutes} 分钟\n删消息权限：${member.can_delete_messages ? '有' : '无'}\n限制成员权限：${member.can_restrict_members ? '有' : '无'}\n群类型：${msg.chat.type}（普通群不支持临时禁言）\n词库：本群独立 ${policy.keywords.length} 个词\n群内自动通知：关闭，处理结果在后台查看`);
     }
     if (['addword','removeword','listwords'].includes(command)) {
       const config = await this.config();

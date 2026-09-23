@@ -108,6 +108,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-116,'帮我收米 一天赚8K',{from:{id:71,first_name:'甲'}}));await tick(-116);
     await send(update(-116,'帮我收米 一天赚8K',{from:{id:72,first_name:'乙'}}));const data=await tick(-116);
     assert.equal(actions(-116).filter(x=>x.method==='deleteMessage').length,2);
+    assert.equal(actions(-116).filter(x=>x.method==='banChatMember').length,2);
+    assert.ok(actions(-116).filter(x=>x.method==='banChatMember').every(x=>x.params.until_date===0));
     assert.ok(data.data.logs.some(x=>x.reasons?.includes('10 分钟内多个账号重复相同内容')));
   });
   await t.test('频道身份广告删消息，不封禁伪造 from 用户', async () => {

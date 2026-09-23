@@ -72,7 +72,10 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
-  return { score, reasons, hits, domains, blockedDomains, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
+  // These are the confirmed campaign templates chosen for immediate removal
+  // from the group. Other high-risk content keeps the warning/mute policy.
+  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch;
+  return { score, reasons, hits, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
 export function validateWord(word) {
