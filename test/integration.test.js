@@ -132,8 +132,25 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const request=(path,body,origin='https://bot.test')=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
     assert.equal((await request('keywords/add',{chatId:-120,word:'本群测试词'},'https://evil.test')).status,403);
     assert.equal((await request('keywords/add',{chatId:-120,word:'本群测试词'})).status,200);
+    assert.equal((await request('domains/deny/add',{chatId:-120,domain:'bad.example'})).status,200);
+    assert.equal((await request('domains/allow/add',{chatId:-120,domain:'trusted.example'})).status,200);
+    assert.equal((await request('welcome-rules',{chatId:-120,welcomeMessage:'欢迎 {name} 加入 {group}',rulesMessage:'禁止广告'})).status,200);
     const a=await (await request('logs?chatId=-120')).json(),b=await (await request('logs?chatId=-121')).json();
-    assert.ok(a.config.keywords.includes('本群测试词'));assert.ok(!b.config.keywords.includes('本群测试词'));
+    assert.ok(a.config.keywords.includes('本群测试词'));assert.ok(a.config.domainDenylist.includes('bad.example'));assert.ok(a.config.domainAllowlist.includes('trusted.example'));assert.equal(a.config.welcomeMessage,'欢迎 {name} 加入 {group}');assert.ok(!b.config.keywords.includes('本群测试词'));
     await request('logout',{});assert.equal((await request('chats')).status,401);
+  });
+  await t.test('欢迎语、群规、域名黑名单和关键词统计按群生效', async () => {
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('set-cookie').split(';')[0];
+    const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+    await request('welcome-rules',{chatId:-130,welcomeMessage:'欢迎 {name} 加入 {group}',rulesMessage:'禁止广告'});
+    await request('keywords/add',{chatId:-130,word:'本群测试词'});
+    await request('domains/deny/add',{chatId:-130,domain:'spam.example'});
+    const join=update(-130,'',{new_chat_members:[{id:33,first_name:'小明'}]});await send(join);await tick(-130);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-130&&c.params.text.includes('欢迎 小明 加入 测试群')&&c.params.text.includes('群规：禁止广告')));
+    await send(update(-130,'本群测试词 https://sub.spam.example/ad'));const result=await tick(-130);
+    assert.ok(actions(-130).some(x=>x.method==='deleteMessage'));
+    const stats=await (await request('keyword-stats?chatId=-130')).json();assert.ok(stats.keywords.some(x=>x.word==='本群测试词'&&x.count===1));
+    assert.ok(result.data.logs.some(x=>x.domains?.includes('sub.spam.example')));
   });
 });

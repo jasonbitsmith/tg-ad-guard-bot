@@ -1,17 +1,42 @@
 export const DEFAULT_KEYWORDS = ['日结','急招','兼职','看我简介','看简介','刷单','点赞赚钱','无需经验','无押金','免费领取','招聘','招代理','加v','加微信','私聊我','接单','日入','稳赚','博彩','空投','USDT','代收代付','跑分','洗钱'];
-export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10 });
+export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [] });
 
 export function normalize(text) {
   return String(text || '').normalize('NFKC').replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-export function classify(msg, keywords, isNew = false) {
+export function normalizeDomain(value) {
+  const candidate = String(value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].split(':')[0].replace(/\.+$/, '');
+  if (!candidate || candidate.length > 253 || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(candidate)) throw new Error('请输入有效域名，例如 example.com');
+  return candidate;
+}
+
+export function extractDomains(text, links = []) {
+  const values = [String(text || ''), ...links.map(String)];
+  const found = new Set();
+  for (const value of values) {
+    const matches = value.match(/(?:https?:\/\/|www\.)[^\s<>()]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+){1,}\b/gi) || [];
+    for (const match of matches) {
+      try { found.add(normalizeDomain(match)); } catch { /* non-domain text */ }
+    }
+  }
+  return [...found];
+}
+
+const matchesDomain = (domain, list) => list.some(item => domain === item || domain.endsWith('.' + item));
+
+export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const text = msg.text || msg.caption || '';
   const body = normalize(text);
   const name = normalize([msg.from?.first_name, msg.from?.last_name, msg.sender_chat?.title].filter(Boolean).join(' '));
   const entities = msg.entities || msg.caption_entities || [];
   const links = entities.filter(e => e.type === 'text_link' && typeof e.url === 'string').map(e => e.url);
   const destinations = [body, ...links.map(normalize)].join(' ');
+  const domains = extractDomains(text, links);
+  const allowlist = (domainPolicy.allowlist || []).map(normalizeDomain);
+  const denylist = (domainPolicy.denylist || []).map(normalizeDomain);
+  const blockedDomains = domains.filter(domain => matchesDomain(domain, denylist));
+  const allowedDomains = domains.filter(domain => matchesDomain(domain, allowlist));
   const hasLink = /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/|tg:\/\/)/i.test(destinations) || entities.some(e => e.type === 'url');
   const invitation = /(?:t\.me|telegram\.me)\/(?:\+|joinchat\/)/i.test(destinations);
   const contact = /(?:加\s*[vw微]|加微信|私聊我|联系我|看我?简介|微信\s*[:：]|qq\s*[:：]|@[a-z0-9_]{5,})/i.test(body);
@@ -30,7 +55,9 @@ export function classify(msg, keywords, isNew = false) {
   const add = (points, reason) => { score += points; reasons.push(reason); };
   if (hits.length) add(Math.min(hits.length, 2), `关键词：${hits.slice(0, 6).join('、')}`);
   if (nameHits) add(1, '昵称存在广告相关词');
-  if (hasLink) add(1, '包含链接（含隐藏链接）');
+  if (hasLink && !allowedDomains.length) add(1, '包含链接（含隐藏链接）');
+  if (allowedDomains.length) reasons.push(`白名单域名：${allowedDomains.slice(0, 4).join('、')}`);
+  if (blockedDomains.length) add(7, `黑名单域名：${blockedDomains.slice(0, 4).join('、')}`);
   if (contact) add(2, '包含联系或引流话术');
   if (invitation) add(2, '包含群邀请链接');
   if (scamPitch) add(2, '包含收益承诺或高风险招揽话术');
@@ -38,7 +65,7 @@ export function classify(msg, keywords, isNew = false) {
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
-  return { score, reasons, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
+  return { score, reasons, hits, domains, blockedDomains, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
 export function validateWord(word) {

@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
-import { classify, normalize, DEFAULT_KEYWORDS, DEFAULT_POLICY, parseCommand, validateWord } from './filters.js';
+import { classify, normalize, normalizeDomain, DEFAULT_KEYWORDS, DEFAULT_POLICY, parseCommand, validateWord } from './filters.js';
 
 const DAY = 86400000;
 const ADMIN_STATUS = ['administrator', 'creator'];
@@ -128,7 +128,11 @@ export class GuardState extends DurableObject {
 
   async config() {
     const config = this.read('config');
-    if (config) return config;
+    if (config) {
+      const merged = { ...DEFAULT_POLICY, ...config, keywords: Array.isArray(config.keywords) ? config.keywords : DEFAULT_KEYWORDS };
+      if (JSON.stringify(merged) !== JSON.stringify(config)) this.write('config', merged);
+      return merged;
+    }
     const legacy = await this.env.BOT_KV.get('keywords', 'json');
     const initial = { keywords: Array.isArray(legacy) ? legacy.filter(w => typeof w === 'string' && w.trim() && w.length <= 80).slice(0, 500) : DEFAULT_KEYWORDS, ...DEFAULT_POLICY };
     // Another RPC may have completed initialization while KV was being read.
@@ -160,7 +164,10 @@ export class GuardState extends DurableObject {
     this.write('chat', msg.chat);
     if (msg.new_chat_members) {
       for (const member of msg.new_chat_members) this.write(`join:${member.id}`, Date.now(), DAY);
-      return empty;
+      const config = await this.config();
+      const names = msg.new_chat_members.filter(member => !member.is_bot).map(member => [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员');
+      const message = [config.welcomeMessage && config.welcomeMessage.replaceAll('{name}', names.join('、')).replaceAll('{group}', msg.chat.title || ''), config.rulesMessage && `群规：${config.rulesMessage}`].filter(Boolean).join('\n\n').slice(0, 4000);
+      return message ? { ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }], entry: { chatId, chatTitle: msg.chat.title || '', action: 'welcome-and-rules', outcome: 'pending' } } : empty;
     }
     // Anonymous group admins and automatic linked-channel posts are trusted separately.
     if (msg.sender_chat?.id === chatId || msg.is_automatic_forward) return empty;
@@ -186,7 +193,7 @@ export class GuardState extends DurableObject {
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
     const joined = this.read(`join:${senderId}`, 0);
-    const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000);
+    const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
     let samples = this.read(`flood:${senderId}`, []).filter(x => x.at > Date.now() - 60000 && x.id !== msg.message_id);
     const fingerprint = normalize(text) || msg.sticker?.file_unique_id || msg.photo?.at(-1)?.file_unique_id || msg.document?.file_unique_id || msg.video?.file_unique_id || '';
     if (fingerprint) samples.push({ id: msg.message_id, at: Date.now(), text: fingerprint });
@@ -198,7 +205,7 @@ export class GuardState extends DurableObject {
       verdict.reasons.push(repeat >= policy.repeatThreshold ? `60 秒内相同内容 ${repeat} 次（含交替刷屏）` : `60 秒内消息 ${samples.length} 条`);
     }
     if (!verdict.score) return empty;
-    const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons };
+    const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (verdict.score < 4) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
     if (msg.sender_chat) return { ops, entry: { ...entry, action: 'delete-channel-message' } };
@@ -273,6 +280,15 @@ export class GuardState extends DurableObject {
     const rows = this.sql.exec('SELECT id,data FROM logs WHERE id<? ORDER BY id DESC LIMIT 50', before > 0 ? before : Number.MAX_SAFE_INTEGER).toArray();
     return { config, logs: rows.map(r => ({ ...JSON.parse(r.data), id: r.id })), next: rows.length === 50 ? rows.at(-1).id : null, pending: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='pending'").toArray()[0].n, failed: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='failed'").toArray()[0].n };
   }
+  async keywordStats() {
+    const since = Date.now() - 30 * DAY;
+    const counts = new Map();
+    for (const row of this.sql.exec('SELECT data FROM logs WHERE ts>=? ORDER BY id DESC LIMIT 5000', since).toArray()) {
+      const hits = JSON.parse(row.data).keywordHits;
+      if (Array.isArray(hits)) for (const word of hits) counts.set(word, (counts.get(word) || 0) + 1);
+    }
+    return { periodDays: 30, total: [...counts.values()].reduce((sum, count) => sum + count, 0), keywords: [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN')).slice(0, 50).map(([word, count]) => ({ word, count })) };
+  }
   async editWord(action, word) {
     word = validateWord(word);
     const config = await this.config();
@@ -283,6 +299,27 @@ export class GuardState extends DurableObject {
     this.write('config', config);
     this.log({ action: `keyword-${action}`, actorId: 'web-admin', text: word, outcome: 'success' });
     return { keywords: config.keywords };
+  }
+  async editDomain(action, domain, list) {
+    domain = normalizeDomain(domain);
+    if (!['allow', 'deny'].includes(list)) throw new Error('无效名单类型');
+    const config = await this.config();
+    const key = list === 'allow' ? 'domainAllowlist' : 'domainDenylist';
+    if (action === 'add' && !config[key].includes(domain)) {
+      if (config[key].length >= 300) throw new Error('名单最多 300 个域名');
+      config[key].push(domain);
+    } else if (action === 'remove') config[key] = config[key].filter(item => item !== domain);
+    this.write('config', config);
+    this.log({ action: `domain-${list}-${action}`, actorId: 'web-admin', text: domain, outcome: 'success' });
+    return { allowlist: config.domainAllowlist, denylist: config.domainDenylist };
+  }
+  async editWelcome(welcomeMessage, rulesMessage) {
+    if (typeof welcomeMessage !== 'string' || typeof rulesMessage !== 'string' || welcomeMessage.length > 2500 || rulesMessage.length > 2500) throw new Error('欢迎语和群规均不能超过 2500 个字符');
+    const config = await this.config();
+    config.welcomeMessage = welcomeMessage.trim(); config.rulesMessage = rulesMessage.trim();
+    this.write('config', config);
+    this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
+    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage };
   }
 
   async loginAttempt(ip) {

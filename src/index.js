@@ -2,7 +2,7 @@ import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.0.1';
+export const VERSION = '2.1.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -55,6 +55,7 @@ async function admin(request, env, url) {
   if (request.method === 'GET') {
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'logs') return json(await group(env, url.searchParams.get('chatId')).adminData(Number(url.searchParams.get('before')) || 0));
+    if (path === 'keyword-stats') return json(await group(env, url.searchParams.get('chatId')).keywordStats());
     if (path === 'legacy') {
       const page = await env.BOT_KV.list({ prefix: 'log:', limit: 50, ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor') } : {}) });
       const values = await Promise.all(page.keys.map(k => env.BOT_KV.get(k.name, 'json')));
@@ -76,6 +77,14 @@ async function admin(request, env, url) {
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word));
+  }
+  if (request.method === 'POST' && ['domains/allow/add','domains/allow/remove','domains/deny/add','domains/deny/remove'].includes(path)) {
+    const body = await readJson(request, 4096); const [, list, action] = path.split('/');
+    return json(await group(env, body.chatId).editDomain(action, body.domain, list));
+  }
+  if (request.method === 'POST' && path === 'welcome-rules') {
+    const body = await readJson(request, 8192);
+    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage));
   }
   return json({ error: 'Not found' }, 404);
 }

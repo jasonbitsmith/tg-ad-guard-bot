@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, DEFAULT_KEYWORDS, parseCommand, normalize } from '../src/filters.js';
+import { classify, DEFAULT_KEYWORDS, extractDomains, parseCommand, normalize, normalizeDomain } from '../src/filters.js';
 import { telegram, secureEqual } from '../src/telegram.js';
 
 const msg = text => ({ text, from: { id: 1, first_name: '群友' } });
@@ -24,6 +24,15 @@ test('跨境电商专用卡推销会被处理，正常平台讨论不误删', ()
   assert.ok(classify(msg('跨境电商收款卡支持 Amazon、TEMU、TikTok Shop'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('有人用亚马逊吗？想交流一下开店经验'), DEFAULT_KEYWORDS).score < 4);
   assert.ok(classify(msg('速卖通和 eBay 哪个更适合新手？'), DEFAULT_KEYWORDS).score < 4);
+});
+test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
+  assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);
+  assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/path'), 'example.com');
+  assert.throws(() => normalizeDomain('not a domain'));
+  assert.ok(classify(msg('请访问 https://bad.example/path'), DEFAULT_KEYWORDS, false, { denylist: ['bad.example'] }).score >= 7);
+  assert.ok(classify(msg('普通链接 https://docs.example.com/guide'), DEFAULT_KEYWORDS, false, { allowlist: ['example.com'] }).score < 4);
+  const hidden = msg('点击这里'); hidden.entities = [{ type: 'text_link', offset: 0, length: 4, url: 'https://track.bad.example/a' }];
+  assert.ok(classify(hidden, DEFAULT_KEYWORDS, false, { denylist: ['bad.example'] }).score >= 7);
 });
 test('只处理发给自己的命令', () => {
   assert.equal(parseCommand('/ban@OtherBot 1', 'GuardBot'), null);
