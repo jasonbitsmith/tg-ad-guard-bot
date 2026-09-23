@@ -19,6 +19,12 @@ test('隐藏链接参与判断，昵称关键词本身不处罚', () => {
   assert.ok(classify(a, DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify({ ...msg('你好'), from: { first_name: '兼职工程师' } }, DEFAULT_KEYWORDS).score < 4);
 });
+test('跨境电商专用卡推销会被处理，正常平台讨论不误删', () => {
+  assert.ok(classify(msg('新卡头电商 AI专用卡，希音/亚马逊/速卖通/eBay 等'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('跨境电商收款卡支持 Amazon、TEMU、TikTok Shop'), DEFAULT_KEYWORDS).score >= 4);
+  assert.ok(classify(msg('有人用亚马逊吗？想交流一下开店经验'), DEFAULT_KEYWORDS).score < 4);
+  assert.ok(classify(msg('速卖通和 eBay 哪个更适合新手？'), DEFAULT_KEYWORDS).score < 4);
+});
 test('只处理发给自己的命令', () => {
   assert.equal(parseCommand('/ban@OtherBot 1', 'GuardBot'), null);
   assert.deepEqual(parseCommand('/ban@GuardBot 123', 'GuardBot'), { command: 'ban', arg: '123' });

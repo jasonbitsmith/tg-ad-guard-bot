@@ -18,6 +18,12 @@ export function classify(msg, keywords, isNew = false) {
   const hits = [...new Set(keywords.map(normalize).filter(w => w && body.includes(w)))];
   const nameHits = keywords.map(normalize).some(w => w && name.includes(w));
   const scamPitch = /(?:稳赚|保本|稳赚不赔|无需经验|无押金|日入\s*\d|月入过万|点赞赚钱|代收代付|跑分|翻倍收益)/.test(body);
+  // Product-card pitches aimed at cross-border sellers are commonly posted as
+  // bare text, with the seller asking interested members to contact them later.
+  // Require both the product language and a platform name so ordinary platform
+  // discussions, questions, and single brand mentions are not auto-moderated.
+  const commerceCardPitch = /(?:新\s*卡头|卡头|(?:电商|跨境)\s*(?:ai\s*)?专用卡|(?:电商|跨境).{0,12}(?:收款卡|支付卡|专用卡))/.test(body);
+  const commercePlatforms = [...new Set((body.match(/(?:希音|shein|亚马逊|amazon|速卖通|aliexpress|ebay|temu|tiktok\s*shop|shopify)/g) || []).map(normalize))];
   const caution = /(?:警惕|谨防|骗局|诈骗|不要转账|别转账|风险|反诈)/.test(body);
   let score = 0;
   const reasons = [];
@@ -28,6 +34,7 @@ export function classify(msg, keywords, isNew = false) {
   if (contact) add(2, '包含联系或引流话术');
   if (invitation) add(2, '包含群邀请链接');
   if (scamPitch) add(2, '包含收益承诺或高风险招揽话术');
+  if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
