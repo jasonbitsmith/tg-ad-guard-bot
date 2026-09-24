@@ -45,7 +45,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const scamPitch = /(?:稳赚|保本|稳赚不赔|无需经验|无押金|日入\s*\d|月入过万|点赞赚钱|代收代付|跑分|翻倍收益)/.test(body);
   // Short-form recruitment ads often omit a URL and contact handle, using an
   // invitation slogan plus an implausible daily-income promise instead.
-  const recruitmentSlogan = /(?:有码.{0,8}吃肉|(?:帮我|来)?收米|来吃肉|带你吃肉|项目招募|团队招募)/.test(body);
+  const recruitmentSlogan = /(?:有码.{0,8}吃肉|(?:帮我|来)?收米|招代收|代收招募|来吃肉|带你吃肉|项目招募|团队招募)/.test(body);
   const dailyIncome = /(?:一天|每日|日赚|日入).{0,4}\d+(?:\.\d+)?\s*(?:k|w|千|万)/i.test(body);
   const photoGigPitch = /(?:拍\s*照.{0,8}兼职.{0,12}(?:日\s*结|当天结)|(?:日\s*结|当天结).{0,16}拍\s*照.{0,8}(?:兼职|即可做|赚钱|收入))/.test(body);
   // Product-card pitches aimed at cross-border sellers are commonly posted as
@@ -73,7 +73,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
-  // from the group. Other high-risk content keeps the warning/mute policy.
+  // from the group.
   const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }

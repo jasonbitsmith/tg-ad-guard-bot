@@ -30,6 +30,7 @@ test('招揽口号叠加日收入承诺会被处理，普通收入讨论不误�
   assert.equal(classify(msg('有码来吃肉 一天8K'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.ok(classify(msg('带你吃肉，每日 1.2w，想来的私聊'), DEFAULT_KEYWORDS).score >= 4);
   assert.equal(classify(msg('帮我收米 一天赚8K'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('招代收 一天8K'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.ok(classify(msg('来收米 一天1W'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('有人了解这个岗位一天 8K 的说法是否真实吗？'), DEFAULT_KEYWORDS).score < 4);
   assert.ok(classify(msg('今天和朋友吃肉，花了 8K 买服务器'), DEFAULT_KEYWORDS).score < 4);

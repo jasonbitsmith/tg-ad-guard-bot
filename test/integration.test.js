@@ -62,34 +62,32 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const u=update(-102,'兼职招聘 私聊我');
     const responses=await Promise.all(Array.from({length:5},()=>send(u))); responses.forEach(r=>assert.equal(r.status,200));
     const {data}=await tick(-102);
-    assert.equal(actions(-102).length,1); assert.equal(data.logs[0].warnings,1);
+    assert.equal(actions(-102).length,1); assert.equal(data.logs[0].warnings,undefined); assert.equal(data.logs[0].action,'delete-message');
     const edited={update_id:++seq,edited_message:{...u.message,text:'兼职招聘 私聊我 改字'}};
     await send(edited);await tick(-102);assert.equal(actions(-102).length,1);
   });
-  await t.test('三条独立违规后临时禁言，不自动封禁', async () => {
+  await t.test('广告直接删除，不累计警告或自动禁言', async () => {
     for(let i=0;i<3;i++){await send(update(-103,'兼职招聘 私聊我 '+i));await tick(-103);}
-    const a=actions(-103);assert.equal(a.filter(x=>x.method==='deleteMessage').length,3);assert.equal(a.filter(x=>x.method==='restrictChatMember').length,1);assert.ok(!a.some(x=>x.method==='banChatMember'));
-    const until=a.find(x=>x.method==='restrictChatMember').params.until_date;
-    assert.ok(until>Date.now()/1000+500 && until<Date.now()/1000+650);
+    const a=actions(-103);assert.equal(a.filter(x=>x.method==='deleteMessage').length,3);assert.equal(a.filter(x=>x.method==='restrictChatMember').length,0);assert.ok(!a.some(x=>x.method==='banChatMember'));
   });
   await t.test('429 按重试时间保留任务，成功后才写成功记录', async () => {
     failures.set('deleteMessage:-104',{error_code:429,description:'rate limit',parameters:{retry_after:90}});
     await send(update(-104,'兼职招聘 私聊我'));let a=await tick(-104);
     assert.equal(a.data.pending,1);assert.equal(a.data.logs[0].outcome,'retrying');assert.ok(a.jobs[0].due>Date.now()+85000);
-    a=await tick(-104,true);assert.equal(a.data.pending,0);assert.equal(a.data.logs[0].outcome,'success');assert.equal(a.data.logs[0].warnings,1);
+    a=await tick(-104,true);assert.equal(a.data.pending,0);assert.equal(a.data.logs[0].outcome,'success');assert.equal(a.data.logs[0].warnings,undefined);
   });
-  await t.test('禁言失败重试不重复删消息和警告', async () => {
-    failures.set('restrictChatMember:-105',{error_code:500,description:'temporary failure'});
+  await t.test('删消息暂时失败会重试，不产生警告状态', async () => {
+    failures.set('deleteMessage:-105',{error_code:500,description:'temporary failure'});
     await send(update(-105,'兼职招聘 私聊我 稳赚 https://ad.example'));await tick(-105);const a=await tick(-105,true);
-    assert.equal(actions(-105).filter(x=>x.method==='deleteMessage').length,1);assert.equal(a.data.logs[0].warnings,1);assert.equal(a.data.logs[0].outcome,'success');
+    assert.equal(actions(-105).filter(x=>x.method==='deleteMessage').length,2);assert.equal(a.data.logs[0].warnings,undefined);assert.equal(a.data.logs[0].outcome,'success');
   });
-  await t.test('失败重试期间后续消息不乱序或覆盖警告计数', async () => {
+  await t.test('失败重试期间后续消息按顺序删除，不累计警告', async () => {
     failures.set('deleteMessage:-115',{error_code:429,description:'rate limit',parameters:{retry_after:90}});
     await send(update(-115,'兼职招聘 私聊我 A'));await tick(-115);
     await send(update(-115,'兼职招聘 私聊我 B'));const before=await tick(-115);
     assert.equal(before.data.pending,2);assert.equal(actions(-115).length,1);
     const after=await tick(-115,true);assert.equal(after.data.pending,0);
-    assert.deepEqual(after.data.logs.filter(x=>x.outcome==='success').map(x=>x.warnings),[2,1]);
+    assert.ok(after.data.logs.filter(x=>x.outcome==='success').every(x=>x.action==='delete-message' && x.warnings===undefined));
   });
   await t.test('403 删消息失败不继续禁言、不虚报成功', async () => {
     failures.set('deleteMessage:-106',{error_code:403,description:'not enough rights'});
