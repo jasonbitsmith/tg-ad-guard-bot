@@ -62,13 +62,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const u=update(-102,'兼职招聘 私聊我');
     const responses=await Promise.all(Array.from({length:5},()=>send(u))); responses.forEach(r=>assert.equal(r.status,200));
     const {data}=await tick(-102);
-    assert.equal(actions(-102).length,1); assert.equal(data.logs[0].warnings,undefined); assert.equal(data.logs[0].action,'delete-message');
+    assert.equal(actions(-102).length,2); assert.equal(data.logs[0].warnings,undefined); assert.equal(data.logs[0].action,'delete-and-permanent-ban');
     const edited={update_id:++seq,edited_message:{...u.message,text:'兼职招聘 私聊我 改字'}};
-    await send(edited);await tick(-102);assert.equal(actions(-102).length,1);
+    await send(edited);await tick(-102);assert.equal(actions(-102).length,2);
   });
-  await t.test('广告直接删除，不累计警告或自动禁言', async () => {
+  await t.test('广告直接删除并永久封禁，不累计警告或自动禁言', async () => {
     for(let i=0;i<3;i++){await send(update(-103,'兼职招聘 私聊我 '+i));await tick(-103);}
-    const a=actions(-103);assert.equal(a.filter(x=>x.method==='deleteMessage').length,3);assert.equal(a.filter(x=>x.method==='restrictChatMember').length,0);assert.ok(!a.some(x=>x.method==='banChatMember'));
+    const a=actions(-103);assert.equal(a.filter(x=>x.method==='deleteMessage').length,3);assert.equal(a.filter(x=>x.method==='restrictChatMember').length,0);assert.equal(a.filter(x=>x.method==='banChatMember').length,3);
   });
   await t.test('429 按重试时间保留任务，成功后才写成功记录', async () => {
     failures.set('deleteMessage:-104',{error_code:429,description:'rate limit',parameters:{retry_after:90}});
@@ -87,7 +87,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-115,'兼职招聘 私聊我 B'));const before=await tick(-115);
     assert.equal(before.data.pending,2);assert.equal(actions(-115).length,1);
     const after=await tick(-115,true);assert.equal(after.data.pending,0);
-    assert.ok(after.data.logs.filter(x=>x.outcome==='success').every(x=>x.action==='delete-message' && x.warnings===undefined));
+    assert.ok(after.data.logs.filter(x=>x.outcome==='success').every(x=>x.action==='delete-and-permanent-ban' && x.warnings===undefined));
   });
   await t.test('403 删消息失败不继续禁言、不虚报成功', async () => {
     failures.set('deleteMessage:-106',{error_code:403,description:'not enough rights'});
@@ -118,15 +118,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('无封禁权限的群管理员不能借机器人封人', async () => {
     await send(update(-110,'/ban 7',{from:{id:11,first_name:'受限管理员'}}));await tick(-110);assert.equal(actions(-110).length,0);
   });
-  await t.test('自动处罚不覆盖已有禁言限制', async () => {
+  await t.test('广告账号即使已有禁言限制也会永久封禁', async () => {
     await send(update(-112,'兼职招聘 私聊我 稳赚 https://ad.example',{from:{id:12,first_name:'已受限制用户'}}));await tick(-112);
-    assert.deepEqual(actions(-112).map(x=>x.method),['deleteMessage']);
+    assert.deepEqual(actions(-112).map(x=>x.method),['deleteMessage','banChatMember']);
   });
-  await t.test('清除警告和白名单生效，私聊命令不会跨群生效', async () => {
+  await t.test('白名单会阻止自动封禁，私聊命令不会跨群生效', async () => {
     await send(update(-113,'兼职招聘 私聊我'));await tick(-113);
     await send(update(-113,'/allow 7',{from:{id:99,first_name:'owner'}}));await tick(-113);
     await send(update(-113,'兼职招聘 私聊我 稳赚 https://ad.example'));await tick(-113);
-    assert.equal(actions(-113).length,1);
+    assert.equal(actions(-113).length,2);
     const u=update(-114,'/ban 7',{from:{id:99},chat:{id:99,type:'private'}});await send(u);assert.equal(actions(99).length,0);
   });
   await t.test('解除封禁使用 only_if_banned，不踢出已在群的用户', async () => {

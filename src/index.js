@@ -2,7 +2,7 @@ import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.1.1';
+export const VERSION = '2.1.2';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -71,7 +71,7 @@ async function admin(request, env, url) {
         const member = await tg('getChatMember', { chat_id: Number(chatId), user_id: me.id });
         permissions = { deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, status: member.status };
       }
-      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '收米日薪、拍照日结批量广告', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions });
+      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions });
     }
   }
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
