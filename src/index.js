@@ -2,7 +2,7 @@ import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.1.2';
+export const VERSION = '2.2.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -71,7 +71,7 @@ async function admin(request, env, url) {
         const member = await tg('getChatMember', { chat_id: Number(chatId), user_id: me.id });
         permissions = { deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, status: member.status };
       }
-      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions });
+      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, dmitMonitor: await state.dmitStatus() });
     }
   }
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
@@ -114,5 +114,8 @@ export default {
       console.error(JSON.stringify({ event: 'enqueue_failed', updateId: update.update_id }));
       return new Response('Retry later', { status: 503 });
     }
+  },
+  async scheduled(_controller, env, ctx) {
+    if (env.DMIT_MONITOR_ENABLED === 'true' && env.GUARD_STATE) ctx.waitUntil(globalState(env).monitorDmit());
   },
 };

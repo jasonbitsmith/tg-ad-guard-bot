@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, DEFAULT_KEYWORDS, extractDomains, parseCommand, normalize, normalizeDomain } from '../src/filters.js';
 import { telegram, secureEqual } from '../src/telegram.js';
+import { dmitNotification, parseDmitPricing, withDmitAffiliate } from '../src/dmit.js';
 
 const msg = text => ({ text, from: { id: 1, first_name: '群友' } });
 test('黑名单关键词首次命中即要求删除，非关键词普通聊天不处理', () => {
@@ -67,4 +68,13 @@ test('缺失 webhook 验证值不接受', async () => {
   assert.equal(await secureEqual('', ''), false);
   assert.equal(await secureEqual('value', 'value'), true);
   assert.equal(await secureEqual('value', 'other'), false);
+});
+test('DMIT 定价页按产品代码识别库存并生成频道推送', () => {
+  const html = `<section><h2>HKG.AS3.PRO.TINY</h2><p>1 vCPU / 1 GB RAM / 20 GB NVMe SSD / 1000 GB traffic @ 1 Gbps / $6.90 / mo</p><a href="/aff.php?pid=88">Order Now</a></section><section><h2>LAX.PRO.TINY</h2><p>Out of Stock</p></section>`;
+  const items = parseDmitPricing(html, 'https://www.dmit.io/pages/pricing');
+  assert.deepEqual(items.map(item => [item.product, item.inStock]), [['HKG.AS3.PRO.TINY', true], ['LAX.PRO.TINY', false]]);
+  assert.equal(items[0].region, '香港'); assert.equal(items[0].route, 'CN2 GIA');
+  assert.equal(items[0].orderUrl, 'https://www.dmit.io/aff.php?pid=88');
+  assert.match(dmitNotification(items[0], '@jason_vps_deal'), /产品：HKG\.AS3\.PRO\.TINY/);
+  assert.equal(withDmitAffiliate(items[0].orderUrl, '16962'), 'https://www.dmit.io/aff.php?pid=88&aff=16962');
 });

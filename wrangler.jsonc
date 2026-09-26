@@ -47,7 +47,14 @@
     "NOTIFY_AUTO_DELETE_SECONDS": "8",
     "ENABLE_PROFILE_HEURISTIC": "true",
     "FLOOD_REPEAT_THRESHOLD": "3",
-    "NEW_MEMBER_GUARD_MINUTES": "10"
+    "NEW_MEMBER_GUARD_MINUTES": "10",
+    "DMIT_MONITOR_ENABLED": "true",
+    "DMIT_PRICING_URL": "https://www.dmit.io/pages/pricing",
+    "DMIT_NOTIFY_CHAT": "@jason_vps_deal",
+    "DMIT_AFFILIATE_ID": "16962"
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
   },
   "observability": {
     "enabled": true,

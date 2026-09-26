@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
 import { classify, normalize, normalizeDomain, DEFAULT_KEYWORDS, DEFAULT_POLICY, parseCommand, validateWord } from './filters.js';
+import { dmitNotification, parseDmitPricing, withDmitAffiliate } from './dmit.js';
 
 const DAY = 86400000;
 const ADMIN_STATUS = ['administrator', 'creator'];
@@ -51,6 +52,54 @@ export class GuardState extends DurableObject {
     this.sql.exec('INSERT INTO chats VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title WHERE title != excluded.title', String(chat.id), String(chat.title || chat.id));
   }
   listChats() { return this.sql.exec('SELECT * FROM chats ORDER BY title COLLATE NOCASE LIMIT 1000').toArray(); }
+
+  dmitStatus() {
+    return this.read('dmit:status', { enabled: this.env.DMIT_MONITOR_ENABLED === 'true', state: '尚未执行' });
+  }
+  async monitorDmit() {
+    const source = this.env.DMIT_PRICING_URL || 'https://www.dmit.io/pages/pricing';
+    const channel = this.env.DMIT_NOTIFY_CHAT || '@jason_vps_deal';
+    const now = new Date().toISOString();
+    let response;
+    try {
+      response = await fetch(source, { headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0 (compatible; DMIT-Restock-Radar/1.0; +https://bot.jasonselect.com)' }, signal: AbortSignal.timeout(20000) });
+      if (!response.ok) throw new Error(`官网返回 HTTP ${response.status}`);
+      const products = parseDmitPricing(await response.text(), source);
+      if (!products.length) throw new Error('未找到可识别的 DMIT 产品，页面结构可能已变化');
+      const initialized = this.read('dmit:initialized', false);
+      const affiliateId = this.env.DMIT_AFFILIATE_ID || '';
+      let notifications = 0;
+      for (const product of products) {
+        const key = `dmit:product:${product.id}`;
+        const previous = this.read(key);
+        if (initialized && previous?.inStock === false && product.inStock) {
+          try {
+            await telegram(this.env.BOT_TOKEN)('sendMessage', {
+              chat_id: channel,
+              text: dmitNotification(product, channel),
+              reply_markup: product.orderUrl ? { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: withDmitAffiliate(product.orderUrl, affiliateId) }]] } : undefined,
+              disable_web_page_preview: true,
+            });
+            notifications++;
+            this.log({ action: 'dmit-restock-notification', product: product.product, channel, outcome: 'success' });
+          } catch (error) {
+            this.log({ action: 'dmit-restock-notification', product: product.product, channel, outcome: 'failed', error: String(error.message || 'unknown error').slice(0, 300) });
+            continue;
+          }
+        }
+        this.write(key, product);
+      }
+      this.write('dmit:initialized', true);
+      this.write('dmit:status', { enabled: true, state: '正常', source, channel, affiliateId: affiliateId || null, lastChecked: now, lastSuccess: now, products: products.length, inStock: products.filter(item => item.inStock).length, notifications });
+    } catch (error) {
+      const previous = this.dmitStatus();
+      const status = { ...previous, enabled: true, state: '读取失败', source, channel, lastChecked: now, error: String(error.message || 'unknown error').slice(0, 300) };
+      this.write('dmit:status', status);
+      // Keep a compact durable audit trail without flooding it on every minute.
+      if (previous.error !== status.error || !previous.lastError || Date.now() - Date.parse(previous.lastError) > 3600000) this.log({ action: 'dmit-monitor', outcome: 'failed', error: status.error });
+      status.lastError = now; this.write('dmit:status', status);
+    }
+  }
 
   async enqueue(update) {
     // Schedule before acknowledging durable receipt; an alarm survives request termination.
