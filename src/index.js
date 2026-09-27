@@ -113,6 +113,10 @@ async function admin(request, env, url) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editRaid(body.enabled, body.limit, body.minutes));
   }
+  if (request.method === 'POST' && path === 'new-member-link-guard') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).editNewMemberLinkGuard(body.enabled, body.minutes));
+  }
   if (request.method === 'POST' && path === 'quiet') {
     const body = await readJson(request, 4096);
     const registered = await state.listChats();

@@ -8,6 +8,7 @@ export const ADMIN_PAGE = `<!doctype html>
 <p><label>选择群 <select id="chats"><option value="">请选择</option></select></label><label>或输入群 ID <input id="chatId" placeholder="-100…"></label><button id="load">查看</button></p>
 <p class="muted">已从旧版拦截记录导入已知群。新群会在机器人收到消息或管理员发送 <code>/status</code> 后自动出现；Telegram 不提供机器人直接列出全部所在群的接口，也可直接填写群 ID。规则仅影响选中的群。</p>
 <h2>本群关键词</h2><p class="muted">黑名单关键词命中后立即删消息；请只添加明确禁止的广告词。</p><form id="wordForm"><input id="word" maxlength="80" placeholder="新关键词" required><button>添加</button></form><div id="keywords"></div>
+<h2>新人链接隔离</h2><p class="muted">新成员在设定时限内发送任何网址、隐藏链接或 Telegram 邀请时，直接删除并永久封禁。用于拦截短文案引流广告。</p><form id="newMemberLinkGuardForm"><label><input id="newMemberLinkGuard" type="checkbox" checked> 开启新人链接隔离</label> 入群后 <input id="newMemberLinkMinutes" type="number" min="1" max="1440" value="30" required> 分钟内 <button>保存链接隔离设置</button></form>
 <h2>欢迎语与群规</h2><p class="muted">新成员加入时发送。可使用 <code>{name}</code> 表示新成员姓名，<code>{group}</code> 表示群名称；两项都留空则不发送。</p><form id="welcomeForm"><label>欢迎语<textarea id="welcomeMessage" maxlength="2500" placeholder="欢迎 {name} 加入 {group}！"></textarea></label><label>群规<textarea id="rulesMessage" maxlength="2500" placeholder="请文明交流，禁止广告与诈骗。"></textarea></label><button>保存欢迎语和群规</button></form>
 <h2>新成员验证</h2><p class="muted">验证期间只允许发送文字答案；未在时限内完成验证的账号将直接永久封禁。频道验证要求机器人是验证频道管理员，且拥有查看成员资格的权限。</p><form id="verificationForm"><select id="verificationMode"><option value="off">关闭验证</option><option value="math">算术验证</option><option value="channel">频道订阅验证</option></select><input id="verificationMinutes" type="number" min="1" max="60" value="10" required> 分钟 <input id="verificationChannel" placeholder="频道用户名，如 @jason_vps_deal"><button>保存验证设置</button></form>
 <h2>反入群轰炸</h2><p class="muted">5 分钟内新加入账号达到阈值时，自动开启临时算术验证；适合防范广告团伙批量进群。防护结束后恢复本群原有验证设置。</p><form id="raidForm"><label><input id="raidEnabled" type="checkbox" checked> 开启反入群轰炸</label> <input id="raidJoinLimit" type="number" min="2" max="30" value="4" required> 人 / 5 分钟，持续 <input id="raidMinutes" type="number" min="5" max="120" value="30" required> 分钟 <button>保存反轰炸设置</button></form>
@@ -49,6 +50,7 @@ function renderDomains(id, domains, list) {
 }
 function renderConfig(config) {
   renderWords(config.keywords);renderDomains('denyDomains',config.domainDenylist||[],'deny');renderDomains('allowDomains',config.domainAllowlist||[],'allow');
+  $('newMemberLinkGuard').checked=config.newMemberLinkGuard!==false;$('newMemberLinkMinutes').value=config.newMemberLinkMinutes||30;
   $('welcomeMessage').value=config.welcomeMessage||'';$('rulesMessage').value=config.rulesMessage||'';
   $('verificationMode').value=config.verificationMode||'off';$('verificationMinutes').value=config.verificationMinutes||10;$('verificationChannel').value=config.verificationChannel||'';
   $('raidEnabled').checked=config.raidEnabled!==false;$('raidJoinLimit').value=config.raidJoinLimit||4;$('raidMinutes').value=config.raidMinutes||30;
@@ -73,6 +75,7 @@ $('load').onclick=$('refresh').onclick=safe(async()=>{legacy=false;await load();
 $('legacy').onclick=safe(async()=>{legacy=true;await load();});
 $('more').onclick=safe(async()=>{await load(true);});
 $('wordForm').onsubmit=safe(async()=>{await api('keywords/add',{chatId:chat(),word:$('word').value});$('word').value='';legacy=false;await load();});
+$('newMemberLinkGuardForm').onsubmit=safe(async()=>{const button=$('newMemberLinkGuardForm').querySelector('button');const original=button.textContent;button.disabled=true;button.textContent='保存中…';try{await api('new-member-link-guard',{chatId:chat(),enabled:$('newMemberLinkGuard').checked,minutes:Number($('newMemberLinkMinutes').value)});$('notice').textContent='✓ 新人链接隔离设置已保存。';}finally{button.disabled=false;button.textContent=original;}});
 $('sampleForm').onsubmit=safe(async()=>{const data=await api('samples/add',{kind:$('sampleKind').value,value:$('sampleValue').value,label:$('sampleLabel').value});$('sampleValue').value='';$('sampleLabel').value='';renderSamples(data.samples);});
 $('domainForm').onsubmit=safe(async()=>{const list=$('domainList').value;await api('domains/'+list+'/add',{chatId:chat(),domain:$('domain').value});$('domain').value='';legacy=false;await load();});
 $('welcomeForm').onsubmit=safe(async()=>{await api('welcome-rules',{chatId:chat(),welcomeMessage:$('welcomeMessage').value,rulesMessage:$('rulesMessage').value});legacy=false;await load();});

@@ -417,6 +417,8 @@ export class GuardState extends DurableObject {
     const policy = await this.config();
     const joined = this.read(`join:${senderId}`, 0);
     const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
+    const linkQuarantine = policy.newMemberLinkGuard && joined > Date.now() - policy.newMemberLinkMinutes * 60000 && verdict.hasLink;
+    if (linkQuarantine) { verdict.score = Math.max(4, verdict.score); verdict.reasons.push(`新成员链接隔离（入群 ${policy.newMemberLinkMinutes} 分钟内）`); }
     const sampleRules = await this.env.GUARD_STATE.getByName('admin').listSamples();
     const sampleHits = sampleMatches(msg, sampleRules);
     if (sampleHits.length) {
@@ -618,6 +620,15 @@ export class GuardState extends DurableObject {
     this.write('config', config);
     this.log({ action: 'raid-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${joins}:${duration}` });
     return { raidEnabled: config.raidEnabled, raidJoinLimit: config.raidJoinLimit, raidMinutes: config.raidMinutes };
+  }
+  async editNewMemberLinkGuard(enabled, minutes) {
+    const duration = Number(minutes);
+    if (typeof enabled !== 'boolean' || !Number.isInteger(duration) || duration < 1 || duration > 1440) throw new Error('链接隔离时长须为 1–1440 分钟');
+    const config = await this.config();
+    config.newMemberLinkGuard = enabled; config.newMemberLinkMinutes = duration;
+    this.write('config', config);
+    this.log({ action: 'new-member-link-guard-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${duration}` });
+    return { newMemberLinkGuard: config.newMemberLinkGuard, newMemberLinkMinutes: config.newMemberLinkMinutes };
   }
   async editQuiet(chat, enabled, start, end, notify) {
     const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
