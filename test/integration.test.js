@@ -187,7 +187,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const cookie=login.headers.get('set-cookie').split(';')[0];
     const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
     await request('federation',{chatId:-140,enabled:true});await request('federation',{chatId:-141,enabled:true});
-    const quiet=await (await request('quiet',{scope:'all',enabled:true,start:'00:00',end:'08:00'})).json();
+    const quiet=await (await request('quiet',{scope:'all',enabled:true,start:'00:00',end:'08:00',notify:true})).json();
     assert.ok(quiet.updated >= 6);
     await send(update(-140,'兼职招聘 私聊我',{from:{id:77,first_name:'广告号'}}));await tick(-140);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-141&&c.params.user_id===77));

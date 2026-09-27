@@ -106,7 +106,7 @@ async function admin(request, env, url) {
     const targets = body.scope === 'all' ? registered : registered.filter(item => item.id === String(body.chatId));
     if (!targets.length && body.scope !== 'all') targets.push({ id: body.chatId, title: body.chatId });
     if (!targets.length) throw new Error('暂无可设置的群');
-    const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end)));
+    const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end, body.notify)));
     const failed = results.filter(result => result.status === 'rejected').length;
     if (failed) throw new Error(`${failed} 个群保存失败，请稍后重试`);
     return json({ updated: targets.length, config: results[0].value });

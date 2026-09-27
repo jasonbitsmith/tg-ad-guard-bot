@@ -76,6 +76,12 @@ export class GuardState extends DurableObject {
       this.remove('quiet:baseline');
     }
     this.write('quiet:active', shouldMute);
+    if (config.quietNotify) {
+      const text = shouldMute
+        ? `🌙 夜间静默通知\n\n为防范深夜诈骗信息及冒充官方账号的错误引导，本群将于北京时间 ${config.quietStart} 至 ${config.quietEnd} 开启静默模式。期间普通成员暂时不能发言，管理员不受影响；到点后将自动恢复。\n\n请勿轻信任何私聊、开户链接、转账或索要验证码的请求。感谢大家的理解与配合。`
+        : '☀️ 夜间静默已结束，群聊发言已恢复。请继续警惕私聊诈骗，官方不会私信索要验证码、密码或转账。';
+      await tg('sendMessage', { chat_id: chat.id, text, disable_web_page_preview: true }).catch(error => this.log({ chatId: chat.id, action: 'quiet-notice', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
+    }
     this.log({ chatId: chat.id, chatTitle: chat.title || '', action: shouldMute ? 'quiet-started' : 'quiet-ended', outcome: 'success', reasons: [`北京时间 ${time}`] });
     return true;
   }
@@ -579,17 +585,17 @@ export class GuardState extends DurableObject {
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel };
   }
-  async editQuiet(chat, enabled, start, end) {
+  async editQuiet(chat, enabled, start, end, notify) {
     const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
-    if (typeof enabled !== 'boolean' || !valid(String(start)) || !valid(String(end))) throw new Error('请填写有效的 24 小时时间');
+    if (typeof enabled !== 'boolean' || typeof notify !== 'boolean' || !valid(String(start)) || !valid(String(end))) throw new Error('请填写有效的 24 小时时间');
     if (enabled && start === end) throw new Error('开始和结束时间不能相同');
     const config = await this.config();
-    config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end;
+    config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end; config.quietNotify = notify;
     this.write('config', config);
     this.write('chat', { id: Number(chat.id), title: String(chat.title || chat.id) });
     await this.schedule(Date.now() + 100);
     this.log({ action: 'quiet-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${start}-${end}` });
-    return { quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd };
+    return { quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd, quietNotify: config.quietNotify };
   }
 
   async loginAttempt(ip) {
