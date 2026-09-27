@@ -7,6 +7,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   const calls = [], failures = new Map();
   const wrapper = `import worker, { GuardState as Base } from './index.js';
     export class GuardState extends Base {
+      constructor(ctx,env) { super(ctx,env); }
+      async ocr(msg){ return Array.isArray(msg.photo) ? '水果机 渠道正品 日搞1w 当日下单 秒发' : ''; }
       async inspectTest(force=false) {
         if(force) this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending'");
         await this.alarm();
@@ -21,10 +23,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     compatibilityDate: '2026-09-22', compatibilityFlags: ['nodejs_compat'],
     modules: [{ type: 'ESModule', path: 'test-wrapper.js', contents: wrapper }, { type: 'ESModule', path: 'index.js', contents: await readFile(new URL('../dist/index.js', import.meta.url), 'utf8') }],
     durableObjects: { GUARD_STATE: { className: 'GuardState', useSQLite: true } },
-    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99' },
+    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
     outboundService: async request => {
       const url = new URL(request.url);
       assert.equal(url.hostname, 'api.telegram.org');
+      if (url.pathname.includes('/file/botfake/')) return new MFResponse(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpeg' } });
       const method = url.pathname.split('/').at(-1), params = await request.json();
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
@@ -35,6 +38,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getWebhookInfo') result = { url: 'https://bot.test/webhook/path', pending_update_count: 0 };
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : 'member', can_restrict_members: false };
       if (method === 'getChat') result = { permissions: { can_send_messages: true, can_send_photos: false } };
+      if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'sendMessage') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
     },
@@ -121,6 +125,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('广告账号即使已有禁言限制也会永久封禁', async () => {
     await send(update(-112,'兼职招聘 私聊我 稳赚 https://ad.example',{from:{id:12,first_name:'已受限制用户'}}));await tick(-112);
     assert.deepEqual(actions(-112).map(x=>x.method),['deleteMessage','banChatMember']);
+  });
+  await t.test('OCR 识别纯图片广告后删除并永久封禁', async () => {
+    await send(update(-117, '', { photo: [{ file_id: 'ocr-file', file_unique_id: 'ocr-unique', file_size: 12000 }] })); const result=await tick(-117);
+    assert.deepEqual(actions(-117).map(x => x.method), ['deleteMessage', 'banChatMember'], JSON.stringify(result.data.logs));
   });
   await t.test('白名单会阻止自动封禁，私聊命令不会跨群生效', async () => {
     await send(update(-113,'兼职招聘 私聊我'));await tick(-113);

@@ -31,6 +31,9 @@
       }
     ]
   },
+  "ai": {
+    "binding": "AI"
+  },
   "migrations": [
     {
       "tag": "guard-v2",
@@ -51,7 +54,9 @@
     "DMIT_MONITOR_ENABLED": "true",
     "DMIT_PRICING_URL": "https://www.dmit.io/pages/pricing",
     "DMIT_NOTIFY_CHAT": "@jason_vps_deal",
-    "DMIT_AFFILIATE_ID": "16962"
+    "DMIT_AFFILIATE_ID": "16962",
+    "OCR_ENABLED": "true",
+    "OCR_MAX_PER_CHAT_HOUR": "30"
   },
   "triggers": {
     "crons": ["* * * * *"]

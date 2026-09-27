@@ -72,7 +72,7 @@ async function admin(request, env, url) {
         const member = await tg('getChatMember', { chat_id: Number(chatId), user_id: me.id });
         permissions = { deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, status: member.status };
       }
-      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, dmitMonitor: await state.dmitStatus() });
+      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, dmitMonitor: await state.dmitStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
     }
   }
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {

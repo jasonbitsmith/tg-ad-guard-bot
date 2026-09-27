@@ -66,6 +66,41 @@ export class GuardState extends DurableObject {
   dmitStatus() {
     return this.read('dmit:status', { enabled: this.env.DMIT_MONITOR_ENABLED === 'true', state: '尚未执行' });
   }
+  async ocr(msg, tg) {
+    if (this.env.OCR_ENABLED !== 'true' || !this.env.AI || !Array.isArray(msg.photo) || !msg.photo.length) return '';
+    const photo = [...msg.photo].reverse().find(item => Number(item.file_size || 0) > 8000 && Number(item.file_size || 0) <= 3 * 1024 * 1024);
+    if (!photo?.file_id || !photo.file_unique_id) return '';
+    const cached = this.read(`ocr:photo:${photo.file_unique_id}`);
+    if (cached) return cached;
+    const quotaKey = `ocr:quota:${msg.chat.id}`;
+    const quota = this.read(quotaKey, 0);
+    const limit = Math.max(1, Math.min(100, Number(this.env.OCR_MAX_PER_CHAT_HOUR || 30)));
+    if (quota >= limit) return '';
+    try {
+      this.write(quotaKey, quota + 1, 3600000);
+      const file = await tg('getFile', { file_id: photo.file_id });
+      if (!file?.file_path) return '';
+      const response = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${file.file_path}`, { signal: AbortSignal.timeout(10000) });
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      if (!response.ok || bytes.byteLength > 3 * 1024 * 1024 || !contentType.startsWith('image/')) return '';
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      const result = await this.env.AI.run('@cf/moondream/moondream3.1-9B-A2B', {
+        task: 'query', image: `data:${contentType};base64,${btoa(binary)}`,
+        question: '逐字抄录图片中可见的中文、英文、数字、金额、网址和 Telegram 用户名。只输出图片文字，不要说明或评价。', reasoning: false,
+      });
+      const output = String(result?.answer || result?.response || result?.result || '').trim().slice(0, 4000);
+      if (output) {
+        this.write(`ocr:photo:${photo.file_unique_id}`, output, 30 * DAY);
+        this.log({ action: 'ocr', chatId: msg.chat.id, messageId: msg.message_id, outcome: 'success', text: output.slice(0, 300) });
+      }
+      return output;
+    } catch (error) {
+      this.log({ action: 'ocr', chatId: msg.chat.id, messageId: msg.message_id, outcome: 'failed', error: String(error.message || 'unknown error').slice(0, 200) });
+      return '';
+    }
+  }
   async monitorDmit() {
     const source = this.env.DMIT_PRICING_URL || 'https://www.dmit.io/pages/pricing';
     const channel = this.env.DMIT_NOTIFY_CHAT || '@jason_vps_deal';
@@ -255,10 +290,21 @@ export class GuardState extends DurableObject {
     const policy = await this.config();
     const joined = this.read(`join:${senderId}`, 0);
     const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
-    const sampleHits = sampleMatches(msg, await this.env.GUARD_STATE.getByName('admin').listSamples());
+    const sampleRules = await this.env.GUARD_STATE.getByName('admin').listSamples();
+    const sampleHits = sampleMatches(msg, sampleRules);
     if (sampleHits.length) {
       verdict.score = Math.max(7, verdict.score);
       verdict.reasons.push(`样本库：${sampleHits.slice(0, 3).map(sample => sample.label || sample.value).join('、')}`);
+    }
+    if (!sampleHits.some(sample => sample.kind === 'photo')) {
+      const ocrText = await this.ocr(msg, tg);
+      if (ocrText) {
+        const ocrMsg = { ...msg, text: [text, ocrText].filter(Boolean).join('\n') };
+        const ocrVerdict = classify(ocrMsg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
+        const ocrSampleHits = sampleMatches(ocrMsg, sampleRules, ocrText);
+        if (ocrSampleHits.length) { ocrVerdict.score = Math.max(7, ocrVerdict.score); ocrVerdict.reasons.push(`OCR 样本库：${ocrSampleHits.slice(0, 3).map(sample => sample.label || sample.value).join('、')}`); }
+        if (ocrVerdict.score > verdict.score) Object.assign(verdict, ocrVerdict);
+      }
     }
     let samples = this.read(`flood:${senderId}`, []).filter(x => x.at > Date.now() - 60000 && x.id !== msg.message_id);
     const fingerprint = normalize(text) || msg.sticker?.file_unique_id || msg.photo?.at(-1)?.file_unique_id || msg.document?.file_unique_id || msg.video?.file_unique_id || '';
