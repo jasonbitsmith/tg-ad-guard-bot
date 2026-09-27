@@ -232,9 +232,11 @@ export class GuardState extends DurableObject {
     } finally {
       this.running = false;
       const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
+      const verificationDue = this.sql.exec('SELECT expires FROM verifications ORDER BY expires LIMIT 1').toArray()[0]?.expires;
+      const due = [next, verificationDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];
       const config = await this.config();
       const fallback = config.quietEnabled ? Date.now() + 60000 : Date.now() + DAY;
-      await this.ctx.storage.setAlarm(next === null || next === undefined ? fallback : Math.max(Date.now() + 100, next));
+      await this.ctx.storage.setAlarm(due === undefined ? fallback : Math.max(Date.now() + 100, due));
     }
   }
   async runJob(job) {
@@ -261,7 +263,10 @@ export class GuardState extends DurableObject {
           if (op.method === 'restrictChatMember' && op.params.until_date && op.params.until_date < Date.now() / 1000 + 35) {
             op.skipped = '临时禁言时段已过';
           } else {
-            try { op.result = await tg(op.method, op.params); }
+            try {
+              op.result = await tg(op.method, op.params);
+              if (op.verificationPromptFor && Number.isSafeInteger(op.result?.message_id)) this.sql.exec('UPDATE verifications SET prompt_message_id=? WHERE user_id=?', op.result.message_id, String(op.verificationPromptFor));
+            }
             catch (error) {
               if (op.method === 'deleteMessage' && error.code === 400 && /message to delete not found/i.test(error.message)) op.result = { alreadyAbsent: true };
               else throw error;
@@ -364,7 +369,7 @@ export class GuardState extends DurableObject {
         started.push(member.id);
         ops.push({ method: 'restrictChatMember', params: { chat_id: chatId, user_id: member.id, permissions: this.verificationPermissions(), use_independent_chat_permissions: true } });
         const replyMarkup = verification.mode === 'channel' ? { reply_markup: { inline_keyboard: [[{ text: '✅ 我已订阅', callback_data: `verify:channel:${member.id}` }], [{ text: '前往频道订阅', url: `https://t.me/${verification.channel.slice(1)}` }]] } } : {};
-        ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, ...replyMarkup } });
+        ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, ...replyMarkup }, verificationPromptFor: member.id });
       }
       return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: started.length ? [`${this.verificationMode(config)} 验证已开启`] : undefined } } : empty;
     }
@@ -394,7 +399,10 @@ export class GuardState extends DurableObject {
       if (String(msg.text || '').trim() === pendingVerification.answer) {
         this.clearVerification(msg.from.id);
         const restore = await this.restoreMember(chatId, msg.from.id, tg);
-        return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-passed', outcome: 'pending', reasons: ['算术验证'] } };
+        const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
+        if (pendingVerification.prompt_message_id) ops.push({ method: 'deleteMessage', params: { chat_id: chatId, message_id: pendingVerification.prompt_message_id } });
+        ops.push(restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' } });
+        return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-passed', outcome: 'pending', reasons: ['算术验证'] } };
       }
       return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: ['算术答案不正确'] } };
     }
