@@ -39,10 +39,10 @@ async function admin(request, env, url) {
   const path = url.pathname.slice('/admin/api/'.length);
   if (path === 'login' && request.method === 'POST') {
     const ip = await digest(request.headers.get('CF-Connecting-IP') || 'unknown');
-    if (!await state.loginAttempt(ip)) return json({ error: '尝试过于频繁，请 15 分钟后再试' }, 429);
+    if (!await state.loginAllowed(ip)) return json({ error: '错误密码次数过多，请 15 分钟后再试' }, 429);
     let body;
     try { body = await readJson(request, 4096); } catch { return json({ error: '无效请求' }, 400); }
-    if (!await secureEqual(body.password, env.ADMIN_PASSWORD)) return json({ error: '密码错误' }, 401);
+    if (!await secureEqual(body.password, env.ADMIN_PASSWORD)) { await state.recordLoginFailure(ip); return json({ error: '密码错误' }, 401); }
     const session = crypto.randomUUID() + crypto.randomUUID();
     await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD));
     return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800` });

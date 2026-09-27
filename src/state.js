@@ -617,16 +617,15 @@ export class GuardState extends DurableObject {
     return { quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd, quietNotify: config.quietNotify };
   }
 
-  async loginAttempt(ip) {
+  async loginAllowed(ip) {
     await this.schedule(Date.now() + 900000);
     // Use a fixed 15-minute window. This preserves brute-force protection while
     // ensuring an expired attempt bucket can never keep a user locked out.
     const key = `login:${ip}:${Math.floor(Date.now() / 900000)}`;
     const count = this.read(key, 0);
-    if (count >= 10) return false;
-    this.write(key, count + 1, 900000);
-    return true;
+    return count < 10;
   }
+  async recordLoginFailure(ip) { const key = `login:${ip}:${Math.floor(Date.now() / 900000)}`; this.write(key, this.read(key, 0) + 1, 900000); }
   createSession(hash, passwordHash) { this.write(`session:${hash}`, passwordHash, 8 * 3600000); }
   hasSession(hash, passwordHash) { return this.read(`session:${hash}`) === passwordHash; }
   deleteSession(hash) { this.remove(`session:${hash}`); }
