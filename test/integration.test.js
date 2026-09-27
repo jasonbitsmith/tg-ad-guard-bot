@@ -163,6 +163,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await request('keywords/add',{chatId:-120,word:'本群测试词'})).status,200);
     assert.equal((await request('domains/deny/add',{chatId:-120,domain:'bad.example'})).status,200);
     assert.equal((await request('domains/allow/add',{chatId:-120,domain:'trusted.example'})).status,200);
+    assert.equal((await request('review/resolve',{chatId:-120,userId:66,messageId:123})).status,200);
+    assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-120&&c.params.user_id===66));
     const health=await (await request('status?all=1')).json();
     assert.ok(Array.isArray(health.groups) && health.groups.length >= 6);
     assert.equal((await request('welcome-rules',{chatId:-120,welcomeMessage:'欢迎 {name} 加入 {group}',rulesMessage:'禁止广告'})).status,200);

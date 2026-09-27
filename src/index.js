@@ -93,6 +93,19 @@ async function admin(request, env, url) {
   if (request.method === 'POST' && ['samples/add','samples/remove'].includes(path)) {
     return json({ samples: state.editSample(path.split('/')[1], await readJson(request, 4096)) });
   }
+  if (request.method === 'POST' && path === 'review/resolve') {
+    const body = await readJson(request, 4096);
+    const chatId = String(body.chatId), userId = Number(body.userId), messageId = Number(body.messageId);
+    group(env, chatId);
+    if (!Number.isSafeInteger(userId) || userId <= 0 || !Number.isSafeInteger(messageId) || messageId <= 0) throw new Error('无效的审查记录');
+    const tg = telegram(env.BOT_TOKEN);
+    await tg('deleteMessage', { chat_id: Number(chatId), message_id: messageId }).catch(error => { if (!(error.code === 400 && /message to delete not found/i.test(error.message))) throw error; });
+    await tg('banChatMember', { chat_id: Number(chatId), user_id: userId, until_date: 0 });
+    const targets = await state.federationTargets(chatId);
+    await Promise.all(targets.map(target => tg('banChatMember', { chat_id: Number(target), user_id: userId, until_date: 0 })));
+    state.log({ action: 'review-resolve-ban', actorId: 'web-admin', chatId, userId: String(userId), messageId, outcome: 'success', federationTargets: targets });
+    return json({ ok: true, federationTargets: targets.length });
+  }
   if (request.method === 'POST' && path === 'federation') {
     const body = await readJson(request, 4096);
     return json({ chats: state.setFederation(body.chatId, body.enabled === true) });
