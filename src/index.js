@@ -116,6 +116,11 @@ export default {
     let update;
     try { update = await readJson(request); } catch { return new Response('Bad Request', { status: 400 }); }
     if (!Number.isSafeInteger(update?.update_id)) return new Response('Bad Request', { status: 400 });
+    const membership = update.my_chat_member;
+    if (membership?.chat && ['group','supergroup'].includes(membership.chat.type) && membership.new_chat_member?.status !== 'kicked') {
+      try { await globalState(env).register(membership.chat); return new Response('OK'); }
+      catch { return new Response('Retry later', { status: 503 }); }
+    }
     const msg = update.message || update.edited_message || update.callback_query?.message;
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return new Response('OK');
     if (!Number.isSafeInteger(msg.message_id) || !Number.isSafeInteger(msg.chat.id) || msg.chat.id >= 0) return new Response('Bad Request', { status: 400 });
