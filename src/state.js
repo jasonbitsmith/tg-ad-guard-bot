@@ -52,6 +52,33 @@ export class GuardState extends DurableObject {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > when) await this.ctx.storage.setAlarm(when);
   }
+  quietActive(config, time) {
+    if (!config.quietEnabled || config.quietStart === config.quietEnd) return false;
+    return config.quietStart < config.quietEnd ? time >= config.quietStart && time < config.quietEnd : time >= config.quietStart || time < config.quietEnd;
+  }
+  async quietTick(time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date())) {
+    const config = await this.config();
+    if (!config.quietEnabled) return false;
+    const shouldMute = this.quietActive(config, time);
+    if (this.read('quiet:active', false) === shouldMute) return false;
+    const chat = this.read('chat');
+    if (!chat?.id) return false;
+    const tg = telegram(this.env.BOT_TOKEN);
+    if (shouldMute) {
+      const current = await tg('getChat', { chat_id: chat.id });
+      const permissions = current.permissions || { can_send_messages: true, can_send_audios: true, can_send_documents: true, can_send_photos: true, can_send_videos: true, can_send_video_notes: true, can_send_voice_notes: true, can_send_polls: true, can_send_other_messages: true, can_add_web_page_previews: true, can_change_info: false, can_invite_users: true, can_pin_messages: false, can_manage_topics: false };
+      this.write('quiet:baseline', permissions);
+      await tg('setChatPermissions', { chat_id: chat.id, permissions: { ...permissions, can_send_messages: false }, use_independent_chat_permissions: true });
+    } else {
+      const permissions = this.read('quiet:baseline');
+      if (!permissions) return false;
+      await tg('setChatPermissions', { chat_id: chat.id, permissions, use_independent_chat_permissions: true });
+      this.remove('quiet:baseline');
+    }
+    this.write('quiet:active', shouldMute);
+    this.log({ chatId: chat.id, chatTitle: chat.title || '', action: shouldMute ? 'quiet-started' : 'quiet-ended', outcome: 'success', reasons: [`北京时间 ${time}`] });
+    return true;
+  }
   async register(chat) {
     this.sql.exec('INSERT INTO chats VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title WHERE title != excluded.title', String(chat.id), String(chat.title || chat.id));
   }
@@ -195,10 +222,13 @@ export class GuardState extends DurableObject {
       this.sql.exec('DELETE FROM records WHERE expires<=?', Date.now());
       this.sql.exec("DELETE FROM jobs WHERE status!='pending' AND created<?", Date.now() - 7 * DAY);
       this.sql.exec('DELETE FROM logs WHERE ts<?', Date.now() - 30 * DAY);
+      await this.quietTick().catch(error => this.log({ action: 'quiet-switch', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
     } finally {
       this.running = false;
       const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
-      await this.ctx.storage.setAlarm(next === null || next === undefined ? Date.now() + DAY : Math.max(Date.now() + 100, next));
+      const config = await this.config();
+      const fallback = config.quietEnabled ? Date.now() + 60000 : Date.now() + DAY;
+      await this.ctx.storage.setAlarm(next === null || next === undefined ? fallback : Math.max(Date.now() + 100, next));
     }
   }
   async runJob(job) {
@@ -548,6 +578,18 @@ export class GuardState extends DurableObject {
     this.write('config', config);
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel };
+  }
+  async editQuiet(chat, enabled, start, end) {
+    const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+    if (typeof enabled !== 'boolean' || !valid(String(start)) || !valid(String(end))) throw new Error('请填写有效的 24 小时时间');
+    if (enabled && start === end) throw new Error('开始和结束时间不能相同');
+    const config = await this.config();
+    config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end;
+    this.write('config', config);
+    this.write('chat', { id: Number(chat.id), title: String(chat.title || chat.id) });
+    await this.schedule(Date.now() + 100);
+    this.log({ action: 'quiet-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${start}-${end}` });
+    return { quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd };
   }
 
   async loginAttempt(ip) {

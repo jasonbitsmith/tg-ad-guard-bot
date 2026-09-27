@@ -100,6 +100,17 @@ async function admin(request, env, url) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel));
   }
+  if (request.method === 'POST' && path === 'quiet') {
+    const body = await readJson(request, 4096);
+    const registered = await state.listChats();
+    const targets = body.scope === 'all' ? registered : registered.filter(item => item.id === String(body.chatId));
+    if (!targets.length && body.scope !== 'all') targets.push({ id: body.chatId, title: body.chatId });
+    if (!targets.length) throw new Error('暂无可设置的群');
+    const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end)));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    if (failed) throw new Error(`${failed} 个群保存失败，请稍后重试`);
+    return json({ updated: targets.length, config: results[0].value });
+  }
   return json({ error: 'Not found' }, 404);
 }
 
