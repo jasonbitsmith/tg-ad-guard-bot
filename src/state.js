@@ -447,7 +447,9 @@ export class GuardState extends DurableObject {
 
   async loginAttempt(ip) {
     await this.schedule(Date.now() + 900000);
-    const key = `login:${ip}`;
+    // Use a fixed 15-minute window. This preserves brute-force protection while
+    // ensuring an expired attempt bucket can never keep a user locked out.
+    const key = `login:${ip}:${Math.floor(Date.now() / 900000)}`;
     const count = this.read(key, 0);
     if (count >= 10) return false;
     this.write(key, count + 1, 900000);
