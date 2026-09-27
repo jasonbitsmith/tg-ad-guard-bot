@@ -55,6 +55,7 @@ async function admin(request, env, url) {
   if (request.method === 'GET') {
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'samples') return json({ samples: state.listSamples() });
+    if (path === 'federation') return json({ chats: state.federation() });
     if (path === 'logs') return json(await group(env, url.searchParams.get('chatId')).adminData(Number(url.searchParams.get('before')) || 0));
     if (path === 'keyword-stats') return json(await group(env, url.searchParams.get('chatId')).keywordStats());
     if (path === 'legacy') {
@@ -82,6 +83,10 @@ async function admin(request, env, url) {
   if (request.method === 'POST' && ['samples/add','samples/remove'].includes(path)) {
     return json({ samples: state.editSample(path.split('/')[1], await readJson(request, 4096)) });
   }
+  if (request.method === 'POST' && path === 'federation') {
+    const body = await readJson(request, 4096);
+    return json({ chats: state.setFederation(body.chatId, body.enabled === true) });
+  }
   if (request.method === 'POST' && ['domains/allow/add','domains/allow/remove','domains/deny/add','domains/deny/remove'].includes(path)) {
     const body = await readJson(request, 4096); const [, list, action] = path.split('/');
     return json(await group(env, body.chatId).editDomain(action, body.domain, list));
@@ -89,6 +94,10 @@ async function admin(request, env, url) {
   if (request.method === 'POST' && path === 'welcome-rules') {
     const body = await readJson(request, 8192);
     return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage));
+  }
+  if (request.method === 'POST' && path === 'verification') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel));
   }
   return json({ error: 'Not found' }, 404);
 }
@@ -107,7 +116,7 @@ export default {
     let update;
     try { update = await readJson(request); } catch { return new Response('Bad Request', { status: 400 }); }
     if (!Number.isSafeInteger(update?.update_id)) return new Response('Bad Request', { status: 400 });
-    const msg = update.message || update.edited_message;
+    const msg = update.message || update.edited_message || update.callback_query?.message;
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return new Response('OK');
     if (!Number.isSafeInteger(msg.message_id) || !Number.isSafeInteger(msg.chat.id) || msg.chat.id >= 0) return new Response('Bad Request', { status: 400 });
     try {

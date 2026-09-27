@@ -30,7 +30,9 @@ export class GuardState extends DurableObject {
       CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS logs_time ON logs(ts);
       CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, created INTEGER NOT NULL, UNIQUE(kind,value));`);
+      CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, created INTEGER NOT NULL, UNIQUE(kind,value));
+      CREATE TABLE IF NOT EXISTS federation (chat_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
+      CREATE TABLE IF NOT EXISTS verifications (user_id TEXT PRIMARY KEY, answer TEXT, prompt_message_id INTEGER, expires INTEGER NOT NULL, mode TEXT NOT NULL, channel TEXT);`);
     for (const chat of LEGACY_CHATS) {
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
@@ -54,6 +56,15 @@ export class GuardState extends DurableObject {
     this.sql.exec('INSERT INTO chats VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title WHERE title != excluded.title', String(chat.id), String(chat.title || chat.id));
   }
   listChats() { return this.sql.exec('SELECT * FROM chats ORDER BY title COLLATE NOCASE LIMIT 1000').toArray(); }
+  federation() { return this.sql.exec('SELECT chat_id FROM federation WHERE enabled=1 ORDER BY chat_id').toArray().map(row => row.chat_id); }
+  setFederation(chatId, enabled) {
+    if (!/^-[0-9]{1,16}$/.test(String(chatId))) throw new Error('无效群 ID');
+    if (enabled) this.sql.exec('INSERT OR REPLACE INTO federation(chat_id,enabled) VALUES (?,1)', String(chatId));
+    else this.sql.exec('DELETE FROM federation WHERE chat_id=?', String(chatId));
+    this.log({ action: enabled ? 'federation-join' : 'federation-leave', actorId: 'web-admin', chatId: String(chatId), outcome: 'success' });
+    return this.federation();
+  }
+  federationTargets(sourceChatId) { return this.federation().filter(chatId => chatId !== String(sourceChatId)); }
   listSamples() { return this.sql.exec('SELECT id,kind,value,label,created FROM samples ORDER BY id DESC LIMIT 300').toArray(); }
   editSample(action, body) {
     if (action === 'remove') { this.sql.exec('DELETE FROM samples WHERE id=?', Number(body.id)); return this.listSamples(); }
@@ -166,6 +177,21 @@ export class GuardState extends DurableObject {
         if (!job || job.due > Date.now()) break;
         await this.runJob(job);
       }
+      const expired = this.sql.exec('SELECT user_id,prompt_message_id,mode FROM verifications WHERE expires<=? LIMIT 50', Date.now()).toArray();
+      if (expired.length) {
+        const chat = this.read('chat'); const tg = telegram(this.env.BOT_TOKEN);
+        for (const pending of expired) {
+          try {
+            if (chat?.id) {
+              await tg('banChatMember', { chat_id: chat.id, user_id: Number(pending.user_id), until_date: 0 });
+              if (pending.prompt_message_id) await tg('deleteMessage', { chat_id: chat.id, message_id: pending.prompt_message_id }).catch(() => {});
+              this.log({ chatId: chat.id, chatTitle: chat.title || '', userId: pending.user_id, action: 'verification-timeout-ban', outcome: 'success', reasons: ['未在验证时限内完成验证'] });
+            }
+          } catch (error) {
+            this.log({ chatId: chat?.id, userId: pending.user_id, action: 'verification-timeout-ban', outcome: 'failed', error: String(error.message || '').slice(0, 200) });
+          } finally { this.clearVerification(pending.user_id); }
+        }
+      }
       this.sql.exec('DELETE FROM records WHERE expires<=?', Date.now());
       this.sql.exec("DELETE FROM jobs WHERE status!='pending' AND created<?", Date.now() - 7 * DAY);
       this.sql.exec('DELETE FROM logs WHERE ts<?', Date.now() - 30 * DAY);
@@ -179,7 +205,8 @@ export class GuardState extends DurableObject {
     let plan = job.plan ? JSON.parse(job.plan) : null;
     try {
       if (!plan) {
-        plan = await this.plan(JSON.parse(job.payload));
+        const update = JSON.parse(job.payload);
+        plan = update.callback_query ? await this.callbackPlan(update.callback_query) : await this.plan(update);
         // No await between state decisions and recording the plan.
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?', JSON.stringify(plan), job.id);
       }
@@ -215,7 +242,7 @@ export class GuardState extends DurableObject {
       const retry = error.retryable !== false && attempts < 6 && Date.now() - job.created < DAY;
       const delay = Math.max(Number(error.retryAfter || 0) * 1000, Math.min(300000, 2000 * 2 ** attempts));
       this.sql.exec('UPDATE jobs SET attempts=?,status=?,due=? WHERE id=?', attempts, retry ? 'pending' : 'failed', Date.now() + delay, job.id);
-      const msg = JSON.parse(job.payload).message || JSON.parse(job.payload).edited_message;
+      const failedUpdate = JSON.parse(job.payload); const msg = failedUpdate.message || failedUpdate.edited_message || failedUpdate.callback_query?.message;
       this.log({ ...(plan?.entry || {}), chatId: msg?.chat?.id, userId: msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
@@ -246,6 +273,36 @@ export class GuardState extends DurableObject {
   async member(tg, chatId, userId) {
     return tg('getChatMember', { chat_id: chatId, user_id: userId });
   }
+  verificationPermissions() {
+    return { can_send_messages: true, can_send_audios: false, can_send_documents: false, can_send_photos: false, can_send_videos: false, can_send_video_notes: false, can_send_voice_notes: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false, can_pin_messages: false, can_manage_topics: false };
+  }
+  verificationMode(config) { return ['math', 'channel'].includes(config.verificationMode) ? config.verificationMode : 'off'; }
+  async startVerification(member, msg, config, tg) {
+    const mode = this.verificationMode(config);
+    if (mode === 'off' || member.is_bot) return null;
+    const status = await this.member(tg, msg.chat.id, member.id);
+    if (ADMIN_STATUS.includes(status.status) || this.owners().includes(String(member.id))) return null;
+    const expires = Date.now() + Math.max(1, Math.min(60, Number(config.verificationMinutes || 10))) * 60000;
+    let answer = null, text;
+    if (mode === 'math') {
+      const left = 2 + Math.floor(Math.random() * 8), right = 1 + Math.floor(Math.random() * 8);
+      answer = String(left + right);
+      text = `🛡 新成员验证\n请在 ${Math.round((expires - Date.now()) / 60000)} 分钟内发送答案：${left} + ${right} = ?\n验证期间仅可发送文字；超时将自动封禁。`;
+    } else {
+      const channel = String(config.verificationChannel || '').trim();
+      if (!/^@[a-zA-Z0-9_]{5,}$/.test(channel)) return null;
+      text = `🛡 新成员验证\n请先订阅 ${channel}，再点击下方“我已订阅”完成验证。\n超时将自动封禁。`;
+    }
+    this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel) VALUES (?,?,?,?,?,?)', String(member.id), answer, null, expires, mode, mode === 'channel' ? config.verificationChannel.trim() : null);
+    return { member, mode, text, expires, channel: config.verificationChannel?.trim() || '' };
+  }
+  verification(userId) { return this.sql.exec('SELECT * FROM verifications WHERE user_id=?', String(userId)).toArray()[0]; }
+  clearVerification(userId) { this.sql.exec('DELETE FROM verifications WHERE user_id=?', String(userId)); }
+  async restoreMember(chatId, userId, tg) {
+    const chat = await tg('getChat', { chat_id: chatId });
+    if (!chat.permissions) throw new Error('无法读取群默认权限，未解除验证限制');
+    return { method: 'restrictChatMember', params: { chat_id: chatId, user_id: Number(userId), permissions: chat.permissions, use_independent_chat_permissions: true } };
+  }
   async privileged(tg, chatId, userId) {
     if (this.owners().includes(String(userId))) return true;
     // Do not interpret an API error as "not an admin".
@@ -263,7 +320,17 @@ export class GuardState extends DurableObject {
       const config = await this.config();
       const names = msg.new_chat_members.filter(member => !member.is_bot).map(member => [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员');
       const message = [config.welcomeMessage && config.welcomeMessage.replaceAll('{name}', names.join('、')).replaceAll('{group}', msg.chat.title || ''), config.rulesMessage && `群规：${config.rulesMessage}`].filter(Boolean).join('\n\n').slice(0, 4000);
-      return message ? { ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }], entry: { chatId, chatTitle: msg.chat.title || '', action: 'welcome-and-rules', outcome: 'pending' } } : empty;
+      const ops = message ? [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }] : [];
+      const started = [];
+      for (const member of msg.new_chat_members) {
+        const verification = await this.startVerification(member, msg, config, tg);
+        if (!verification) continue;
+        started.push(member.id);
+        ops.push({ method: 'restrictChatMember', params: { chat_id: chatId, user_id: member.id, permissions: this.verificationPermissions(), use_independent_chat_permissions: true } });
+        const replyMarkup = verification.mode === 'channel' ? { reply_markup: { inline_keyboard: [[{ text: '✅ 我已订阅', callback_data: `verify:channel:${member.id}` }], [{ text: '前往频道订阅', url: `https://t.me/${verification.channel.slice(1)}` }]] } } : {};
+        ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, ...replyMarkup } });
+      }
+      return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: started.length ? [`${this.verificationMode(config)} 验证已开启`] : undefined } } : empty;
     }
     // Anonymous group admins and automatic linked-channel posts are trusted separately.
     if (msg.sender_chat?.id === chatId || msg.is_automatic_forward) return empty;
@@ -285,6 +352,15 @@ export class GuardState extends DurableObject {
       if (this.owners().includes(String(msg.from.id))) return empty;
       membership = await this.member(tg, chatId, msg.from.id);
       if (ADMIN_STATUS.includes(membership.status)) return empty;
+    }
+    const pendingVerification = !msg.sender_chat && this.verification(msg.from.id);
+    if (pendingVerification?.mode === 'math') {
+      if (String(msg.text || '').trim() === pendingVerification.answer) {
+        this.clearVerification(msg.from.id);
+        const restore = await this.restoreMember(chatId, msg.from.id, tg);
+        return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-passed', outcome: 'pending', reasons: ['算术验证'] } };
+      }
+      return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: ['算术答案不正确'] } };
     }
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
@@ -337,8 +413,24 @@ export class GuardState extends DurableObject {
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     }
     ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
+    const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
+    for (const targetChatId of federationTargets) ops.push({ method: 'banChatMember', params: { chat_id: Number(targetChatId), user_id: msg.from.id, until_date: 0 } });
     ops.push({ local: 'processed', messageId: msg.message_id });
-    return { ops, entry: { ...entry, action: 'delete-and-permanent-ban' } };
+    return { ops, entry: { ...entry, action: federationTargets.length ? 'delete-and-federated-permanent-ban' : 'delete-and-permanent-ban', federationTargets } };
+  }
+
+  async callbackPlan(callback) {
+    const message = callback?.message;
+    const match = /^verify:channel:(\d{1,16})$/.exec(String(callback?.data || ''));
+    if (!match || !message?.chat || String(callback.from?.id) !== match[1]) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '验证请求无效。', show_alert: true } }] };
+    const pending = this.verification(callback.from.id);
+    if (!pending || pending.mode !== 'channel' || !pending.channel) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '该验证已失效，请联系管理员。', show_alert: true } }] };
+    const tg = telegram(this.env.BOT_TOKEN);
+    const joined = await this.member(tg, pending.channel, callback.from.id).catch(() => null);
+    if (!joined || ['left', 'kicked'].includes(joined.status)) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: `请先订阅 ${pending.channel} 后再验证。`, show_alert: true } }] };
+    this.clearVerification(callback.from.id);
+    const restore = await this.restoreMember(message.chat.id, callback.from.id, tg);
+    return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '验证通过，欢迎加入！' } }, restore, { method: 'deleteMessage', params: { chat_id: message.chat.id, message_id: message.message_id } }], entry: { chatId: message.chat.id, chatTitle: message.chat.title || '', userId: callback.from.id, action: 'verification-passed', outcome: 'pending', reasons: [`频道验证：${pending.channel}`] } };
   }
 
   async commandPlan({ command, arg }, msg, tg) {
@@ -443,6 +535,18 @@ export class GuardState extends DurableObject {
     this.write('config', config);
     this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
     return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage };
+  }
+  async editVerification(mode, minutes, channel) {
+    if (!['off', 'math', 'channel'].includes(mode)) throw new Error('无效验证方式');
+    const value = Math.max(1, Math.min(60, Number(minutes)));
+    if (!Number.isInteger(value)) throw new Error('验证时限须为 1–60 分钟');
+    const normalizedChannel = String(channel || '').trim();
+    if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(normalizedChannel)) throw new Error('频道验证请填写公开频道用户名，例如 @jason_vps_deal');
+    const config = await this.config();
+    config.verificationMode = mode; config.verificationMinutes = value; config.verificationChannel = mode === 'channel' ? normalizedChannel : '';
+    this.write('config', config);
+    this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}` });
+    return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel };
   }
 
   async loginAttempt(ip) {

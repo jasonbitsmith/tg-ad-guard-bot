@@ -4,10 +4,12 @@ export const ADMIN_PAGE = `<!doctype html>
 <body><header class="brand"><div class="brand-mark">🛡</div><div><h1>群管理后台</h1><p>Telegram 社群安全控制台</p></div></header><div class="login-wrap"><section id="login"><p class="login-kicker">SECURE ACCESS</p><h2 class="login-title">欢迎回来</h2><p class="login-subtitle">登录后管理群规则、广告样本与拦截记录。</p><form id="loginForm"><label class="password-label">管理密码 <div class="password-field"><span>⌁</span><input id="password" type="password" autocomplete="current-password" placeholder="输入管理密码" required></div></label><button class="login-button">安全登录</button></form><p class="login-meta">会话有效期 8 小时，密码不会保存在浏览器。</p></section></div>
 <p id="error" role="alert"></p><section id="app" class="hidden"><div class="app-toolbar"><p class="muted">广告命中后立即删除消息并永久封禁账号</p><div><button id="health">运行自检</button><button id="logout">退出登录</button></div></div><pre id="healthResult"></pre>
 <h2>全局广告样本库</h2><p class="muted">样本命中后，所有群都会直接删除消息并永久封禁账号。文字样本支持拆词归一化；域名匹配子域名；图片指纹填 Telegram 处理记录里的 file_unique_id。</p><form id="sampleForm"><select id="sampleKind"><option value="text">广告文案</option><option value="domain">广告域名</option><option value="photo">图片指纹</option></select><input id="sampleValue" maxlength="500" placeholder="文案、域名或 file_unique_id" required><input id="sampleLabel" maxlength="120" placeholder="备注（可选）"><button>加入样本库</button></form><div id="samples"></div>
+<h2>Jason 群组联防</h2><p class="muted">加入联防的群：任一群识别并永久封禁广告账号后，机器人会同步封禁到其他加入联防的群。仅同步自动广告封禁，不同步手动操作。</p><div id="federation"></div>
 <p><label>选择群 <select id="chats"><option value="">请选择</option></select></label><label>或输入群 ID <input id="chatId" placeholder="-100…"></label><button id="load">查看</button></p>
 <p class="muted">已从旧版拦截记录导入已知群。新群会在机器人收到消息或管理员发送 <code>/status</code> 后自动出现；Telegram 不提供机器人直接列出全部所在群的接口，也可直接填写群 ID。规则仅影响选中的群。</p>
 <h2>本群关键词</h2><p class="muted">黑名单关键词命中后立即删消息；请只添加明确禁止的广告词。</p><form id="wordForm"><input id="word" maxlength="80" placeholder="新关键词" required><button>添加</button></form><div id="keywords"></div>
 <h2>欢迎语与群规</h2><p class="muted">新成员加入时发送。可使用 <code>{name}</code> 表示新成员姓名，<code>{group}</code> 表示群名称；两项都留空则不发送。</p><form id="welcomeForm"><label>欢迎语<textarea id="welcomeMessage" maxlength="2500" placeholder="欢迎 {name} 加入 {group}！"></textarea></label><label>群规<textarea id="rulesMessage" maxlength="2500" placeholder="请文明交流，禁止广告与诈骗。"></textarea></label><button>保存欢迎语和群规</button></form>
+<h2>新成员验证</h2><p class="muted">验证期间只允许发送文字答案；未在时限内完成验证的账号将直接永久封禁。频道验证要求机器人是验证频道管理员，且拥有查看成员资格的权限。</p><form id="verificationForm"><select id="verificationMode"><option value="off">关闭验证</option><option value="math">算术验证</option><option value="channel">频道订阅验证</option></select><input id="verificationMinutes" type="number" min="1" max="60" value="10" required> 分钟 <input id="verificationChannel" placeholder="频道用户名，如 @jason_vps_deal"><button>保存验证设置</button></form>
 <h2>链接域名名单</h2><p class="muted">黑名单域名会直接删除并计警告；白名单域名不因“含链接”本身加分，但其他广告特征仍会处理。子域名也会匹配。</p><form id="domainForm"><select id="domainList"><option value="deny">黑名单</option><option value="allow">白名单</option></select><input id="domain" maxlength="253" placeholder="example.com" required><button>添加域名</button></form><p><strong>黑名单</strong></p><div id="denyDomains"></div><p><strong>白名单</strong></p><div id="allowDomains"></div>
 <h2>关键词命中统计</h2><p id="keywordStats" class="muted">选择群后加载近 30 天统计。</p>
 <h2>处理记录</h2><p id="summary"></p><button id="legacy">查看旧版记录</button><button id="refresh">刷新新版记录</button><div id="logs"></div><button id="more" disabled>加载更多</button>
@@ -27,14 +29,16 @@ async function api(path, body) {
 function safe(fn) { return async e => { e?.preventDefault(); $('error').textContent=''; try{await fn(e);}catch(err){$('error').textContent=err.message;} }; }
 function chat() { const id=$('chatId').value.trim(); if(!/^-[0-9]+$/.test(id))throw Error('请选择群或输入有效的负数群 ID'); return id; }
 async function enter() {
-  const [chatData,sampleData]=await Promise.all([api('chats'),api('samples')]);
+  const [chatData,sampleData,federationData]=await Promise.all([api('chats'),api('samples'),api('federation')]);
   const chats=Array.isArray(chatData?.chats)?chatData.chats:[];
   const samples=Array.isArray(sampleData?.samples)?sampleData.samples:[];
   $('chats').replaceChildren(new Option('请选择',''),...chats.map(c=>new Option(c.title+' ('+c.id+')',c.id)));
   renderSamples(samples);
+  renderFederation(chats,Array.isArray(federationData?.chats)?federationData.chats:[]);
   $('login').classList.add('hidden');document.body.classList.add('authenticated');$('app').classList.remove('hidden');
 }
 function renderSamples(samples) { $('samples').replaceChildren(...(Array.isArray(samples)?samples:[]).map(sample=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent='['+sample.kind+'] '+(sample.label?sample.label+'：':'')+sample.value;const b=document.createElement('button');b.textContent='×';b.title='移除样本';b.onclick=safe(async()=>{renderSamples((await api('samples/remove',{id:sample.id})).samples);});s.append(label,b);return s;})); }
+function renderFederation(chats,active) { const enabled=new Set(active);$('federation').replaceChildren(...chats.map(item=>{const label=document.createElement('label');const box=document.createElement('input');box.type='checkbox';box.checked=enabled.has(item.id);box.onchange=safe(async()=>{const data=await api('federation',{chatId:item.id,enabled:box.checked});renderFederation(chats,data.chats);});label.append(box,' '+item.title);return label;})); }
 function renderWords(words) {
   $('keywords').replaceChildren(...words.map(word=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent=word;const b=document.createElement('button');b.textContent='×';b.title='移除关键词';b.onclick=safe(async()=>{await api('keywords/remove',{chatId:chat(),word});await load();});s.append(label,b);return s;}));
 }
@@ -44,6 +48,7 @@ function renderDomains(id, domains, list) {
 function renderConfig(config) {
   renderWords(config.keywords);renderDomains('denyDomains',config.domainDenylist||[],'deny');renderDomains('allowDomains',config.domainAllowlist||[],'allow');
   $('welcomeMessage').value=config.welcomeMessage||'';$('rulesMessage').value=config.rulesMessage||'';
+  $('verificationMode').value=config.verificationMode||'off';$('verificationMinutes').value=config.verificationMinutes||10;$('verificationChannel').value=config.verificationChannel||'';
 }
 function renderStats(stats) { $('keywordStats').textContent=stats.keywords.length ? '近 '+stats.periodDays+' 天共命中 '+stats.total+' 次：'+stats.keywords.map(x=>x.word+' '+x.count).join(' · ') : '近 '+stats.periodDays+' 天暂无关键词命中记录。'; }
 function renderLogs(logs,append) {
@@ -67,6 +72,7 @@ $('wordForm').onsubmit=safe(async()=>{await api('keywords/add',{chatId:chat(),wo
 $('sampleForm').onsubmit=safe(async()=>{const data=await api('samples/add',{kind:$('sampleKind').value,value:$('sampleValue').value,label:$('sampleLabel').value});$('sampleValue').value='';$('sampleLabel').value='';renderSamples(data.samples);});
 $('domainForm').onsubmit=safe(async()=>{const list=$('domainList').value;await api('domains/'+list+'/add',{chatId:chat(),domain:$('domain').value});$('domain').value='';legacy=false;await load();});
 $('welcomeForm').onsubmit=safe(async()=>{await api('welcome-rules',{chatId:chat(),welcomeMessage:$('welcomeMessage').value,rulesMessage:$('rulesMessage').value});legacy=false;await load();});
+$('verificationForm').onsubmit=safe(async()=>{await api('verification',{chatId:chat(),mode:$('verificationMode').value,minutes:Number($('verificationMinutes').value),channel:$('verificationChannel').value});legacy=false;await load();});
 $('health').onclick=safe(async()=>{$('healthResult').textContent=JSON.stringify(await api('status'+($('chatId').value.trim()?'?chatId='+encodeURIComponent(chat()):'')),null,2);});
 // 未登录时后台接口返回 401 属于正常状态；不要在登录前显示为错误。
 enter().catch(() => {});

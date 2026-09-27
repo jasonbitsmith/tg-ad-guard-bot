@@ -167,4 +167,24 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const stats=await (await request('keyword-stats?chatId=-130')).json();assert.ok(stats.keywords.some(x=>x.word==='本群测试词'&&x.count===1));
     assert.ok(result.data.logs.some(x=>x.domains?.includes('sub.spam.example')));
   });
+  await t.test('联防同步广告封禁，算术验证通过后解除限制', async () => {
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('set-cookie').split(';')[0];
+    const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+    await request('federation',{chatId:-140,enabled:true});await request('federation',{chatId:-141,enabled:true});
+    await send(update(-140,'兼职招聘 私聊我',{from:{id:77,first_name:'广告号'}}));await tick(-140);
+    assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-141&&c.params.user_id===77));
+    await request('verification',{chatId:-142,mode:'math',minutes:10,channel:''});
+    await send(update(-142,'',{new_chat_members:[{id:44,first_name:'新人'}]}));await tick(-142);
+    const verification=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-142&&c.params.text.includes('新成员验证'));
+    assert.ok(verification);const answer=/= \?/.test(verification.params.text)?verification.params.text.match(/(\d+) \+ (\d+)/):null;
+    assert.ok(answer);await send(update(-142,String(Number(answer[1])+Number(answer[2])),{from:{id:44,first_name:'新人'}}));await tick(-142);
+    assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-142&&c.params.user_id===44&&c.params.permissions.can_send_photos===false));
+    assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-142&&c.params.user_id===44&&c.params.permissions.can_send_photos===false&&c.params.permissions.can_send_messages===true));
+    await request('verification',{chatId:-143,mode:'channel',minutes:10,channel:'@jason_vps_deal'});
+    await send(update(-143,'',{new_chat_members:[{id:45,first_name:'订阅者'}]}));await tick(-143);
+    const callback={update_id:++seq,callback_query:{id:'verify-45',from:{id:45,first_name:'订阅者'},data:'verify:channel:45',message:{message_id:999,chat:{id:-143,type:'supergroup',title:'测试群'}}}};
+    await send(callback);await tick(-143);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='verify-45'));
+  });
 });
