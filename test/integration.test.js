@@ -222,5 +222,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-145,'',{new_chat_members:[{id:61,first_name:'引流号'}]}));await tick(-145);
     await send(update(-145,'看看 https://example.org',{from:{id:61,first_name:'引流号'}}));await tick(-145);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-145&&c.params.user_id===61));
+    await request('new-member-media-guard',{chatId:-146,enabled:true,minutes:30});
+    await send(update(-146,'',{new_chat_members:[{id:62,first_name:'发图号'}]}));await tick(-146);
+    await send(update(-146,'',{from:{id:62,first_name:'发图号'},animation:{file_unique_id:'plain-animation'}}));await tick(-146);
+    assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-146));
+    assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-146&&c.params.user_id===62));
   });
 });

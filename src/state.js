@@ -473,6 +473,8 @@ export class GuardState extends DurableObject {
     const joined = this.read(`join:${senderId}`, 0);
     const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
     const linkQuarantine = policy.newMemberLinkGuard && joined > Date.now() - policy.newMemberLinkMinutes * 60000 && verdict.hasLink;
+    const hasMedia = !!(msg.photo?.length || msg.video || msg.animation || msg.document || msg.audio || msg.voice || msg.video_note || msg.sticker);
+    const mediaQuarantine = policy.newMemberMediaGuard && joined > Date.now() - policy.newMemberMediaMinutes * 60000 && hasMedia;
     if (linkQuarantine) { verdict.score = Math.max(4, verdict.score); verdict.reasons.push(`新成员链接隔离（入群 ${policy.newMemberLinkMinutes} 分钟内）`); }
     const sampleRules = await this.env.GUARD_STATE.getByName('admin').listSamples();
     const sampleHits = sampleMatches(msg, sampleRules);
@@ -512,8 +514,9 @@ export class GuardState extends DurableObject {
         verdict.reasons.push('10 分钟内多个账号重复相同内容');
       }
     }
-    if (!verdict.score && !verdict.deleteOnKeyword) return empty;
+    if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine) return empty;
     const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
+    if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, `新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
     if (msg.sender_chat) {
@@ -684,6 +687,15 @@ export class GuardState extends DurableObject {
     this.saveConfig(config, '新人链接隔离');
     this.log({ action: 'new-member-link-guard-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${duration}` });
     return { newMemberLinkGuard: config.newMemberLinkGuard, newMemberLinkMinutes: config.newMemberLinkMinutes };
+  }
+  async editNewMemberMediaGuard(enabled, minutes) {
+    const duration = Number(minutes);
+    if (typeof enabled !== 'boolean' || !Number.isInteger(duration) || duration < 1 || duration > 1440) throw new Error('媒体隔离时长须为 1–1440 分钟');
+    const config = await this.config();
+    config.newMemberMediaGuard = enabled; config.newMemberMediaMinutes = duration;
+    this.saveConfig(config, '新人媒体隔离');
+    this.log({ action: 'new-member-media-guard-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${duration}` });
+    return { newMemberMediaGuard: config.newMemberMediaGuard, newMemberMediaMinutes: config.newMemberMediaMinutes };
   }
   async editQuiet(chat, enabled, start, end, notify) {
     const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);

@@ -130,6 +130,10 @@ async function admin(request, env, url) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editNewMemberLinkGuard(body.enabled, body.minutes));
   }
+  if (request.method === 'POST' && path === 'new-member-media-guard') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).editNewMemberMediaGuard(body.enabled, body.minutes));
+  }
   if (request.method === 'POST' && path === 'config/restore') {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).restoreConfig(body.versionId));
