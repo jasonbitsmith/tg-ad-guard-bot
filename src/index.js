@@ -7,6 +7,7 @@ const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
+const owners = env => new Set((env.ADMIN_IDS || '').split(',').map(id => id.trim()).filter(Boolean));
 function group(env, id) {
   if (!/^-[0-9]{1,16}$/.test(String(id)) || !Number.isSafeInteger(Number(id))) throw new Error('无效群 ID');
   return env.GUARD_STATE.getByName('chat:' + id);
@@ -120,6 +121,20 @@ export default {
     if (membership?.chat && ['group','supergroup'].includes(membership.chat.type) && membership.new_chat_member?.status !== 'kicked') {
       try { await globalState(env).register(membership.chat); return new Response('OK'); }
       catch { return new Response('Retry later', { status: 503 }); }
+    }
+    // Telegram does not expose an API to enumerate a bot's existing groups.
+    // An owner can forward any message from an already-added group to the bot
+    // privately; Telegram supplies the original chat metadata server-side.
+    const privateMessage = update.message;
+    if (privateMessage?.chat?.type === 'private' && owners(env).has(String(privateMessage.from?.id))) {
+      const forwardedChat = privateMessage.forward_origin?.chat || privateMessage.forward_from_chat;
+      if (forwardedChat && ['group', 'supergroup'].includes(forwardedChat.type) && Number.isSafeInteger(forwardedChat.id) && forwardedChat.id < 0) {
+        try {
+          await globalState(env).register(forwardedChat);
+          await telegram(env.BOT_TOKEN)('sendMessage', { chat_id: privateMessage.chat.id, text: `✅ 已登记群：${forwardedChat.title || forwardedChat.id}。现在可在管理后台选择它。` });
+          return new Response('OK');
+        } catch { return new Response('Retry later', { status: 503 }); }
+      }
     }
     const msg = update.message || update.edited_message || update.callback_query?.message;
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return new Response('OK');

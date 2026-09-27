@@ -59,6 +59,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
     assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567890'&&chat.title==='新加入测试群'));
   });
+  await t.test('所有者私聊转发已有群消息时登记该群', async () => {
+    const forwarded = { update_id: 2, message: { message_id: 2, date: Math.floor(Date.now() / 1000), chat: { id: 99, type: 'private' }, from: { id: 99 }, forward_origin: { type: 'chat', chat: { id: -1009999999999, type: 'supergroup', title: '转发登记群' } } } };
+    const response = await mf.dispatchFetch('https://bot.test/webhook/path', { method: 'POST', headers: { 'X-Telegram-Bot-Api-Secret-Token': 'verify' }, body: JSON.stringify(forwarded) });
+    assert.equal(response.status, 200);
+    const state = await mf.getDurableObjectNamespace('GUARD_STATE');
+    assert.ok((await state.getByName('admin').listChats()).some(chat => chat.id === '-1009999999999' && chat.title === '转发登记群'));
+    assert.ok(calls.some(call => call.method === 'sendMessage' && call.params.chat_id === 99));
+  });
   let seq = 0;
   function update(chatId, text, extra = {}) { const n = ++seq; return { update_id: n, message: { message_id: n, date: Math.floor(Date.now()/1000), chat: { id: chatId, type: 'supergroup', title: '测试群' }, from: { id: 7, first_name: '测试用户' }, text, ...extra } }; }
   const send = u => mf.dispatchFetch('https://bot.test/webhook/path', { method: 'POST', headers: { 'X-Telegram-Bot-Api-Secret-Token': 'verify' }, body: JSON.stringify(u) });
