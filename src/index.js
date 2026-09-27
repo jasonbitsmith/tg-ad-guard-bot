@@ -69,12 +69,21 @@ async function admin(request, env, url) {
       const me = await tg('getMe');
       const webhook = await tg('getWebhookInfo');
       let permissions;
-      if (url.searchParams.has('chatId')) {
+      let groups;
+      if (url.searchParams.get('all') === '1') {
+        const chats = await state.listChats();
+        groups = await Promise.all(chats.map(async chat => {
+          try {
+            const member = await tg('getChatMember', { chat_id: Number(chat.id), user_id: me.id });
+            return { id: chat.id, title: chat.title, status: member.status, deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, ok: !!member.can_delete_messages && !!member.can_restrict_members };
+          } catch (error) { return { id: chat.id, title: chat.title, ok: false, error: '无法读取机器人权限' }; }
+        }));
+      } else if (url.searchParams.has('chatId')) {
         const chatId = url.searchParams.get('chatId'); group(env, chatId);
         const member = await tg('getChatMember', { chat_id: Number(chatId), user_id: me.id });
         permissions = { deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, status: member.status };
       }
-      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, dmitMonitor: await state.dmitStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
+      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, groups, dmitMonitor: await state.dmitStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
     }
   }
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {

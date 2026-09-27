@@ -163,6 +163,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await request('keywords/add',{chatId:-120,word:'本群测试词'})).status,200);
     assert.equal((await request('domains/deny/add',{chatId:-120,domain:'bad.example'})).status,200);
     assert.equal((await request('domains/allow/add',{chatId:-120,domain:'trusted.example'})).status,200);
+    const health=await (await request('status?all=1')).json();
+    assert.ok(Array.isArray(health.groups) && health.groups.length >= 6);
     assert.equal((await request('welcome-rules',{chatId:-120,welcomeMessage:'欢迎 {name} 加入 {group}',rulesMessage:'禁止广告'})).status,200);
     const a=await (await request('logs?chatId=-120')).json(),b=await (await request('logs?chatId=-121')).json();
     assert.ok(a.config.keywords.includes('本群测试词'));assert.ok(a.config.domainDenylist.includes('bad.example'));assert.ok(a.config.domainAllowlist.includes('trusted.example'));assert.equal(a.config.welcomeMessage,'欢迎 {name} 加入 {group}');assert.ok(!b.config.keywords.includes('本群测试词'));
