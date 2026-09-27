@@ -41,6 +41,12 @@ test('拍照日结兼职招揽会被处理', () => {
   assert.ok(classify(msg('日结 700，拍照即可做'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('拍照留档，日结费用已报销'), DEFAULT_KEYWORDS).score < 4);
 });
+test('码多来收益刷屏模板首条即永久封禁', () => {
+  assert.equal(classify(msg('码多来捡钱 一小时1000'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('码多来干 挣9q'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.ok(classify(msg('码多来捡钱 一小时1000'), DEFAULT_KEYWORDS).score >= 4);
+  assert.equal(classify(msg('今天写了很多代码来完成任务'), DEFAULT_KEYWORDS).permanentBan, false);
+});
 test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
   assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/path'), 'example.com');

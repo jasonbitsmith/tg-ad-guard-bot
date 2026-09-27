@@ -48,6 +48,10 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const recruitmentSlogan = /(?:有码.{0,8}吃肉|(?:帮我|来)?收米|招代收|代收招募|来吃肉|带你吃肉|项目招募|团队招募)/.test(body);
   const dailyIncome = /(?:一天|每日|日赚|日入).{0,4}\d+(?:\.\d+)?\s*(?:k|w|千|万)/i.test(body);
   const photoGigPitch = /(?:拍\s*照.{0,8}兼职.{0,12}(?:日\s*结|当天结)|(?:日\s*结|当天结).{0,16}拍\s*照.{0,8}(?:兼职|即可做|赚钱|收入))/.test(body);
+  // Confirmed repeated scam campaign. These accounts use the unusual "码多来"
+  // lead-in and rotate only the claimed hourly/daily payout, so a link or
+  // contact handle cannot be required before removing the first message.
+  const codeMoneyPitch = /(?:码多来.{0,16}捡钱.{0,16}(?:一\s*小时\s*\d+|\d+\s*(?:q|k|w|千|万))|码多来.{0,16}(?:干.{0,12})?挣\s*\d+\s*(?:q|k|w|千|万))/i.test(body);
   // Product-card pitches aimed at cross-border sellers are commonly posted as
   // bare text, with the seller asking interested members to contact them later.
   // Require both the product language and a platform name so ordinary platform
@@ -68,13 +72,14 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (scamPitch) add(2, '包含收益承诺或高风险招揽话术');
   if (recruitmentSlogan && dailyIncome) add(4, '包含招揽口号和日收入承诺');
   if (photoGigPitch) add(4, '包含拍照日结兼职招揽');
+  if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || codeMoneyPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
