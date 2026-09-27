@@ -381,9 +381,10 @@ export class GuardState extends DurableObject {
     if (!msg.sender_chat && text.startsWith('/')) {
       const me = await this.me(tg);
       const command = parseCommand(text, me.username || '');
-      if (command && ['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','ban','kick'].includes(command.command)) {
+      if (command && ['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','ban','kick','report'].includes(command.command)) {
         // Editing an old command must not re-run a destructive operation.
         if (update.edited_message) return empty;
+        if (command.command === 'report') return this.reportPlan(msg, tg, command.arg);
         if (await this.privileged(tg, chatId, msg.from.id)) return this.commandPlan(command, msg, tg);
         // Non-admin slash commands still pass through spam detection.
       }
@@ -475,6 +476,16 @@ export class GuardState extends DurableObject {
     this.clearVerification(callback.from.id);
     const restore = await this.restoreMember(message.chat.id, callback.from.id, tg);
     return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '验证通过，欢迎加入！' } }, restore, { method: 'deleteMessage', params: { chat_id: message.chat.id, message_id: message.message_id } }], entry: { chatId: message.chat.id, chatTitle: message.chat.title || '', userId: callback.from.id, action: 'verification-passed', outcome: 'pending', reasons: [`频道验证：${pending.channel}`] } };
+  }
+
+  async reportPlan(msg, tg, reason = '') {
+    const target = msg.reply_to_message;
+    const reply = text => ({ ops: [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { method: 'sendMessage', params: { chat_id: msg.chat.id, text } }], entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', actorId: msg.from.id, action: 'user-report', outcome: 'pending' } });
+    if (!target?.from?.id || target.from.is_bot || target.sender_chat) return reply('请回复需要举报的普通用户消息后发送 /report。');
+    if (target.from.id === msg.from.id) return reply('不能举报自己的消息。');
+    const member = await this.member(tg, msg.chat.id, target.from.id);
+    if (ADMIN_STATUS.includes(member.status) || this.owners().includes(String(target.from.id))) return reply('不能举报群管理员或机器人所有者。');
+    return { ops: [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { method: 'sendMessage', params: { chat_id: msg.chat.id, text: '✅ 举报已记录，管理员会在后台处理。' } }], entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', actorId: msg.from.id, userId: target.from.id, messageId: target.message_id, action: 'user-report', outcome: 'success', text: (target.text || target.caption || '').slice(0, 300), reasons: [reason.slice(0, 100) || '成员举报'] } };
   }
 
   async commandPlan({ command, arg }, msg, tg) {

@@ -14,7 +14,7 @@ export const ADMIN_PAGE = `<!doctype html>
 <h2>链接域名名单</h2><p class="muted">黑名单域名会直接删除并计警告；白名单域名不因“含链接”本身加分，但其他广告特征仍会处理。子域名也会匹配。</p><form id="domainForm"><select id="domainList"><option value="deny">黑名单</option><option value="allow">白名单</option></select><input id="domain" maxlength="253" placeholder="example.com" required><button>添加域名</button></form><p><strong>黑名单</strong></p><div id="denyDomains"></div><p><strong>白名单</strong></p><div id="allowDomains"></div>
 <h2>关键词命中统计</h2><p id="keywordStats" class="muted">选择群后加载近 30 天统计。</p>
 <h2>处理记录</h2><p id="summary"></p><button id="legacy">查看旧版记录</button><button id="refresh">刷新新版记录</button><div id="logs"></div><button id="more" disabled>加载更多</button>
-<h2>纠错指令</h2><p>在群内回复用户消息，或填写用户 ID：<code>/warnings</code> 查看警告；<code>/clearwarn</code> 清除警告；<code>/allow</code> 加白名单；<code>/unallow</code> 移出白名单；<code>/unmute</code> 解除禁言；<code>/unban</code> 解除封禁。白名单不会自动解除已有处罚，解除封禁也不能恢复已删除的消息。</p></section><script src="/admin/app.js"></script></body></html>`;
+<h2>成员举报</h2><p>成员可回复可疑消息发送 <code>/report</code>（可附原因）。举报会进入本群处理记录，管理员可据此使用 <code>/ban</code> 处理。</p><h2>纠错指令</h2><p>在群内回复用户消息，或填写用户 ID：<code>/warnings</code> 查看警告；<code>/clearwarn</code> 清除警告；<code>/allow</code> 加白名单；<code>/unallow</code> 移出白名单；<code>/unmute</code> 解除禁言；<code>/unban</code> 解除封禁。白名单不会自动解除已有处罚，解除封禁也不能恢复已删除的消息。</p></section><script src="/admin/app.js"></script></body></html>`;
 
 export const ADMIN_JS = `
 localStorage.removeItem('tg_ad_guard_admin_pw');
