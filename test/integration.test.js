@@ -175,6 +175,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await request('welcome-rules',{chatId:-120,welcomeMessage:'欢迎 {name} 加入 {group}',rulesMessage:'禁止广告'})).status,200);
     const a=await (await request('logs?chatId=-120')).json(),b=await (await request('logs?chatId=-121')).json();
     assert.ok(a.config.keywords.includes('本群测试词'));assert.ok(a.config.domainDenylist.includes('bad.example'));assert.ok(a.config.domainAllowlist.includes('trusted.example'));assert.equal(a.config.welcomeMessage,'欢迎 {name} 加入 {group}');assert.ok(!b.config.keywords.includes('本群测试词'));
+    assert.ok(a.versions.length >= 1);const restored=await (await request('config/restore',{chatId:-120,versionId:a.versions[0].id})).json();assert.ok(Array.isArray(restored.versions));
     await request('logout',{});assert.equal((await request('chats')).status,401);
   });
   await t.test('欢迎语、群规、域名黑名单和关键词统计按群生效', async () => {

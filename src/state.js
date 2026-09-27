@@ -32,7 +32,8 @@ export class GuardState extends DurableObject {
       CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, created INTEGER NOT NULL, UNIQUE(kind,value));
       CREATE TABLE IF NOT EXISTS federation (chat_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
-      CREATE TABLE IF NOT EXISTS verifications (user_id TEXT PRIMARY KEY, answer TEXT, prompt_message_id INTEGER, expires INTEGER NOT NULL, mode TEXT NOT NULL, channel TEXT);`);
+      CREATE TABLE IF NOT EXISTS verifications (user_id TEXT PRIMARY KEY, answer TEXT, prompt_message_id INTEGER, expires INTEGER NOT NULL, mode TEXT NOT NULL, channel TEXT);
+      CREATE TABLE IF NOT EXISTS config_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, reason TEXT NOT NULL, config TEXT NOT NULL);`);
     for (const chat of LEGACY_CHATS) {
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
@@ -43,6 +44,23 @@ export class GuardState extends DurableObject {
   }
   write(key, value, ttl = 3650 * DAY) {
     this.sql.exec('INSERT OR REPLACE INTO records VALUES (?,?,?)', key, JSON.stringify(value), Date.now() + ttl);
+  }
+  saveConfig(config, reason) {
+    const previous = this.read('config');
+    if (previous && JSON.stringify(previous) !== JSON.stringify(config)) {
+      this.sql.exec('INSERT INTO config_versions(created,reason,config) VALUES (?,?,?)', Date.now(), String(reason).slice(0, 100), JSON.stringify(previous));
+      this.sql.exec('DELETE FROM config_versions WHERE id NOT IN (SELECT id FROM config_versions ORDER BY id DESC LIMIT 20)');
+    }
+    this.write('config', config);
+  }
+  configVersions() { return this.sql.exec('SELECT id,created,reason,config FROM config_versions ORDER BY id DESC LIMIT 20').toArray().map(row => { const config = JSON.parse(row.config); return { id: row.id, created: row.created, reason: row.reason, keywordCount: config.keywords?.length || 0, verificationMode: config.verificationMode || 'off', linkGuard: config.newMemberLinkGuard !== false }; }); }
+  restoreConfig(id) {
+    const row = this.sql.exec('SELECT config FROM config_versions WHERE id=?', Number(id)).toArray()[0];
+    if (!row) throw new Error('未找到该规则版本');
+    const restored = { ...DEFAULT_POLICY, ...JSON.parse(row.config), keywords: Array.isArray(JSON.parse(row.config).keywords) ? JSON.parse(row.config).keywords : DEFAULT_KEYWORDS };
+    this.saveConfig(restored, `恢复版本 #${id}`);
+    this.log({ action: 'config-restore', actorId: 'web-admin', outcome: 'success', text: String(id) });
+    return { config: restored, versions: this.configVersions() };
   }
   remove(key) { this.sql.exec('DELETE FROM records WHERE key=?', key); }
   log(entry) {
@@ -557,7 +575,7 @@ export class GuardState extends DurableObject {
         if (config.keywords.length >= 500) return reply('词库已达 500 个，请先清理。');
         if (!config.keywords.includes(word)) config.keywords.push(word);
       } else config.keywords = config.keywords.filter(w => w !== word);
-      this.write('config', config);
+      this.saveConfig(config, `群内${command.command}`);
       return reply(`已${command === 'addword' ? '添加' : '移除'}本群关键词：${word}`);
     }
     const target = /^\d{1,16}$/.test(arg) ? Number(arg) : msg.reply_to_message?.from?.id;
@@ -593,7 +611,7 @@ export class GuardState extends DurableObject {
   async adminData(before = 0) {
     const config = await this.config();
     const rows = this.sql.exec('SELECT id,data FROM logs WHERE id<? ORDER BY id DESC LIMIT 50', before > 0 ? before : Number.MAX_SAFE_INTEGER).toArray();
-    return { config, logs: rows.map(r => ({ ...JSON.parse(r.data), id: r.id })), next: rows.length === 50 ? rows.at(-1).id : null, pending: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='pending'").toArray()[0].n, failed: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='failed'").toArray()[0].n };
+    return { config, versions: this.configVersions(), logs: rows.map(r => ({ ...JSON.parse(r.data), id: r.id })), next: rows.length === 50 ? rows.at(-1).id : null, pending: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='pending'").toArray()[0].n, failed: this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='failed'").toArray()[0].n };
   }
   async keywordStats() {
     const since = Date.now() - 30 * DAY;
@@ -611,7 +629,7 @@ export class GuardState extends DurableObject {
       if (config.keywords.length >= 500) throw new Error('最多 500 个关键词');
       config.keywords.push(word);
     } else if (action === 'remove') config.keywords = config.keywords.filter(w => w !== word);
-    this.write('config', config);
+    this.saveConfig(config, `关键词${action}`);
     this.log({ action: `keyword-${action}`, actorId: 'web-admin', text: word, outcome: 'success' });
     return { keywords: config.keywords };
   }
@@ -624,7 +642,7 @@ export class GuardState extends DurableObject {
       if (config[key].length >= 300) throw new Error('名单最多 300 个域名');
       config[key].push(domain);
     } else if (action === 'remove') config[key] = config[key].filter(item => item !== domain);
-    this.write('config', config);
+    this.saveConfig(config, `域名${list}${action}`);
     this.log({ action: `domain-${list}-${action}`, actorId: 'web-admin', text: domain, outcome: 'success' });
     return { allowlist: config.domainAllowlist, denylist: config.domainDenylist };
   }
@@ -632,7 +650,7 @@ export class GuardState extends DurableObject {
     if (typeof welcomeMessage !== 'string' || typeof rulesMessage !== 'string' || welcomeMessage.length > 2500 || rulesMessage.length > 2500) throw new Error('欢迎语和群规均不能超过 2500 个字符');
     const config = await this.config();
     config.welcomeMessage = welcomeMessage.trim(); config.rulesMessage = rulesMessage.trim();
-    this.write('config', config);
+    this.saveConfig(config, '欢迎语与群规');
     this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
     return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage };
   }
@@ -645,7 +663,7 @@ export class GuardState extends DurableObject {
     if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(normalizedChannel)) throw new Error('频道验证请填写公开频道用户名，例如 @jason_vps_deal');
     const config = await this.config();
     config.verificationMode = mode; config.verificationMinutes = value; config.verificationChannel = mode === 'channel' ? normalizedChannel : '';
-    this.write('config', config);
+    this.saveConfig(config, '新成员验证');
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel };
   }
@@ -654,7 +672,7 @@ export class GuardState extends DurableObject {
     if (typeof enabled !== 'boolean' || !Number.isInteger(joins) || joins < 2 || joins > 30 || !Number.isInteger(duration) || duration < 5 || duration > 120) throw new Error('入群阈值须为 2–30 人，防护时长须为 5–120 分钟');
     const config = await this.config();
     config.raidEnabled = enabled; config.raidJoinLimit = joins; config.raidMinutes = duration;
-    this.write('config', config);
+    this.saveConfig(config, '反入群轰炸');
     this.log({ action: 'raid-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${joins}:${duration}` });
     return { raidEnabled: config.raidEnabled, raidJoinLimit: config.raidJoinLimit, raidMinutes: config.raidMinutes };
   }
@@ -663,7 +681,7 @@ export class GuardState extends DurableObject {
     if (typeof enabled !== 'boolean' || !Number.isInteger(duration) || duration < 1 || duration > 1440) throw new Error('链接隔离时长须为 1–1440 分钟');
     const config = await this.config();
     config.newMemberLinkGuard = enabled; config.newMemberLinkMinutes = duration;
-    this.write('config', config);
+    this.saveConfig(config, '新人链接隔离');
     this.log({ action: 'new-member-link-guard-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${duration}` });
     return { newMemberLinkGuard: config.newMemberLinkGuard, newMemberLinkMinutes: config.newMemberLinkMinutes };
   }
@@ -673,7 +691,7 @@ export class GuardState extends DurableObject {
     if (enabled && start === end) throw new Error('开始和结束时间不能相同');
     const config = await this.config();
     config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end; config.quietNotify = notify;
-    this.write('config', config);
+    this.saveConfig(config, '夜间静默');
     this.write('chat', { id: Number(chat.id), title: String(chat.title || chat.id) });
     await this.schedule(Date.now() + 100);
     this.log({ action: 'quiet-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${start}-${end}` });

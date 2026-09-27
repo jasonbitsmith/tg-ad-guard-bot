@@ -7,6 +7,7 @@ export const ADMIN_PAGE = `<!doctype html>
 <h2>Jason 群组联防</h2><p class="muted">加入联防的群：任一群识别并永久封禁广告账号后，机器人会同步封禁到其他加入联防的群。仅同步自动广告封禁，不同步手动操作。</p><div id="federation"></div>
 <p><label>选择群 <select id="chats"><option value="">请选择</option></select></label><label>或输入群 ID <input id="chatId" placeholder="-100…"></label><button id="load">查看</button></p>
 <p class="muted">已从旧版拦截记录导入已知群。新群会在机器人收到消息或管理员发送 <code>/status</code> 后自动出现；Telegram 不提供机器人直接列出全部所在群的接口，也可直接填写群 ID。规则仅影响选中的群。</p>
+<h2>规则版本与回滚</h2><p class="muted">每次规则变更会自动保存最近 20 个版本。恢复后立即生效。</p><div id="versions"></div>
 <h2>本群关键词</h2><p class="muted">黑名单关键词命中后立即删消息；请只添加明确禁止的广告词。</p><form id="wordForm"><input id="word" maxlength="80" placeholder="新关键词" required><button>添加</button></form><div id="keywords"></div>
 <h2>新人链接隔离</h2><p class="muted">新成员在设定时限内发送任何网址、隐藏链接或 Telegram 邀请时，直接删除并永久封禁。用于拦截短文案引流广告。</p><form id="newMemberLinkGuardForm"><label><input id="newMemberLinkGuard" type="checkbox" checked> 开启新人链接隔离</label> 入群后 <input id="newMemberLinkMinutes" type="number" min="1" max="1440" value="30" required> 分钟内 <button>保存链接隔离设置</button></form>
 <h2>欢迎语与群规</h2><p class="muted">新成员加入时发送。可使用 <code>{name}</code> 表示新成员姓名，<code>{group}</code> 表示群名称；两项都留空则不发送。</p><form id="welcomeForm"><label>欢迎语<textarea id="welcomeMessage" maxlength="2500" placeholder="欢迎 {name} 加入 {group}！"></textarea></label><label>群规<textarea id="rulesMessage" maxlength="2500" placeholder="请文明交流，禁止广告与诈骗。"></textarea></label><button>保存欢迎语和群规</button></form>
@@ -56,6 +57,7 @@ function renderConfig(config) {
   $('raidEnabled').checked=config.raidEnabled!==false;$('raidJoinLimit').value=config.raidJoinLimit||4;$('raidMinutes').value=config.raidMinutes||30;
   $('quietEnabled').checked=config.quietEnabled===true;$('quietStart').value=config.quietStart||'00:00';$('quietEnd').value=config.quietEnd||'08:00';$('quietNotify').checked=config.quietNotify!==false;
 }
+function renderVersions(versions) { $('versions').replaceChildren(...(versions||[]).map(version=>{const row=document.createElement('div');row.className='chip';const label=document.createElement('span');label.textContent=new Date(version.created).toLocaleString('zh-CN')+' · '+version.reason+' · 词库 '+version.keywordCount+' · 验证 '+version.verificationMode+' · 链接隔离 '+(version.linkGuard?'开':'关');const button=document.createElement('button');button.textContent='恢复此版本';button.onclick=safe(async()=>{button.disabled=true;const data=await api('config/restore',{chatId:chat(),versionId:version.id});renderConfig(data.config);renderVersions(data.versions);$('notice').textContent='✓ 已恢复规则版本。';});row.append(label,button);return row;}));if(!(versions||[]).length)$('versions').textContent='暂未产生规则版本。'; }
 function renderStats(stats) { $('keywordStats').textContent=stats.keywords.length ? '近 '+stats.periodDays+' 天共命中 '+stats.total+' 次：'+stats.keywords.map(x=>x.word+' '+x.count).join(' · ') : '近 '+stats.periodDays+' 天暂无关键词命中记录。'; }
 function renderLogs(logs,append) {
   if(!append)$('logs').replaceChildren();
@@ -65,7 +67,7 @@ function renderLogs(logs,append) {
 async function load(append=false) {
   let data;
   if(legacy){data=await api('legacy'+(append&&cursor?'?cursor='+encodeURIComponent(cursor):''));$('summary').textContent='旧版归档：按旧键顺序分页读取；新记录请点击刷新新版记录。';}
-  else{data=await api('logs?chatId='+encodeURIComponent(chat())+(append&&cursor?'&before='+cursor:''));renderConfig(data.config);renderStats(await api('keyword-stats?chatId='+encodeURIComponent(chat())));$('summary').textContent='待处理 '+data.pending+' · 失败 '+data.failed+' · 记录保留 30 天';}
+  else{data=await api('logs?chatId='+encodeURIComponent(chat())+(append&&cursor?'&before='+cursor:''));renderConfig(data.config);renderVersions(data.versions);renderStats(await api('keyword-stats?chatId='+encodeURIComponent(chat())));$('summary').textContent='待处理 '+data.pending+' · 失败 '+data.failed+' · 记录保留 30 天';}
   renderLogs(data.logs,append);cursor=data.next;$('more').disabled=!cursor;
 }
 $('loginForm').onsubmit=safe(async()=>{await api('login',{password:$('password').value});$('password').value='';await enter();});

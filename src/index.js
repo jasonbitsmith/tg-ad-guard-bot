@@ -130,6 +130,10 @@ async function admin(request, env, url) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editNewMemberLinkGuard(body.enabled, body.minutes));
   }
+  if (request.method === 'POST' && path === 'config/restore') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).restoreConfig(body.versionId));
+  }
   if (request.method === 'POST' && path === 'quiet') {
     const body = await readJson(request, 4096);
     const registered = await state.listChats();
