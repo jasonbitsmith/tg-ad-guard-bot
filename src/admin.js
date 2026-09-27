@@ -19,7 +19,8 @@ localStorage.removeItem('tg_ad_guard_admin_pw');
 const $ = id => document.getElementById(id);
 let cursor = null, legacy = false;
 async function api(path, body) {
-  const r = await fetch('/admin/api/' + path, body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const options = body === undefined ? {credentials:'same-origin'} : {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
+  const r = await fetch('/admin/api/' + path, options);
   const data = await r.json();
   if (!r.ok) { if(r.status===401) { $('app').classList.add('hidden'); $('login').classList.remove('hidden'); } throw Error(data.error || '请求失败'); }
   return data;
@@ -66,5 +67,6 @@ $('sampleForm').onsubmit=safe(async()=>{const data=await api('samples/add',{kind
 $('domainForm').onsubmit=safe(async()=>{const list=$('domainList').value;await api('domains/'+list+'/add',{chatId:chat(),domain:$('domain').value});$('domain').value='';legacy=false;await load();});
 $('welcomeForm').onsubmit=safe(async()=>{await api('welcome-rules',{chatId:chat(),welcomeMessage:$('welcomeMessage').value,rulesMessage:$('rulesMessage').value});legacy=false;await load();});
 $('health').onclick=safe(async()=>{$('healthResult').textContent=JSON.stringify(await api('status'+($('chatId').value.trim()?'?chatId='+encodeURIComponent(chat()):'')),null,2);});
-safe(enter)();
+// 未登录时后台接口返回 401 属于正常状态；不要在登录前显示为错误。
+enter().catch(() => {});
 `;
