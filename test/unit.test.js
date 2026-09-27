@@ -47,6 +47,14 @@ test('码多来收益刷屏模板首条即永久封禁', () => {
   assert.ok(classify(msg('码多来捡钱 一小时1000'), DEFAULT_KEYWORDS).score >= 4);
   assert.equal(classify(msg('今天写了很多代码来完成任务'), DEFAULT_KEYWORDS).permanentBan, false);
 });
+test('拆词商品分销和图片收益引流首条即永久封禁', () => {
+  assert.equal(classify(msg('免.税集.团7.折出水果机 17.p.m.ax入手只4k 全球禾激活 渠道正品 日搞1w 当.日.下.单 现.货.秒.发 寻线下门店代理 零和散户出货'), DEFAULT_KEYWORDS).permanentBan, true);
+  const chart = msg('#W\n30个点的利润'); chart.photo = [{ file_unique_id: 'chart' }];
+  assert.equal(classify(chart, DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('17pm 手机今天降价 500 元'), DEFAULT_KEYWORDS).permanentBan, false);
+  const ordinaryChart = msg('这张图是本月服务器流量统计'); ordinaryChart.photo = [{ file_unique_id: 'usage' }];
+  assert.equal(classify(ordinaryChart, DEFAULT_KEYWORDS).permanentBan, false);
+});
 test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
   assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/path'), 'example.com');

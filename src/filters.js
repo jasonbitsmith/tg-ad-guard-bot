@@ -28,6 +28,7 @@ const matchesDomain = (domain, list) => list.some(item => domain === item || dom
 export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const text = msg.text || msg.caption || '';
   const body = normalize(text);
+  const compact = body.replace(/[^\p{L}\p{N}@]+/gu, '');
   const name = normalize([msg.from?.first_name, msg.from?.last_name, msg.sender_chat?.title].filter(Boolean).join(' '));
   const entities = msg.entities || msg.caption_entities || [];
   const links = entities.filter(e => e.type === 'text_link' && typeof e.url === 'string').map(e => e.url);
@@ -52,6 +53,20 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   // lead-in and rotate only the claimed hourly/daily payout, so a link or
   // contact handle cannot be required before removing the first message.
   const codeMoneyPitch = /(?:码多来.{0,16}捡钱.{0,16}(?:一\s*小时\s*\d+|\d+\s*(?:q|k|w|千|万))|码多来.{0,16}(?:干.{0,12})?挣\s*\d+\s*(?:q|k|w|千|万))/i.test(body);
+  // Product-resale campaigns split every word with punctuation to evade exact
+  // keywords. Require multiple campaign signals so normal device discussion is
+  // not removed solely for mentioning a phone or a retailer.
+  const resaleSignals = [
+    /(?:水果机|17pm|ax)/i.test(compact),
+    /(?:渠道正品|全球(?:未|禾)激活)/.test(compact),
+    /(?:日(?:搞|赚|入)\d+(?:q|k|w|千|万))/.test(compact),
+    /(?:当日下单.{0,12}(?:秒发|现货)|门店代理|散户出货)/.test(compact),
+  ];
+  const resalePitch = resaleSignals.filter(Boolean).length >= 2;
+  // Screenshot/chart ads frequently put only a short profit claim in the
+  // caption. Limit this to media messages with a trading marker.
+  const hasMedia = Array.isArray(msg.photo) || !!msg.video || !!msg.animation || !!msg.document;
+  const cryptoChartPitch = hasMedia && /(?:\d{1,4}\s*(?:个|点).{0,8}利润|\b(?:w|usdt)\b.{0,20}(?:利润|收益)|\d{2,3}(?:\.\d+)?\s*%)/i.test(body);
   // Product-card pitches aimed at cross-border sellers are commonly posted as
   // bare text, with the seller asking interested members to contact them later.
   // Require both the product language and a platform name so ordinary platform
@@ -73,13 +88,15 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (recruitmentSlogan && dailyIncome) add(4, '包含招揽口号和日收入承诺');
   if (photoGigPitch) add(4, '包含拍照日结兼职招揽');
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
+  if (resalePitch) add(4, '包含拆词商品分销和收益招揽');
+  if (cryptoChartPitch) add(4, '图片附带加密货币收益引流文案');
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
   // Context reduces confidence, but is not an unconditional bypass.
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || codeMoneyPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
