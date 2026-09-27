@@ -540,7 +540,8 @@ export class GuardState extends DurableObject {
     if (!['off', 'math', 'channel'].includes(mode)) throw new Error('无效验证方式');
     const value = Math.max(1, Math.min(60, Number(minutes)));
     if (!Number.isInteger(value)) throw new Error('验证时限须为 1–60 分钟');
-    const normalizedChannel = String(channel || '').trim();
+    let normalizedChannel = String(channel || '').trim();
+    if (normalizedChannel && !normalizedChannel.startsWith('@')) normalizedChannel = '@' + normalizedChannel;
     if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(normalizedChannel)) throw new Error('频道验证请填写公开频道用户名，例如 @jason_vps_deal');
     const config = await this.config();
     config.verificationMode = mode; config.verificationMinutes = value; config.verificationChannel = mode === 'channel' ? normalizedChannel : '';

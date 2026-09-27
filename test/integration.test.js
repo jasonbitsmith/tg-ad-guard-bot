@@ -196,7 +196,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(answer);await send(update(-142,String(Number(answer[1])+Number(answer[2])),{from:{id:44,first_name:'新人'}}));await tick(-142);
     assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-142&&c.params.user_id===44&&c.params.permissions.can_send_photos===false));
     assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-142&&c.params.user_id===44&&c.params.permissions.can_send_photos===false&&c.params.permissions.can_send_messages===true));
-    await request('verification',{chatId:-143,mode:'channel',minutes:10,channel:'@jason_vps_deal'});
+    const channelConfig=await (await request('verification',{chatId:-143,mode:'channel',minutes:10,channel:'jason_vps_deal'})).json();
+    assert.equal(channelConfig.verificationChannel,'@jason_vps_deal');
     await send(update(-143,'',{new_chat_members:[{id:45,first_name:'订阅者'}]}));await tick(-143);
     const callback={update_id:++seq,callback_query:{id:'verify-45',from:{id:45,first_name:'订阅者'},data:'verify:channel:45',message:{message_id:999,chat:{id:-143,type:'supergroup',title:'测试群'}}}};
     await send(callback);await tick(-143);
