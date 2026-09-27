@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { classify, DEFAULT_KEYWORDS, extractDomains, parseCommand, normalize, normalizeDomain } from '../src/filters.js';
 import { telegram, secureEqual } from '../src/telegram.js';
 import { dmitNotification, parseDmitPricing, withDmitAffiliate } from '../src/dmit.js';
+import { sampleMatches, validateSample } from '../src/samples.js';
 
 const msg = text => ({ text, from: { id: 1, first_name: '群友' } });
 test('黑名单关键词首次命中即要求删除，非关键词普通聊天不处理', () => {
@@ -91,4 +92,10 @@ test('DMIT 定价页按产品代码识别库存并生成频道推送', () => {
   assert.equal(items[0].orderUrl, 'https://www.dmit.io/aff.php?pid=88');
   assert.match(dmitNotification(items[0], '@jason_vps_deal'), /产品：HKG\.AS3\.PRO\.TINY/);
   assert.equal(withDmitAffiliate(items[0].orderUrl, '16962'), 'https://www.dmit.io/aff.php?pid=88&aff=16962');
+});
+test('全局广告样本文字、域名和图片指纹均可命中', () => {
+  const rules = [validateSample('text', '水果机出货', '拆词广告'), validateSample('domain', 'spam.example'), validateSample('photo', 'same-picture', '重复海报')];
+  const photo = msg('水果机 出货 https://sub.spam.example'); photo.photo = [{ file_unique_id: 'same-picture' }];
+  assert.equal(sampleMatches(photo, rules).length, 3);
+  assert.throws(() => validateSample('unknown', 'x'));
 });

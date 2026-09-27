@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
 import { classify, normalize, normalizeDomain, DEFAULT_KEYWORDS, DEFAULT_POLICY, parseCommand, validateWord } from './filters.js';
 import { dmitNotification, parseDmitPricing, withDmitAffiliate } from './dmit.js';
+import { sampleMatches, validateSample } from './samples.js';
 
 const DAY = 86400000;
 const ADMIN_STATUS = ['administrator', 'creator'];
@@ -28,7 +29,8 @@ export class GuardState extends DurableObject {
       CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status,due);
       CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS logs_time ON logs(ts);
-      CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, created INTEGER NOT NULL, UNIQUE(kind,value));`);
     for (const chat of LEGACY_CHATS) {
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
@@ -52,6 +54,14 @@ export class GuardState extends DurableObject {
     this.sql.exec('INSERT INTO chats VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title WHERE title != excluded.title', String(chat.id), String(chat.title || chat.id));
   }
   listChats() { return this.sql.exec('SELECT * FROM chats ORDER BY title COLLATE NOCASE LIMIT 1000').toArray(); }
+  listSamples() { return this.sql.exec('SELECT id,kind,value,label,created FROM samples ORDER BY id DESC LIMIT 300').toArray(); }
+  editSample(action, body) {
+    if (action === 'remove') { this.sql.exec('DELETE FROM samples WHERE id=?', Number(body.id)); return this.listSamples(); }
+    const sample = validateSample(body.kind, body.value, body.label);
+    this.sql.exec('INSERT OR IGNORE INTO samples(kind,value,label,created) VALUES (?,?,?,?)', sample.kind, sample.value, sample.label, Date.now());
+    this.log({ action: 'sample-add', actorId: 'web-admin', sample: sample.kind, text: sample.value, outcome: 'success' });
+    return this.listSamples();
+  }
 
   dmitStatus() {
     return this.read('dmit:status', { enabled: this.env.DMIT_MONITOR_ENABLED === 'true', state: '尚未执行' });
@@ -245,6 +255,11 @@ export class GuardState extends DurableObject {
     const policy = await this.config();
     const joined = this.read(`join:${senderId}`, 0);
     const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
+    const sampleHits = sampleMatches(msg, await this.env.GUARD_STATE.getByName('admin').listSamples());
+    if (sampleHits.length) {
+      verdict.score = Math.max(7, verdict.score);
+      verdict.reasons.push(`样本库：${sampleHits.slice(0, 3).map(sample => sample.label || sample.value).join('、')}`);
+    }
     let samples = this.read(`flood:${senderId}`, []).filter(x => x.at > Date.now() - 60000 && x.id !== msg.message_id);
     const fingerprint = normalize(text) || msg.sticker?.file_unique_id || msg.photo?.at(-1)?.file_unique_id || msg.document?.file_unique_id || msg.video?.file_unique_id || '';
     if (fingerprint) samples.push({ id: msg.message_id, at: Date.now(), text: fingerprint });

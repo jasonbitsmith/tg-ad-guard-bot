@@ -54,6 +54,7 @@ async function admin(request, env, url) {
   }
   if (request.method === 'GET') {
     if (path === 'chats') return json({ chats: await state.listChats() });
+    if (path === 'samples') return json({ samples: state.listSamples() });
     if (path === 'logs') return json(await group(env, url.searchParams.get('chatId')).adminData(Number(url.searchParams.get('before')) || 0));
     if (path === 'keyword-stats') return json(await group(env, url.searchParams.get('chatId')).keywordStats());
     if (path === 'legacy') {
@@ -77,6 +78,9 @@ async function admin(request, env, url) {
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word));
+  }
+  if (request.method === 'POST' && ['samples/add','samples/remove'].includes(path)) {
+    return json({ samples: state.editSample(path.split('/')[1], await readJson(request, 4096)) });
   }
   if (request.method === 'POST' && ['domains/allow/add','domains/allow/remove','domains/deny/add','domains/deny/remove'].includes(path)) {
     const body = await readJson(request, 4096); const [, list, action] = path.split('/');

@@ -4,6 +4,7 @@ export const ADMIN_PAGE = `<!doctype html>
 <body><h1>群管理后台</h1><p class="muted">广告命中即删消息并永久封禁账号 · 不发送或累计警告</p>
 <section id="login"><form id="loginForm"><label>管理密码 <input id="password" type="password" autocomplete="current-password" required></label><button>登录</button></form><small>会话 8 小时后过期，密码不会保存在浏览器。</small></section>
 <p id="error" role="alert"></p><section id="app" class="hidden"><button id="logout">退出登录</button><button id="health">运行自检</button><pre id="healthResult"></pre>
+<h2>全局广告样本库</h2><p class="muted">样本命中后，所有群都会直接删除消息并永久封禁账号。文字样本支持拆词归一化；域名匹配子域名；图片指纹填 Telegram 处理记录里的 file_unique_id。</p><form id="sampleForm"><select id="sampleKind"><option value="text">广告文案</option><option value="domain">广告域名</option><option value="photo">图片指纹</option></select><input id="sampleValue" maxlength="500" placeholder="文案、域名或 file_unique_id" required><input id="sampleLabel" maxlength="120" placeholder="备注（可选）"><button>加入样本库</button></form><div id="samples"></div>
 <p><label>选择群 <select id="chats"><option value="">请选择</option></select></label><label>或输入群 ID <input id="chatId" placeholder="-100…"></label><button id="load">查看</button></p>
 <p class="muted">已从旧版拦截记录导入已知群。新群会在机器人收到消息或管理员发送 <code>/status</code> 后自动出现；Telegram 不提供机器人直接列出全部所在群的接口，也可直接填写群 ID。规则仅影响选中的群。</p>
 <h2>本群关键词</h2><p class="muted">黑名单关键词命中后立即删消息；请只添加明确禁止的广告词。</p><form id="wordForm"><input id="word" maxlength="80" placeholder="新关键词" required><button>添加</button></form><div id="keywords"></div>
@@ -28,8 +29,10 @@ function chat() { const id=$('chatId').value.trim(); if(!/^-[0-9]+$/.test(id))th
 async function enter() {
   const data=await api('chats');
   $('chats').replaceChildren(new Option('请选择',''),...data.chats.map(c=>new Option(c.title+' ('+c.id+')',c.id)));
+  renderSamples((await api('samples')).samples);
   $('login').classList.add('hidden');$('app').classList.remove('hidden');
 }
+function renderSamples(samples) { $('samples').replaceChildren(...samples.map(sample=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent='['+sample.kind+'] '+(sample.label?sample.label+'：':'')+sample.value;const b=document.createElement('button');b.textContent='×';b.title='移除样本';b.onclick=safe(async()=>{renderSamples((await api('samples/remove',{id:sample.id})).samples);});s.append(label,b);return s;})); }
 function renderWords(words) {
   $('keywords').replaceChildren(...words.map(word=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent=word;const b=document.createElement('button');b.textContent='×';b.title='移除关键词';b.onclick=safe(async()=>{await api('keywords/remove',{chatId:chat(),word});await load();});s.append(label,b);return s;}));
 }
@@ -59,6 +62,7 @@ $('load').onclick=$('refresh').onclick=safe(async()=>{legacy=false;await load();
 $('legacy').onclick=safe(async()=>{legacy=true;await load();});
 $('more').onclick=safe(async()=>{await load(true);});
 $('wordForm').onsubmit=safe(async()=>{await api('keywords/add',{chatId:chat(),word:$('word').value});$('word').value='';legacy=false;await load();});
+$('sampleForm').onsubmit=safe(async()=>{const data=await api('samples/add',{kind:$('sampleKind').value,value:$('sampleValue').value,label:$('sampleLabel').value});$('sampleValue').value='';$('sampleLabel').value='';renderSamples(data.samples);});
 $('domainForm').onsubmit=safe(async()=>{const list=$('domainList').value;await api('domains/'+list+'/add',{chatId:chat(),domain:$('domain').value});$('domain').value='';legacy=false;await load();});
 $('welcomeForm').onsubmit=safe(async()=>{await api('welcome-rules',{chatId:chat(),welcomeMessage:$('welcomeMessage').value,rulesMessage:$('rulesMessage').value});legacy=false;await load();});
 $('health').onclick=safe(async()=>{$('healthResult').textContent=JSON.stringify(await api('status'+($('chatId').value.trim()?'?chatId='+encodeURIComponent(chat()):'')),null,2);});
