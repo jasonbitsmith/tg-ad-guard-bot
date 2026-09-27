@@ -28,12 +28,14 @@ async function api(path, body) {
 function safe(fn) { return async e => { e?.preventDefault(); $('error').textContent=''; try{await fn(e);}catch(err){$('error').textContent=err.message;} }; }
 function chat() { const id=$('chatId').value.trim(); if(!/^-[0-9]+$/.test(id))throw Error('请选择群或输入有效的负数群 ID'); return id; }
 async function enter() {
-  const data=await api('chats');
-  $('chats').replaceChildren(new Option('请选择',''),...data.chats.map(c=>new Option(c.title+' ('+c.id+')',c.id)));
-  renderSamples((await api('samples')).samples);
+  const [chatData,sampleData]=await Promise.all([api('chats'),api('samples')]);
+  const chats=Array.isArray(chatData?.chats)?chatData.chats:[];
+  const samples=Array.isArray(sampleData?.samples)?sampleData.samples:[];
+  $('chats').replaceChildren(new Option('请选择',''),...chats.map(c=>new Option(c.title+' ('+c.id+')',c.id)));
+  renderSamples(samples);
   $('login').classList.add('hidden');$('app').classList.remove('hidden');
 }
-function renderSamples(samples) { $('samples').replaceChildren(...samples.map(sample=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent='['+sample.kind+'] '+(sample.label?sample.label+'：':'')+sample.value;const b=document.createElement('button');b.textContent='×';b.title='移除样本';b.onclick=safe(async()=>{renderSamples((await api('samples/remove',{id:sample.id})).samples);});s.append(label,b);return s;})); }
+function renderSamples(samples) { $('samples').replaceChildren(...(Array.isArray(samples)?samples:[]).map(sample=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent='['+sample.kind+'] '+(sample.label?sample.label+'：':'')+sample.value;const b=document.createElement('button');b.textContent='×';b.title='移除样本';b.onclick=safe(async()=>{renderSamples((await api('samples/remove',{id:sample.id})).samples);});s.append(label,b);return s;})); }
 function renderWords(words) {
   $('keywords').replaceChildren(...words.map(word=>{const s=document.createElement('span');s.className='chip';const label=document.createElement('span');label.textContent=word;const b=document.createElement('button');b.textContent='×';b.title='移除关键词';b.onclick=safe(async()=>{await api('keywords/remove',{chatId:chat(),word});await load();});s.append(label,b);return s;}));
 }
