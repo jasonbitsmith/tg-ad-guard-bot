@@ -1,5 +1,5 @@
 export const DEFAULT_KEYWORDS = ['日结','急招','兼职','看我简介','看简介','刷单','点赞赚钱','无需经验','无押金','免费领取','招聘','招代理','加v','加微信','私聊我','接单','日入','稳赚','博彩','空投','USDT','代收代付','跑分','洗钱'];
-export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true });
+export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', raidEnabled: true, raidJoinLimit: 4, raidMinutes: 30, quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true });
 
 export function normalize(text) {
   return String(text || '').normalize('NFKC').replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();

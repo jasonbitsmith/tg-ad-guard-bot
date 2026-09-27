@@ -206,5 +206,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const callback={update_id:++seq,callback_query:{id:'verify-45',from:{id:45,first_name:'订阅者'},data:'verify:channel:45',message:{message_id:999,chat:{id:-143,type:'supergroup',title:'测试群'}}}};
     await send(callback);await tick(-143);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='verify-45'));
+    await request('raid',{chatId:-144,enabled:true,limit:2,minutes:30});
+    await send(update(-144,'',{new_chat_members:[{id:51,first_name:'新一'}]}));await tick(-144);
+    await send(update(-144,'',{new_chat_members:[{id:52,first_name:'新二'}]}));await tick(-144);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-144&&c.params.text.includes('新成员验证')));
   });
 });

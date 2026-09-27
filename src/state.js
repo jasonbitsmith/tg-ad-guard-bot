@@ -318,8 +318,8 @@ export class GuardState extends DurableObject {
     return { can_send_messages: true, can_send_audios: false, can_send_documents: false, can_send_photos: false, can_send_videos: false, can_send_video_notes: false, can_send_voice_notes: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false, can_pin_messages: false, can_manage_topics: false };
   }
   verificationMode(config) { return ['math', 'channel'].includes(config.verificationMode) ? config.verificationMode : 'off'; }
-  async startVerification(member, msg, config, tg) {
-    const mode = this.verificationMode(config);
+  async startVerification(member, msg, config, tg, forceMath = false) {
+    const mode = forceMath ? 'math' : this.verificationMode(config);
     if (mode === 'off' || member.is_bot) return null;
     const status = await this.member(tg, msg.chat.id, member.id);
     if (ADMIN_STATUS.includes(status.status) || this.owners().includes(String(member.id))) return null;
@@ -359,19 +359,25 @@ export class GuardState extends DurableObject {
     if (msg.new_chat_members) {
       for (const member of msg.new_chat_members) this.write(`join:${member.id}`, Date.now(), DAY);
       const config = await this.config();
+      const recentJoins = this.read('raid:joins', []).filter(at => at > Date.now() - 5 * 60000);
+      for (const member of msg.new_chat_members) if (!member.is_bot) recentJoins.push(Date.now());
+      this.write('raid:joins', recentJoins.slice(-100), 5 * 60000);
+      const raidStarted = config.raidEnabled && recentJoins.length >= config.raidJoinLimit;
+      if (raidStarted) this.write('raid:until', Date.now() + config.raidMinutes * 60000, config.raidMinutes * 60000);
+      const raidActive = this.read('raid:until', 0) > Date.now();
       const names = msg.new_chat_members.filter(member => !member.is_bot).map(member => [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员');
       const message = [config.welcomeMessage && config.welcomeMessage.replaceAll('{name}', names.join('、')).replaceAll('{group}', msg.chat.title || ''), config.rulesMessage && `群规：${config.rulesMessage}`].filter(Boolean).join('\n\n').slice(0, 4000);
       const ops = message ? [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }] : [];
       const started = [];
       for (const member of msg.new_chat_members) {
-        const verification = await this.startVerification(member, msg, config, tg);
+        const verification = await this.startVerification(member, msg, config, tg, raidActive && this.verificationMode(config) === 'off');
         if (!verification) continue;
         started.push(member.id);
         ops.push({ method: 'restrictChatMember', params: { chat_id: chatId, user_id: member.id, permissions: this.verificationPermissions(), use_independent_chat_permissions: true } });
         const replyMarkup = verification.mode === 'channel' ? { reply_markup: { inline_keyboard: [[{ text: '✅ 我已订阅', callback_data: `verify:channel:${member.id}` }], [{ text: '前往频道订阅', url: `https://t.me/${verification.channel.slice(1)}` }]] } } : {};
         ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, ...replyMarkup }, verificationPromptFor: member.id });
       }
-      return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: started.length ? [`${this.verificationMode(config)} 验证已开启`] : undefined } } : empty;
+      return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: started.length ? [raidActive && this.verificationMode(config) === 'off' ? '反入群轰炸：临时算术验证已开启' : `${this.verificationMode(config)} 验证已开启`] : undefined } } : empty;
     }
     // Anonymous group admins and automatic linked-channel posts are trusted separately.
     if (msg.sender_chat?.id === chatId || msg.is_automatic_forward) return empty;
@@ -603,6 +609,15 @@ export class GuardState extends DurableObject {
     this.write('config', config);
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel };
+  }
+  async editRaid(enabled, limit, minutes) {
+    const joins = Number(limit), duration = Number(minutes);
+    if (typeof enabled !== 'boolean' || !Number.isInteger(joins) || joins < 2 || joins > 30 || !Number.isInteger(duration) || duration < 5 || duration > 120) throw new Error('入群阈值须为 2–30 人，防护时长须为 5–120 分钟');
+    const config = await this.config();
+    config.raidEnabled = enabled; config.raidJoinLimit = joins; config.raidMinutes = duration;
+    this.write('config', config);
+    this.log({ action: 'raid-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${joins}:${duration}` });
+    return { raidEnabled: config.raidEnabled, raidJoinLimit: config.raidJoinLimit, raidMinutes: config.raidMinutes };
   }
   async editQuiet(chat, enabled, start, end, notify) {
     const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
