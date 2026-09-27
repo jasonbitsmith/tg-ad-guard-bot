@@ -190,6 +190,9 @@ export default {
     }
   },
   async scheduled(_controller, env, ctx) {
-    if (env.DMIT_MONITOR_ENABLED === 'true' && env.GUARD_STATE) ctx.waitUntil(globalState(env).monitorDmit());
+    if (env.GUARD_STATE) {
+      if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
+      ctx.waitUntil(globalState(env).sendDailyReport());
+    }
   },
 };

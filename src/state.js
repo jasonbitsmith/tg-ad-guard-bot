@@ -98,6 +98,43 @@ export class GuardState extends DurableObject {
     return this.federation();
   }
   federationTargets(sourceChatId) { return this.federation().filter(chatId => chatId !== String(sourceChatId)); }
+  dailySummary(from, to) {
+    const result = { intercepted: 0, banned: 0, reports: 0, ocr: 0 };
+    for (const row of this.sql.exec('SELECT data FROM logs WHERE ts>=? AND ts<?', from, to).toArray()) {
+      const log = JSON.parse(row.data), action = String(log.action || '');
+      if (action.includes('delete-and-') || action === 'delete-channel-message' || action === 'review-resolve-ban') result.intercepted++;
+      if (action.includes('permanent-ban') || action === 'verification-timeout-ban' || action === 'review-resolve-ban') result.banned++;
+      if (action === 'user-report') result.reports++;
+      if (action === 'ocr' && log.outcome === 'success') result.ocr++;
+    }
+    return result;
+  }
+  async sendDailyReport(now = Date.now()) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now)).filter(item => item.type !== 'literal').map(item => [item.type, item.value]));
+    if (Number(parts.hour) !== 9) return false;
+    const reportKey = `daily-report:${parts.year}-${parts.month}-${parts.day}`;
+    if (this.read(reportKey, false)) return false;
+    const localTodayUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+    const previous = new Date(localTodayUtc - DAY);
+    const targetDate = previous.toISOString().slice(0, 10);
+    const from = previous.getTime() - 8 * 3600000, to = localTodayUtc - 8 * 3600000;
+    const chats = await this.listChats();
+    const summaries = await Promise.all(chats.map(async chat => ({ chat, ...(await this.env.GUARD_STATE.getByName('chat:' + chat.id).dailySummary(from, to)) })));
+    const totals = summaries.reduce((all, item) => ({ intercepted: all.intercepted + item.intercepted, banned: all.banned + item.banned, reports: all.reports + item.reports, ocr: all.ocr + item.ocr }), { intercepted: 0, banned: 0, reports: 0, ocr: 0 });
+    const tg = telegram(this.env.BOT_TOKEN); const me = await this.me(tg);
+    const checks = await Promise.all(chats.map(async chat => {
+      try { const member = await tg('getChatMember', { chat_id: Number(chat.id), user_id: me.id }); return !member.can_delete_messages || !member.can_restrict_members ? chat.title : null; }
+      catch { return chat.title; }
+    }));
+    const exceptions = checks.filter(Boolean);
+    const lines = summaries.filter(item => item.intercepted || item.banned || item.reports || item.ocr).map(item => `• ${item.chat.title}：拦截 ${item.intercepted} · 封禁 ${item.banned} · 举报 ${item.reports} · OCR ${item.ocr}`);
+    const text = [`🛡 群防日报｜${targetDate}`, '', `已登记群：${chats.length}`, `拦截：${totals.intercepted}｜封禁：${totals.banned}｜举报：${totals.reports}｜OCR：${totals.ocr}`, exceptions.length ? `⚠️ 权限异常：${exceptions.join('、')}` : '✅ 所有已登记群的删消息与封禁权限正常。', lines.length ? `\n群明细\n${lines.join('\n')}` : '\n昨日无拦截与举报记录。'].join('\n');
+    const recipients = this.owners().filter(id => /^\d{1,16}$/.test(id));
+    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: Number(chatId), text: text.slice(0, 4000), disable_web_page_preview: true })));
+    if (sent.some(item => item.status === 'fulfilled')) this.write(reportKey, true, 3 * DAY);
+    this.log({ action: 'daily-report', outcome: sent.some(item => item.status === 'fulfilled') ? 'success' : 'failed', text: targetDate, recipients: recipients.length, errors: sent.filter(item => item.status === 'rejected').length });
+    return sent.some(item => item.status === 'fulfilled');
+  }
   listSamples() { return this.sql.exec('SELECT id,kind,value,label,created FROM samples ORDER BY id DESC LIMIT 300').toArray(); }
   editSample(action, body) {
     if (action === 'remove') { this.sql.exec('DELETE FROM samples WHERE id=?', Number(body.id)); return this.listSamples(); }

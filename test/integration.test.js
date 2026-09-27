@@ -17,6 +17,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     }
     export default { async fetch(r,env) {
       if(new URL(r.url).pathname==='/__test') { const b=await r.json(); return Response.json(await env.GUARD_STATE.getByName('chat:'+b.chatId).inspectTest(b.force)); }
+      if(new URL(r.url).pathname==='/__daily') return Response.json({sent:await env.GUARD_STATE.getByName('admin').sendDailyReport(Date.parse('2026-09-27T01:00:00Z'))});
       return worker.fetch(r,env);
     }};`;
   const mf = new Miniflare(convertV4MiniflareOptions({
@@ -51,6 +52,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const chats = await state.getByName('admin').listChats();
     assert.equal(chats.length, 6);
     assert.ok(chats.some(chat => chat.id === '-1003590410271' && chat.title === 'Jason - VPS 交流互助交流'));
+  });
+  await t.test('每日群防日报在北京时间九点向所有者发送', async () => {
+    const report=await mf.dispatchFetch('https://bot.test/__daily');const body=await report.json();assert.equal(body.sent,true);
+    assert.ok(calls.some(call=>call.method==='sendMessage'&&call.params.chat_id===99&&call.params.text.includes('群防日报')));
   });
   await t.test('机器人加入新群时立即登记，无需等待普通消息', async () => {
     const added={update_id:1,my_chat_member:{chat:{id:-1001234567890,type:'supergroup',title:'新加入测试群'},new_chat_member:{status:'administrator',user:{id:555,is_bot:true}}}};
