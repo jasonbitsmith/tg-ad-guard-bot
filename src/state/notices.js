@@ -96,6 +96,25 @@ export class NoticesMethods {
     return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId));
   }
 
+  // Buttons only work if Telegram delivers callback_query updates. A webhook
+  // registered with a narrow allowed_updates list silently drops them, so
+  // widen it (keeping the URL and secret) when something needed is missing.
+  async ensureWebhookUpdates(now = Date.now()) {
+    if (this.read('webhook-updates-checked')) return null;
+    this.write('webhook-updates-checked', true, 3600000);
+    const needed = ['message', 'edited_message', 'callback_query', 'my_chat_member', 'chat_join_request'];
+    const tg = telegram(this.env.BOT_TOKEN);
+    const info = await tg('getWebhookInfo').catch(() => null);
+    const current = Array.isArray(info?.allowed_updates) ? info.allowed_updates : null;
+    if (!info?.url || !current || !this.env.WEBHOOK_VERIFY_TOKEN) return { ok: true, allowed: current };
+    const missing = needed.filter(type => !current.includes(type));
+    if (!missing.length) return { ok: true, allowed: current };
+    const allowed = [...new Set([...current, ...needed])];
+    await tg('setWebhook', { url: info.url, secret_token: this.env.WEBHOOK_VERIFY_TOKEN, allowed_updates: allowed, ...(info.max_connections ? { max_connections: info.max_connections } : {}) });
+    this.log({ action: 'webhook-updates-fixed', outcome: 'success', text: missing.join(',') });
+    await this.alertOwner('webhook-updates-fixed', `已修复：Telegram 之前没有把这些类型的消息发给机器人：${missing.join('、')}。通知上的按钮现在应该能用了，请再点一次试试。`).catch(() => {});
+    return { ok: true, fixed: missing, allowed };
+  }
   // Profile links in the text depend on the owner's Telegram client having
   // seen the member, so this button always works: the bot sends the details.
   infoRow(id, link) { return [{ text: '👤 查看资料', callback_data: `n:${id}:info` }, ...(link ? [{ text: '查看原消息', url: link }] : [])]; }
@@ -144,7 +163,11 @@ export class NoticesMethods {
 
   async noticeAction(callback) {
     const tg = telegram(this.env.BOT_TOKEN);
-    const answer = (text, alert = false) => tg('answerCallbackQuery', { callback_query_id: callback.id, text: text.slice(0, 190), show_alert: alert }).catch(() => {});
+    // A callback can be answered only once; the first answer stops the
+    // spinner, later results are written onto the notice itself.
+    let answered = false;
+    const answer = (text, alert = false) => { if (answered) return Promise.resolve(); answered = true; return tg('answerCallbackQuery', { callback_query_id: callback.id, text: text.slice(0, 190), show_alert: alert }).catch(() => {}); };
+    this.write('health:last-button', { at: Date.now() });
     const match = /^n:([a-f0-9]{16}):(ban|ignore|undo|info)$/.exec(String(callback.data || ''));
     if (!match || !this.owners().includes(String(callback.from?.id))) return answer('只有机器人所有者可以操作。', true);
     const id = match[1], key = `notice:${id}`, record = this.read(key);
@@ -155,7 +178,8 @@ export class NoticesMethods {
       try { await this.sendProfileCard(record, callback.message?.chat?.id || Number(callback.from.id)); return answer('资料已发送'); }
       catch (error) { return answer('读取资料失败：' + String(error.message || '').slice(0, 120), true); }
     }
-    if (record.done) { await this.renderNotice(id, callback.message); return answer('已经处理过了：' + record.done, true); }
+    if (record.done) { await answer('已经处理过了：' + record.done, true); await this.renderNotice(id, callback.message); return; }
+    await answer('⏳ 正在处理，结果会写在这条通知下面');
     const group = this.env.GUARD_STATE.getByName('chat:' + record.chatId);
     const who = [callback.from.first_name, callback.from.last_name].filter(Boolean).join(' ') || String(callback.from.id), when = this.noticeTime();
     let result, pending;
