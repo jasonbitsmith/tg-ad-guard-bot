@@ -21,6 +21,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
         if(force) this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending'");
+        // A real alarm may already be running (alarm() then returns early);
+        // wait for it so the tick below actually processes pending jobs.
+        for(let i=0;i<100 && this.running;i++)await new Promise(r=>setTimeout(r,20));
         await this.alarm();
         return { data:await this.adminData(), jobs:this.sql.exec('SELECT id,status,due,attempts FROM jobs').toArray() };
       }
