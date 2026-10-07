@@ -738,7 +738,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send({update_id:++seq,callback_query:{id:'cb-undo',from:{id:99,first_name:'主人'},data:data2,message:{message_id:2,chat:{id:99,type:'private'},text:notice.params.text}}});
     await tick(-401);
     assert.ok(actions(-401).some(x=>x.method==='unbanChatMember'&&x.params.user_id===666));
-    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-undo'&&c.params.text.includes('已撤销封禁')));
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-undo'&&c.params.text.includes('正在处理')));
     const edits=calls.filter(c=>c.method==='editMessageText'&&c.params.chat_id===99&&c.params.message_id===444);
     assert.ok(edits.some(c=>c.params.text.includes('已撤销封禁并信任此人（主人')&&c.params.text.includes('正在解封')&&!JSON.stringify(c.params.reply_markup).includes(':undo')));
     assert.ok(edits.at(-1).params.text.includes('解封成功')&&!edits.at(-1).params.text.includes('正在解封'));
@@ -746,6 +746,18 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');assert.equal(await state.getByName('chat:-401').readRecordTest('allow:666'),true);
     await send({update_id:++seq,callback_query:{id:'cb-again',from:{id:99},data:data2,message:{message_id:2,chat:{id:99,type:'private'}}}});
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-again'&&/已经处理过/.test(c.params.text)));
+  });
+  await t.test('Webhook 漏收按钮点击时自动补上，并通知所有者', async () => {
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    webhookState={...webhookState,allowed_updates:['message','edited_message','my_chat_member']};
+    const result=await global.ensureWebhookUpdates();
+    assert.deepEqual(result.fixed,['callback_query','chat_join_request']);
+    const set=calls.findLast(c=>c.method==='setWebhook');
+    assert.equal(set.params.url,'https://bot.test/webhook/path');assert.equal(set.params.secret_token,'verify');
+    assert.ok(set.params.allowed_updates.includes('callback_query')&&set.params.allowed_updates.includes('message'));
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('callback_query')));
+    const count=calls.filter(c=>c.method==='setWebhook').length;assert.equal(await global.ensureWebhookUpdates(),null);assert.equal(calls.filter(c=>c.method==='setWebhook').length,count);
+    webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
   });
   await t.test('解封失败时通知上写明失败原因', async () => {
     const join={update_id:++seq,message:{message_id:7101,date:Math.floor(Date.now()/1000),chat:{id:-405,type:'supergroup',title:'失败群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告号'}]}};
