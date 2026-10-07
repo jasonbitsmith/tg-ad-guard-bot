@@ -338,6 +338,67 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await tick(-171,true);assert.equal(await group.verification(81),undefined);
     assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
   });
+  await t.test('频道验证期间不能发言；按钮答题限 3 次；超时可选择移出', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),channelGroup=ns.getByName('chat:-501');
+    await channelGroup.editVerification('channel',10,'@jason_vps_deal','ban');
+    await send(update(-501,'',{new_chat_members:[{id:91,first_name:'未验证'}]}));await tick(-501);
+    assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-501&&c.params.user_id===91&&c.params.permissions.can_send_messages===false));
+    const prompt=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-501&&c.params.text.includes('新成员验证'));
+    assert.equal(prompt.params.parse_mode,'HTML');assert.ok(prompt.params.text.includes('tg://user?id=91'));
+    const sneaky=update(-501,'加我领福利',{from:{id:91,first_name:'未验证'}});await send(sneaky);await tick(-501);
+    assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-501&&c.params.message_id===sneaky.message.message_id));
+
+    const buttonGroup=ns.getByName('chat:-502');await buttonGroup.editVerification('button',10,'','kick');
+    await send(update(-502,'',{new_chat_members:[{id:92,first_name:'按钮新人'}]}));await tick(-502);
+    const ask=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-502&&c.params.text.includes('新成员验证'));
+    const buttons=ask.params.reply_markup.inline_keyboard[0];assert.equal(buttons.length,4);
+    const answer=(await buttonGroup.verification(92)).answer,wrong=buttons.find(b=>!b.callback_data.endsWith(':'+answer)).callback_data;
+    const click=(id,data,from=92)=>send({update_id:++seq,callback_query:{id,from:{id:from,first_name:'按钮新人'},data,message:{message_id:ask.params.chat_id===-502?777:0,chat:{id:-502,type:'supergroup',title:'测试群'}}}});
+    await click('other-1',wrong,93);await tick(-502);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='other-1'&&c.params.text.includes('其他新成员')));
+    for(const n of [1,2]){await click('wrong-'+n,wrong);await tick(-502);}
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wrong-2'&&c.params.text.includes('还可以再试 1 次')));
+    await click('wrong-3',wrong);await tick(-502);await tick(-502);
+    assert.equal(await buttonGroup.verification(92),undefined);
+    assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-502&&c.params.user_id===92));
+    assert.ok(calls.some(c=>c.method==='unbanChatMember'&&c.params.chat_id===-502&&c.params.user_id===92&&c.params.only_if_banned===true));
+
+    await send(update(-502,'',{new_chat_members:[{id:94,first_name:'答对的人'}]}));await tick(-502);
+    const right=(await buttonGroup.verification(94)).answer;
+    await click('right',`verify:pick:94:${right}`,94);await tick(-502);
+    assert.equal(await buttonGroup.verification(94),undefined);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='right'&&c.params.text.includes('验证通过')));
+  });
+  await t.test('算术验证通过的提示稍后自动删除', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-503');await g.editVerification('math',10,'');
+    await send(update(-503,'',{new_chat_members:[{id:95,first_name:'算术'}]}));await tick(-503);
+    await send(update(-503,(await g.verification(95)).answer,{from:{id:95,first_name:'算术'}}));
+    const {jobs}=await tick(-503);
+    assert.ok(jobs.some(x=>x.id==='cleanup:-503:444'&&x.status==='pending'));
+    await tick(-503,true);
+    assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-503&&c.params.message_id===444));
+  });
+  await t.test('入群申请：私聊验证，通过自动批准，超时自动拒绝', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-504');await g.editVerification('button',10,'');
+    const joinRequest=id=>({update_id:++seq,chat_join_request:{chat:{id:-504,type:'supergroup',title:'申请群'},from:{id,first_name:'申请人'},user_chat_id:id,date:Math.floor(Date.now()/1000)}});
+    assert.equal((await send(joinRequest(96))).status,200);await tick(-504);
+    const dm=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===96);
+    assert.ok(dm.params.text.includes('入群验证：申请群'));
+    assert.equal((await g.verification(96)).via,'request');
+    const answer=(await g.verification(96)).answer;
+    await send({update_id:++seq,callback_query:{id:'dm-ok',from:{id:96,first_name:'申请人'},data:`vj:-504:p:${answer}`,message:{message_id:444,chat:{id:96,type:'private',first_name:'申请人'}}}});await tick(-504);
+    assert.ok(calls.some(c=>c.method==='approveChatJoinRequest'&&c.params.chat_id===-504&&c.params.user_id===96));
+    // Approved members are not asked again when they actually join.
+    await send(update(-504,'',{new_chat_members:[{id:96,first_name:'申请人'}]}));await tick(-504);
+    assert.equal(await g.verification(96),undefined);
+    assert.ok(!(await ns.getByName('admin').listChats()).some(chat=>chat.id==='96'));
+
+    await send(joinRequest(97));await tick(-504);
+    await g.expireVerificationTest(97);await tick(-504);
+    assert.ok(calls.some(c=>c.method==='declineChatJoinRequest'&&c.params.chat_id===-504&&c.params.user_id===97));
+    assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-504&&c.params.user_id===97));
+    assert.equal(await g.verification(97),undefined);
+  });
   await t.test('跨群用户名定位验证超时：手动解封、免验证一次且继续拦截广告',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-181');
     await g.editVerification('math',5,'');

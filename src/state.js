@@ -34,6 +34,11 @@ export class GuardState extends DurableObject {
       CREATE INDEX IF NOT EXISTS member_username ON member_profiles(username);
       CREATE TABLE IF NOT EXISTS verifications (user_id TEXT PRIMARY KEY, answer TEXT, prompt_message_id INTEGER, expires INTEGER NOT NULL, mode TEXT NOT NULL, channel TEXT);
       CREATE TABLE IF NOT EXISTS config_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, reason TEXT NOT NULL, config TEXT NOT NULL);`);
+    // Columns added after the table first shipped.
+    const columns = this.sql.exec('PRAGMA table_info(verifications)').toArray().map(row => row.name);
+    if (!columns.includes('attempts')) this.sql.exec('ALTER TABLE verifications ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+    if (!columns.includes('via')) this.sql.exec("ALTER TABLE verifications ADD COLUMN via TEXT NOT NULL DEFAULT 'group'");
+    if (!columns.includes('prompt_chat_id')) this.sql.exec('ALTER TABLE verifications ADD COLUMN prompt_chat_id INTEGER');
     for (const chat of LEGACY_CHATS) {
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
@@ -115,7 +120,10 @@ export class GuardState extends DurableObject {
     // Register with the global admin object only when the title changes (and
     // at least daily), instead of on every message, so group traffic does not
     // all funnel through that single object.
-    const chat = (update.message || update.edited_message || update.callback_query?.message)?.chat;
+    const source = update.chat_join_request?.chat || (update.message || update.edited_message || update.callback_query?.message)?.chat;
+    // Callbacks from a private verification chat are routed here too; never
+    // register that private chat as a group.
+    const chat = ['group', 'supergroup'].includes(source?.type) ? source : null;
     const title = chat ? String(chat.title || chat.id) : null;
     if (title !== null && this.read('registered-title') !== title) {
       await this.env.GUARD_STATE.getByName('admin').register(chat);
@@ -137,18 +145,29 @@ export class GuardState extends DurableObject {
       for (let n = 0; n < 10 && Date.now() - started < 20000; n++) {
         // Keep each group's processing order across retries. Otherwise a later warning
         // could be overwritten by a previously planned event that was rate-limited.
-        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
+        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
         if (!job || job.due > Date.now()) break;
         await this.runJob(job);
       }
-      const expired=this.sql.exec("SELECT user_id,prompt_message_id,mode,expires FROM verifications WHERE expires<=? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) LIMIT 50",Date.now()).toArray();
-      const chat=this.read('chat');
+      const expired=this.sql.exec("SELECT user_id,prompt_message_id,prompt_chat_id,via,mode,expires FROM verifications WHERE expires<=? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) LIMIT 50",Date.now()).toArray();
+      const chat=this.read('chat'),timeoutAction=expired.length?this.timeoutAction(await this.config()):'ban';
       if(chat?.id)for(const pending of expired){
         const id=`verification-timeout:${pending.user_id}:${pending.expires}`;
         if(this.sql.exec('SELECT id FROM jobs WHERE id=?',id).toArray().length)continue;
-        const ops=[{method:'banChatMember',params:{chat_id:chat.id,user_id:Number(pending.user_id),until_date:0}}, {local:'clearVerification',userId:pending.user_id,expires:pending.expires}];
-        if(pending.prompt_message_id)ops.push({method:'deleteMessage',params:{chat_id:chat.id,message_id:pending.prompt_message_id}});
-        const plan={ops,entry:{chatId:chat.id,chatTitle:chat.title||'',userId:pending.user_id,action:'verification-timeout-ban',reasons:['未在验证时限内完成验证']}};
+        const user=Number(pending.user_id),clear={local:'clearVerification',userId:pending.user_id,expires:pending.expires},failed=Number(this.verification(pending.user_id)?.attempts||0)>=3?'答错次数用完':'未在验证时限内完成验证';
+        let plan;
+        if(pending.via==='request'){
+          // A join request is only declined; the person can apply again.
+          const ops=[{method:'declineChatJoinRequest',params:{chat_id:chat.id,user_id:user},optional:true},clear];
+          if(pending.prompt_message_id&&pending.prompt_chat_id)ops.push({method:'editMessageText',params:{chat_id:pending.prompt_chat_id,message_id:pending.prompt_message_id,text:`⌛ ${failed}，入群申请已拒绝。你可以重新申请加入。`},optional:true});
+          plan={ops,entry:{chatId:chat.id,chatTitle:chat.title||'',userId:pending.user_id,action:'join-request-declined',reasons:[failed]}};
+        } else {
+          const ops=[{method:'banChatMember',params:{chat_id:chat.id,user_id:user,until_date:0}}];
+          if(timeoutAction==='kick')ops.push({method:'unbanChatMember',params:{chat_id:chat.id,user_id:user,only_if_banned:true}});
+          ops.push(clear);
+          if(pending.prompt_message_id)ops.push({method:'deleteMessage',params:{chat_id:chat.id,message_id:pending.prompt_message_id}});
+          plan={ops,entry:{chatId:chat.id,chatTitle:chat.title||'',userId:pending.user_id,action:timeoutAction==='kick'?'verification-timeout-kick':'verification-timeout-ban',reasons:[failed]}};
+        }
         this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)',id,'{}',JSON.stringify(plan),Date.now(),Date.now());
         const job=this.sql.exec('SELECT * FROM jobs WHERE id=?',id).toArray()[0];await this.runJob(job);
       }
@@ -159,8 +178,8 @@ export class GuardState extends DurableObject {
       await this.quietTick().catch(error => this.log({ action: 'quiet-switch', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
     } finally {
       this.running = false;
-      const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
-      const timeoutDue=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (id LIKE 'verification-timeout:%' OR id LIKE 'federation:%' OR id LIKE 'undo:%' OR id LIKE 'verification-release:%')").toArray()[0]?.due;
+      const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
+      const timeoutDue=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (id LIKE 'verification-timeout:%' OR id LIKE 'federation:%' OR id LIKE 'undo:%' OR id LIKE 'verification-release:%' OR id LIKE 'cleanup:%')").toArray()[0]?.due;
       const verificationDue = this.sql.exec("SELECT expires FROM verifications WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) ORDER BY expires LIMIT 1").toArray()[0]?.expires;
       const due = [next, timeoutDue, verificationDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];
       const config = await this.config();
@@ -200,7 +219,7 @@ export class GuardState extends DurableObject {
       for (const op of plan.ops) {
         if (op.done) continue;
         if(plan.recovery && JSON.stringify(this.memberBan(plan.recovery.userId))!==JSON.stringify(plan.recovery.ban)){throw Object.assign(Error('成员已有新的处罚，验证解封已停止，请重新核对'),{retryable:false});}
-        if(op.method==='banChatMember'&&job.id.startsWith('verification-timeout:')&&!this.verification(op.params.user_id)){op.skipped='验证已由管理员通过';op.done=true;continue;}
+        if(['banChatMember','unbanChatMember','declineChatJoinRequest'].includes(op.method)&&job.id.startsWith('verification-timeout:')&&!this.verification(op.params.user_id)){op.skipped='验证已由管理员通过';op.done=true;continue;}
         if(op.verificationPromptFor&&!this.verification(op.verificationPromptFor)){op.skipped='验证已完成，不发送旧验证提示';op.done=true;continue;}
         if(op.method==='restrictChatMember'&&plan.entry?.action==='welcome-and-verification-started'&&!this.verification(op.params.user_id)){op.skipped='验证已完成';op.done=true;continue;}
         if(op.local==='verification-release-complete'){this.write(`verification-pass:${op.userId}`,true,DAY);this.write(`member-ban:${op.userId}`,{action:'verification-released',jobId:job.id});plan.recovery.ban=this.memberBan(op.userId);
@@ -238,9 +257,14 @@ export class GuardState extends DurableObject {
                 if(op.method==='unbanChatMember'){this.remove(`ban-owner:${op.params.user_id}`);if(!plan.recovery)this.write(`member-ban:${op.params.user_id}`,{action:'unbanned',jobId:job.id});}
               }
               if (op.verificationPromptFor && Number.isSafeInteger(op.result?.message_id)) this.sql.exec('UPDATE verifications SET prompt_message_id=? WHERE user_id=?', op.result.message_id, String(op.verificationPromptFor));
+              // Short-lived bot replies are removed later by a delayed job.
+              if (op.cleanupAfter && Number.isSafeInteger(op.result?.message_id)) this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', `cleanup:${op.params.chat_id}:${op.result.message_id}`, '{}', JSON.stringify({ ops: [{ method: 'deleteMessage', params: { chat_id: op.params.chat_id, message_id: op.result.message_id } }] }), Date.now() + op.cleanupAfter, Date.now());
             }
             catch (error) {
               if (op.method === 'deleteMessage' && error.code === 400 && /message to delete not found/i.test(error.message)) op.result = { alreadyAbsent: true };
+              // Best-effort steps (a private prompt, a join request someone
+              // else already handled) must not block or retry the whole plan.
+              else if (op.optional && [400, 403].includes(error.code)) { op.skipped = String(error.message || '').slice(0, 120) || '未完成'; }
               else throw error;
             }
           }
@@ -256,7 +280,7 @@ export class GuardState extends DurableObject {
       this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?", job.id);
       // Owner notice with an undo button. Manual admin bans and per-group
       // federation copies are left out; the source group's ban covers the case.
-      if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
+      if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban','verification-timeout-kick'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
         await this.env.GUARD_STATE.getByName('admin').noticeBan(this.withProfile(plan.entry)).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
     } catch (error) {
       if(job.id.startsWith('verification-timeout:') && error.code===403){error.retryable=true;error.retryAfter=1800;}

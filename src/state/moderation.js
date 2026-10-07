@@ -9,6 +9,7 @@ import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
 export class ModerationMethods {
   async plan(update) {
     const empty = { ops: [] };
+    if (update.chat_join_request) return this.joinRequestPlan(update.chat_join_request);
     const msg = update.message || update.edited_message;
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return empty;
     const tg = telegram(this.env.BOT_TOKEN);
@@ -39,14 +40,13 @@ export class ModerationMethods {
       for (const [userId, screen] of blocked) ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: userId, until_date: 0 }, screenReasons: screen.reasons });
       const started = [];
       for (const member of joining) {
-        const verification = await this.startVerification(member, msg, config, tg, raidActive && this.verificationMode(config) === 'off');
+        const verification = await this.startVerification(member, msg, config, tg, raidActive && this.verificationMode(config) === 'off' ? 'button' : null);
         if (!verification) continue;
         started.push(member.id);
-        ops.push({ method: 'restrictChatMember', params: { chat_id: chatId, user_id: member.id, permissions: this.verificationPermissions(), use_independent_chat_permissions: true } });
-        const replyMarkup = verification.mode === 'channel' ? { reply_markup: { inline_keyboard: [[{ text: '① 打开频道，点击加入', url: `https://t.me/${verification.channel.slice(1)}` }], [{ text: '② 已加入，完成验证', callback_data: `verify:channel:${member.id}` }]] } } : {};
-        ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, ...replyMarkup }, verificationPromptFor: member.id });
+        ops.push({ method: 'restrictChatMember', params: { chat_id: chatId, user_id: member.id, permissions: this.verificationPermissions(verification.mode), use_independent_chat_permissions: true } });
+        ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: verification.text, parse_mode: 'HTML', ...(verification.keyboard ? { reply_markup: { inline_keyboard: verification.keyboard } } : {}) }, verificationPromptFor: member.id });
       }
-      return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: [...(started.length ? [raidActive && this.verificationMode(config) === 'off' ? '反入群轰炸：临时算术验证已开启' : `${this.verificationMode(config)} 验证已开启`] : []), ...(blocked.size ? [`同批入群 ${blocked.size} 人命中广告号筛查，已封禁：${[...blocked.keys()].join('、')}`] : [])] } } : empty;
+      return ops.length ? { ops, entry: { chatId, chatTitle: msg.chat.title || '', action: started.length ? 'welcome-and-verification-started' : 'welcome-and-rules', outcome: 'pending', userId: started.join(','), reasons: [...(started.length ? [raidActive && this.verificationMode(config) === 'off' ? '反入群轰炸：临时按钮答题验证已开启' : `${this.verificationMode(config)} 验证已开启`] : []), ...(blocked.size ? [`同批入群 ${blocked.size} 人命中广告号筛查，已封禁：${[...blocked.keys()].join('、')}`] : [])] } } : empty;
     }
     // Anonymous group admins and automatic linked-channel posts are trusted separately.
     if (msg.sender_chat?.id === chatId || msg.is_automatic_forward) return empty;
@@ -74,17 +74,21 @@ export class ModerationMethods {
       if (ADMIN_STATUS.includes(membership.status)) return empty;
     }
     const pendingVerification = !msg.sender_chat && this.verification(msg.from.id);
-    if(pendingVerification && pendingVerification.expires<=Date.now())return {ops:[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]};
-    if (pendingVerification?.mode === 'math') {
+    // Until verified, nothing a new member sends stays in the group; only a
+    // typed math answer is read.
+    if(pendingVerification && (pendingVerification.via||'group')==='group' && (pendingVerification.expires<=Date.now() || pendingVerification.mode!=='math'))return {ops:[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]};
+    if (pendingVerification?.mode === 'math' && (pendingVerification.via||'group') === 'group') {
       if (String(msg.text || '').trim() === pendingVerification.answer) {
         this.clearVerification(msg.from.id);
         const restore = await this.restoreMember(chatId, msg.from.id, tg);
         const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
         if (pendingVerification.prompt_message_id) ops.push({ method: 'deleteMessage', params: { chat_id: chatId, message_id: pendingVerification.prompt_message_id } });
-        ops.push(restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' } });
+        ops.push(restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' }, cleanupAfter: 60000 });
         return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-passed', outcome: 'pending', reasons: ['算术验证'] } };
       }
-      return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: ['算术答案不正确'] } };
+      // Only numbers count as an attempt; other chatter is just removed.
+      const left = /^\d{1,3}$/.test(String(msg.text || '').trim()) ? this.verificationWrongAnswer(msg.from.id) : null;
+      return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left === null ? '验证期间的非答案消息' : left ? `算术答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
     }
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
@@ -225,18 +229,7 @@ export class ModerationMethods {
   }
 
   async callbackPlan(callback) {
-    const message = callback?.message;
-    const match = /^verify:channel:(\d{1,16})$/.exec(String(callback?.data || ''));
-    if (!match || !message?.chat || String(callback.from?.id) !== match[1]) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '验证请求无效。', show_alert: true } }] };
-    const pending = this.verification(callback.from.id);
-    if (!pending || pending.expires<=Date.now() || pending.mode !== 'channel' || !pending.channel) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '该验证已失效，请联系管理员。', show_alert: true } }] };
-    const tg = telegram(this.env.BOT_TOKEN);
-    const joined = await this.member(tg, pending.channel, callback.from.id).catch(() => null);
-    if (!joined) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '暂时无法检查订阅状态，请稍后重试；若一直失败，请联系管理员检查频道权限。', show_alert: true } }] };
-    if (['left', 'kicked'].includes(joined.status) || joined.status==='restricted' && joined.is_member!==true) return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: `还没有检测到订阅。请点击第一个按钮打开 ${pending.channel}，在频道底部点击“加入 / Join”，再返回本群点击第二个按钮。`, show_alert: true } }] };
-    this.clearVerification(callback.from.id);
-    const restore = await this.restoreMember(message.chat.id, callback.from.id, tg);
-    return { ops: [{ method: 'answerCallbackQuery', params: { callback_query_id: callback.id, text: '验证通过，欢迎加入！' } }, restore, { method: 'deleteMessage', params: { chat_id: message.chat.id, message_id: message.message_id } }], entry: { chatId: message.chat.id, chatTitle: message.chat.title || '', userId: callback.from.id, action: 'verification-passed', outcome: 'pending', reasons: [`频道验证：${pending.channel}`] } };
+    return this.verificationCallbackPlan(callback);
   }
 
   async spamPlan(msg,tg) {
