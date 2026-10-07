@@ -659,6 +659,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(notice.params.parse_mode,'HTML');
     assert.ok(notice.params.text.includes('<a href="tg://user?id=666">广告&lt;号&gt;</a> <a href="https://t.me/spam_acc">@spam_acc</a>'));
     const data2=notice.params.reply_markup.inline_keyboard[0][0].callback_data;assert.match(data2,/^n:[a-f0-9]{16}:undo$/);
+    const info=notice.params.reply_markup.inline_keyboard[1][0];assert.equal(info.text,'👤 查看资料');
+    await send({update_id:++seq,callback_query:{id:'cb-info',from:{id:99},data:info.callback_data,message:{message_id:1,chat:{id:99,type:'private'},text:notice.params.text}}});
+    const card=calls.findLast(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===99&&(c.params.text||c.params.caption||'').startsWith('👤'));
+    assert.ok(card);const body=card.params.text||card.params.caption;assert.ok(body.includes('https://t.me/spam_acc'));assert.match(body,/全网广告号黑名单/);assert.match(body,/因广告被封/);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-info'&&c.params.text==='资料已发送'));
     const stranger=await send({update_id:++seq,callback_query:{id:'cb-x',from:{id:5,first_name:'路人'},data:data2,message:{message_id:1,chat:{id:5,type:'private'},text:notice.params.text}}});assert.equal(stranger.status,200);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-x'&&/所有者/.test(c.params.text)));
     assert.ok(!actions(-401).some(x=>x.method==='unbanChatMember'));
@@ -667,7 +672,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(actions(-401).some(x=>x.method==='unbanChatMember'&&x.params.user_id===666));
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-undo'&&c.params.text.includes('已撤销封禁')));
     const edits=calls.filter(c=>c.method==='editMessageText'&&c.params.chat_id===99&&c.params.message_id===444);
-    assert.ok(edits.some(c=>c.params.text.includes('已撤销封禁并信任此人（主人')&&c.params.text.includes('正在解封')&&!c.params.reply_markup));
+    assert.ok(edits.some(c=>c.params.text.includes('已撤销封禁并信任此人（主人')&&c.params.text.includes('正在解封')&&!JSON.stringify(c.params.reply_markup).includes(':undo')));
     assert.ok(edits.at(-1).params.text.includes('解封成功')&&!edits.at(-1).params.text.includes('正在解封'));
     assert.equal(await (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-401').readRecordTest('verification-pass:666'),true);
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');assert.equal(await state.getByName('chat:-401').readRecordTest('allow:666'),true);
