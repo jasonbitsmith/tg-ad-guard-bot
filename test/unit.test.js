@@ -1,8 +1,10 @@
+import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
+import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, DEFAULT_KEYWORDS, extractDomains, parseCommand, normalize, normalizeDomain } from '../src/filters.js';
 import { telegram, secureEqual } from '../src/telegram.js';
-import { dmitNotification, parseDmitPricing, withDmitAffiliate } from '../src/dmit.js';
+import { dmitNotification, dmitOfficialNotification, parseDmitOfficialRestocks, parseDmitPricing, withDmitAffiliate } from '../src/dmit.js';
 import { sampleMatches, validateSample } from '../src/samples.js';
 
 const msg = text => ({ text, from: { id: 1, first_name: '群友' } });
@@ -41,6 +43,20 @@ test('拍照日结兼职招揽会被处理', () => {
   assert.equal(classify(msg('拍·照兼职📱 日·结7百左右💰'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.ok(classify(msg('日结 700，拍照即可做'), DEFAULT_KEYWORDS).score >= 4);
   assert.ok(classify(msg('拍照留档，日结费用已报销'), DEFAULT_KEYWORDS).score < 4);
+});
+test('洗米招揽、手机拍违停和投资带单广告首条永久封禁', () => {
+  assert.equal(classify(msg('做洗米 赚一万'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('手机拍违停 一百一张，日结七百左右'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('又赚钱了，跟对他很重要，别等爆仓才后悔 @Aaswed52'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('今天洗米做饭，花了 100 元'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('有人知道为什么会爆仓吗？'), DEFAULT_KEYWORDS).permanentBan, false);
+});
+test('付费拍照广告昵称加短账号会封禁，普通昵称和正文账号不误判', () => {
+  const ad = { ...msg('vf3295292528'), from: { id: 1, first_name: '📷拍*违*停 🚘一*百*元/张🧧' } };
+  assert.equal(classify(ad, DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify({ ...ad, text: '你好，想问下 VPS 配置' }, DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('vf3295292528'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify({ ...ad, from: { id: 1, first_name: '摄影爱好者' } }, DEFAULT_KEYWORDS).permanentBan, false);
 });
 test('码多来收益刷屏模板首条即永久封禁', () => {
   assert.equal(classify(msg('码多来捡钱 一小时1000'), DEFAULT_KEYWORDS).permanentBan, true);
@@ -93,9 +109,42 @@ test('DMIT 定价页按产品代码识别库存并生成频道推送', () => {
   assert.match(dmitNotification(items[0], '@jason_vps_deal'), /产品：HKG\.AS3\.PRO\.TINY/);
   assert.equal(withDmitAffiliate(items[0].orderUrl, '16962'), 'https://www.dmit.io/aff.php?pid=88&aff=16962');
 });
+
+test('DMIT official fallback only accepts restock announcements', () => {
+  const html = `<div data-post="DMIT_INC/10"><div class="tgme_widget_message_text js-message_text">LAX.AS3.PRO.TINY is back in stock now.</div></div>
+    <div data-post="DMIT_INC/11"><div class="tgme_widget_message_text js-message_text">Network maintenance notice.</div></div>`;
+  const items = parseDmitOfficialRestocks(html);
+  assert.deepEqual(items, [{ id: '10', message: 'LAX.AS3.PRO.TINY is back in stock now.', url: 'https://t.me/DMIT_INC/10' }]);
+  assert.match(dmitOfficialNotification(items[0], '@jason_vps_deal'), /官方补货公告/);
+});
 test('全局广告样本文字、域名和图片指纹均可命中', () => {
-  const rules = [validateSample('text', '水果机出货', '拆词广告'), validateSample('domain', 'spam.example'), validateSample('photo', 'same-picture', '重复海报')];
-  const photo = msg('水果机 出货 https://sub.spam.example'); photo.photo = [{ file_unique_id: 'same-picture' }];
+  const rules = [validateSample('text', '水果机渠道出货', '拆词广告'), validateSample('domain', 'spam.example'), validateSample('photo', 'same-picture', '重复海报')];
+  const photo = msg('水果机 渠道 出货 https://sub.spam.example'); photo.photo = [{ file_unique_id: 'same-picture' }];
   assert.equal(sampleMatches(photo, rules).length, 3);
   assert.throws(() => validateSample('unknown', 'x'));
+});
+
+
+test('后台脚本语法有效，待审及停用样本不参与处罚', async()=>{
+  const {ADMIN_JS}=await import('../src/admin.js');assert.doesNotThrow(()=>new Function(ADMIN_JS));
+  assert.equal(sampleMatches({text:'广告'},[{kind:'text',value:'广告',status:'pending'},{kind:'text',value:'广告',status:'disabled'}]).length,0);
+});
+
+test('过短文字样本不能启用，完整样本仍支持拆词匹配',()=>{
+  assert.throws(()=>validateSample('text','赚'),/至少/);
+  assert.throws(()=>validateSample('text','私.聊'),/至少/);
+  const pending=validateSample('text','赚','',true);assert.equal(pending.value,'赚');
+  assert.equal(sampleMatches({text:'水果.机.渠道.出货'},[validateSample('text','水果机渠道出货')]).length,1);
+});
+
+test('备份校验限制范围、不接受密钥和未知配置，活动短样本不可导入',()=>{
+ const config={...DEFAULT_POLICY,keywords:['测试词']};const backup={schema:1,created:'now',groups:[{id:'-1',title:'测试',config}],samples:[],federation:['-1']};
+ assert.equal(validateBackup(backup).groups[0].id,'-1');assert.equal(backup.groups[0].config,config);
+ assert.throws(()=>validateBackup({...backup,BOT_TOKEN:'secret'}),/不支持/);
+ assert.throws(()=>validateBackup({...backup,groups:[{...backup.groups[0],config:{...config,password:'secret'}}]}),/未知/);
+ assert.throws(()=>validateBackup({...backup,samples:[{kind:'text',value:'赚',status:'active'}]}),/至少/);
+ assert.throws(()=>validateBackup({...backup,federation:['-2']}),/联防/);
+ assert.throws(()=>validateConfig({...config,quietEnabled:true,quietStart:'00:00',quietEnd:'00:00'}),/静默/);
+ assert.equal(validateConfig({...config,newMemberLinkMinutes:1440}).newMemberLinkMinutes,1440);
+ assert.deepEqual(diffValues({a:1,b:2},{a:3,b:2}),[{field:'a',before:1,after:3}]);
 });

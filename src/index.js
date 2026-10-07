@@ -1,13 +1,35 @@
+import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
+import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.2.0';
+export const VERSION = '2.7.1';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
+async function bookscapeState(state, path, body) {
+  const response = await state.fetch(new Request('https://bookscape.internal/' + path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }));
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || '发布状态服务不可用');
+  return result;
+}
 const owners = env => new Set((env.ADMIN_IDS || '').split(',').map(id => id.trim()).filter(Boolean));
+async function loginRateAllowed(request, env) {
+  if (!env.ADMIN_LOGIN_LIMITER) return true;
+  try {
+    const key = await digest(request.headers.get('CF-Connecting-IP') || 'unknown');
+    const { success } = await env.ADMIN_LOGIN_LIMITER.limit({ key });
+    if (success) return true;
+    try { env.ANALYTICS?.writeDataPoint({ indexes: ['global'], blobs: ['admin-login-rate-limited', 'blocked'], doubles: [1] }); } catch { /* Non-critical metric. */ }
+    return false;
+  } catch { return true; }
+}
 function group(env, id) {
   if (!/^-[0-9]{1,16}$/.test(String(id)) || !Number.isSafeInteger(Number(id))) throw new Error('无效群 ID');
   return env.GUARD_STATE.getByName('chat:' + id);
@@ -38,6 +60,7 @@ async function admin(request, env, url) {
   const state = globalState(env);
   const path = url.pathname.slice('/admin/api/'.length);
   if (path === 'login' && request.method === 'POST') {
+    if (!await loginRateAllowed(request, env)) return json({ error: '请求过于频繁，请稍后再试' }, 429);
     const ip = await digest(request.headers.get('CF-Connecting-IP') || 'unknown');
     if (!await state.loginAllowed(ip)) return json({ error: '错误密码次数过多，请 15 分钟后再试' }, 429);
     let body;
@@ -54,9 +77,10 @@ async function admin(request, env, url) {
     return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0` });
   }
   if (request.method === 'GET') {
+    if(path==='verification/members')return json(await state.findVerificationMembers(url.searchParams.get('query')||''));
     if (path === 'chats') return json({ chats: await state.listChats() });
-    if (path === 'samples') return json({ samples: state.listSamples() });
-    if (path === 'federation') return json({ chats: state.federation() });
+    if (path === 'samples') return json({ samples: await state.listSamples() });
+    if (path === 'federation') return json({ chats: await state.federation() });
     if (path === 'logs') return json(await group(env, url.searchParams.get('chatId')).adminData(Number(url.searchParams.get('before')) || 0));
     if (path === 'keyword-stats') return json(await group(env, url.searchParams.get('chatId')).keywordStats());
     if (path === 'legacy') {
@@ -86,29 +110,54 @@ async function admin(request, env, url) {
       return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, groups, dmitMonitor: await state.dmitStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
     }
   }
+  if(request.method==='GET' && path==='review-examples')return json({examples:await state.listReviewExamples()});
+  if(request.method==='GET' && path==='federation/cases')return json(await state.searchCases(Object.fromEntries(url.searchParams)));
+  if(request.method==='GET' && path==='backup/export')return json(await state.exportBackup());
+  if(request.method==='GET' && path==='backup/rollback')return json({backup:await state.lastRollback()});
+  if(request.method==='GET' && path==='audit')return json(await state.listAudit(Number(url.searchParams.get('before'))||0));
+  if(request.method==='GET' && path==='incidents')return json({incidents:await state.incidentList()});
+  if(request.method==='GET' && path==='trials')return json({trials:await group(env,url.searchParams.get('chatId')).listTrials()});
+  if(request.method!=='POST')return json({error:'Not found'},404);
+  const body=await readJson(request.clone(),600000);
+  const excluded=['samples/preview','samples/test','backup/preview'];
+  if(excluded.includes(path))return mutateAdmin(request,env,url,state,path);
+  let before={};try{before=await state.auditSnapshot(path,body);}catch{}
+  const actor='session:'+String(await digest(session)).slice(0,12), operation=crypto.randomUUID();
+  await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'started',changes:[]});
+  try{
+    const response=await mutateAdmin(request,env,url,state,path);let after={};try{after=await state.auditSnapshot(path,body);}catch{}
+    await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:response.ok?'success':'failed',target:body.id||body.word||body.domain||null,changes:diffValues(before,after)});
+    return response;
+  }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
+}
+async function mutateAdmin(request,env,url,state,path){
+  if(path==='verification/release'){const body=await readJson(request,4096);return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));}
+  if(path==='backup/preview'){const body=await readJson(request,600000);return json(await state.previewBackup(body.backup));}
+  if(path==='backup/restore'){const body=await readJson(request,4096);return json(await state.restoreBackup(body.token));}
+  if(['trials/add','trials/remove','trials/promote'].includes(path)){const body=await readJson(request,4096);return json(await group(env,body.chatId).editTrial(path.split('/')[1],body));}
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word));
   }
-  if (request.method === 'POST' && ['samples/add','samples/remove'].includes(path)) {
-    return json({ samples: state.editSample(path.split('/')[1], await readJson(request, 4096)) });
+  if (request.method === 'POST' && ['samples/add','samples/remove','samples/activate','samples/disable'].includes(path)) {
+    return json({ samples: await state.editSample(path.split('/')[1], await readJson(request, 4096)) });
   }
+  if(request.method==='POST' && ['review-examples/add','review-examples/remove'].includes(path))return json({examples:await state.editReviewExample(path.split('/')[1],await readJson(request,20000))});
+  if(request.method==='POST' && path==='samples/preview'){const body=await readJson(request,4096);return json(await state.previewSample(body.id));}
+  if(request.method==='POST' && path==='federation/retry'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.retryCase(String(body.id),String(body.chatId)));}
+  if(request.method==='POST' && path==='federation/reverse'){const body=await readJson(request,4096);return json(await state.reverseCase(String(body.id)));}
+  if(request.method==='POST' && path==='samples/test') return json(await state.testSample(await readJson(request,8192)));
+  if(request.method==='POST' && path==='jobs/retry') { const body=await readJson(request,4096);return json(await group(env,body.chatId).retryJob(body.id)); }
   if (request.method === 'POST' && path === 'review/resolve') {
     const body = await readJson(request, 4096);
     const chatId = String(body.chatId), userId = Number(body.userId), messageId = Number(body.messageId);
     group(env, chatId);
     if (!Number.isSafeInteger(userId) || userId <= 0 || !Number.isSafeInteger(messageId) || messageId <= 0) throw new Error('无效的审查记录');
-    const tg = telegram(env.BOT_TOKEN);
-    await tg('deleteMessage', { chat_id: Number(chatId), message_id: messageId }).catch(error => { if (!(error.code === 400 && /message to delete not found/i.test(error.message))) throw error; });
-    await tg('banChatMember', { chat_id: Number(chatId), user_id: userId, until_date: 0 });
-    const targets = await state.federationTargets(chatId);
-    await Promise.all(targets.map(target => tg('banChatMember', { chat_id: Number(target), user_id: userId, until_date: 0 })));
-    state.log({ action: 'review-resolve-ban', actorId: 'web-admin', chatId, userId: String(userId), messageId, outcome: 'success', federationTargets: targets });
-    return json({ ok: true, federationTargets: targets.length });
+    return json(await group(env,chatId).queueReview(chatId,userId,messageId));
   }
   if (request.method === 'POST' && path === 'federation') {
     const body = await readJson(request, 4096);
-    return json({ chats: state.setFederation(body.chatId, body.enabled === true) });
+    return json({ chats: await state.setFederation(body.chatId, body.enabled === true) });
   }
   if (request.method === 'POST' && ['domains/allow/add','domains/allow/remove','domains/deny/add','domains/deny/remove'].includes(path)) {
     const body = await readJson(request, 4096); const [, list, action] = path.split('/');
@@ -134,6 +183,14 @@ async function admin(request, env, url) {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editNewMemberMediaGuard(body.enabled, body.minutes));
   }
+  if (request.method === 'POST' && path === 'content-locks') {
+    const body = await readJson(request, 8192);
+    return json(await group(env, body.chatId).editContentLocks(body.locks));
+  }
+  if (request.method === 'POST' && ['knowledge/upsert', 'knowledge/remove'].includes(path)) {
+    const body = await readJson(request, 16384);
+    return json(await group(env, body.chatId).editKnowledge(path.split('/')[1], body.item));
+  }
   if (request.method === 'POST' && path === 'config/restore') {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).restoreConfig(body.versionId));
@@ -147,7 +204,7 @@ async function admin(request, env, url) {
     const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end, body.notify)));
     const failed = results.filter(result => result.status === 'rejected').length;
     if (failed) throw new Error(`${failed} 个群保存失败，请稍后重试`);
-    return json({ updated: targets.length, config: results[0].value });
+    return json({ updated: targets.length, restorePending:results.filter(x=>x.status==='fulfilled' && x.value.quietRestorePending).length, config: results[0].value });
   }
   return json({ error: 'Not found' }, 404);
 }
@@ -155,6 +212,24 @@ async function admin(request, env, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/bookscape/api/')) {
+      if (!env.BOOKSCAPE_PUBLISH_KEY || env.BOOKSCAPE_PUBLISH_KEY.length < 32) return json({ error: '发布入口未启用' }, 503);
+      if (!await secureEqual(request.headers.get('Authorization'), 'Bearer ' + env.BOOKSCAPE_PUBLISH_KEY)) return json({ error: '发布凭据无效' }, 401);
+      const state = env.GUARD_STATE.getByName('bookscape:Book_Scape');
+      const path = url.pathname.slice('/bookscape/api/'.length);
+      try {
+        if (request.method === 'GET' && path === 'status') return json(await channelStatus(env));
+        if (request.method === 'GET' && path === 'receipt') return json(await bookscapeState(state, 'receipt?id=' + encodeURIComponent(url.searchParams.get('id') || '')));
+        if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+        if (!request.headers.get('Content-Type')?.startsWith('application/json')) return json({ error: '需要 JSON 请求' }, 415);
+        const body = await readJson(request, path === 'draft' ? 8000000 : 32768);
+        if (path === 'draft') return json(await bookscapeState(state, 'draft', body));
+        if (path === 'preview') return json(await bookscapeState(state, 'preview', { id: body.id }));
+        if (path === 'publish') return json(await bookscapeState(state, 'publish', body));
+        if (path === 'edit') return json(await editPostCaption(env, body));
+        return json({ error: 'Not found' }, 404);
+      } catch (error) { return json({ error: String(error.message).slice(0, 300) }, 400); }
+    }
     if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true, version: VERSION });
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
       try { return await admin(request, env, url); }
@@ -175,7 +250,19 @@ export default {
     // An owner can forward any message from an already-added group to the bot
     // privately; Telegram supplies the original chat metadata server-side.
     const privateMessage = update.message;
+    if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
     if (privateMessage?.chat?.type === 'private' && owners(env).has(String(privateMessage.from?.id))) {
+      const text=String(privateMessage.text||'').trim(),tg=telegram(env.BOT_TOKEN);
+      const release=/^\/release\s+(\d{1,16})\s+(-\d+)$/i.exec(text);
+      const find=/^\/findmember(?:\s+(.+))?$/i.exec(text);
+      if(release||find||/^@[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(text)){
+        try{
+          let reply;
+          if(release){await group(env,release[2]).releaseVerification(release[2],release[1],'telegram:'+privateMessage.from.id);reply='已提交手动通过验证，请稍后在后台查看执行结果。成功后，请成员在 24 小时内重新加入；首次重新加入免验证。';}
+          else {const result=await globalState(env).findVerificationMembers(find?find[1]||'':text);reply=result.members.length?result.members.slice(0,15).map(x=>`${x.name||x.username||x.userId} · ${x.chatTitle}\n用户 ID：${x.userId}；状态：${({pending:'等待验证',timeout:'验证超时封禁',processing:'解封处理中',failed:'解封失败',released:'已手动通过'})[x.state]||x.state}\n${x.canRelease?'/release '+x.userId+' '+x.chatId:'请在后台查看执行结果'}`).join('\n\n'):'未找到验证记录。用户名仅能匹配机器人已记录过的成员，请改用数字用户 ID，或让成员私聊机器人发送 /myid。';if(result.errors.length)reply+='\n部分群查询失败，请在后台重试。';}
+          await tg('sendMessage',{chat_id:privateMessage.chat.id,text:reply.slice(0,4000)});return new Response('OK');
+        }catch(error){await tg('sendMessage',{chat_id:privateMessage.chat.id,text:'操作未完成：'+String(error.message).slice(0,300)});return new Response('OK');}
+      }
       const forwardedChat = privateMessage.forward_origin?.chat || privateMessage.forward_from_chat;
       if (forwardedChat && ['group', 'supergroup'].includes(forwardedChat.type) && Number.isSafeInteger(forwardedChat.id) && forwardedChat.id < 0) {
         try {
@@ -200,7 +287,9 @@ export default {
   async scheduled(_controller, env, ctx) {
     if (env.GUARD_STATE) {
       if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
+      ctx.waitUntil(globalState(env).runQuietMaintenance());
       ctx.waitUntil(globalState(env).sendDailyReport());
+      ctx.waitUntil(globalState(env).monitorOperations());
     }
   },
 };

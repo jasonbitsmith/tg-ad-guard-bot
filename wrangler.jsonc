@@ -34,6 +34,22 @@
   "ai": {
     "binding": "AI"
   },
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "tg_ad_guard_events"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "ADMIN_LOGIN_LIMITER",
+      "namespace_id": "581004",
+      "simple": {
+        "limit": 15,
+        "period": 60
+      }
+    }
+  ],
   "migrations": [
     {
       "tag": "guard-v2",

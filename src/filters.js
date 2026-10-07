@@ -1,5 +1,6 @@
 export const DEFAULT_KEYWORDS = ['日结','急招','兼职','看我简介','看简介','刷单','点赞赚钱','无需经验','无押金','免费领取','招聘','招代理','加v','加微信','私聊我','接单','日入','稳赚','博彩','空投','USDT','代收代付','跑分','洗钱'];
-export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, newMemberLinkGuard: true, newMemberLinkMinutes: 30, newMemberMediaGuard: true, newMemberMediaMinutes: 30, welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', raidEnabled: true, raidJoinLimit: 4, raidMinutes: 30, quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true });
+export const CONTENT_LOCK_TYPES = Object.freeze(['link', 'invite', 'forward', 'inline', 'photo', 'video', 'gif', 'file', 'audio', 'sticker']);
+export const DEFAULT_POLICY = Object.freeze({ warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, newMemberLinkGuard: true, newMemberLinkMinutes: 30, newMemberMediaGuard: true, newMemberMediaMinutes: 30, contentLocks: {}, knowledgeBase: [], welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', raidEnabled: true, raidJoinLimit: 4, raidMinutes: 30, quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true });
 
 export function normalize(text) {
   return String(text || '').normalize('NFKC').replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -30,6 +31,13 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const body = normalize(text);
   const compact = body.replace(/[^\p{L}\p{N}@]+/gu, '');
   const name = normalize([msg.from?.first_name, msg.from?.last_name, msg.sender_chat?.title].filter(Boolean).join(' '));
+  const compactName = name.replace(/[^\p{L}\p{N}]+/gu, '');
+  // Confirmed campaign: the paid-photo pitch is in the display name, while
+  // the message contains only a contact identifier. Generic nicknames alone
+  // must never cause a ban.
+  const photoNamePitch = /拍(?:违停|违章|照).{0,16}(?:一百|100|百元|\d+元).{0,4}(?:张|次)/.test(compactName);
+  const shortContactCode = /^@?[a-z][a-z0-9_]{4,31}$/.test(body) && /\d/.test(body);
+  const profileContactPitch = photoNamePitch && shortContactCode;
   const entities = msg.entities || msg.caption_entities || [];
   const links = entities.filter(e => e.type === 'text_link' && typeof e.url === 'string').map(e => e.url);
   const destinations = [body, ...links.map(normalize)].join(' ');
@@ -49,6 +57,16 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const recruitmentSlogan = /(?:有码.{0,8}吃肉|(?:帮我|来)?收米|招代收|代收招募|来吃肉|带你吃肉|项目招募|团队招募)/.test(body);
   const dailyIncome = /(?:一天|每日|日赚|日入).{0,4}\d+(?:\.\d+)?\s*(?:k|w|千|万)/i.test(body);
   const photoGigPitch = /(?:拍\s*照.{0,8}兼职.{0,12}(?:日\s*结|当天结)|(?:日\s*结|当天结).{0,16}拍\s*照.{0,8}(?:兼职|即可做|赚钱|收入))/.test(body);
+  // These variants recruit people to photograph vehicles or alleged parking
+  // violations, often omitting the word “兼职” entirely.
+  const phonePhotoGigPitch = /(?:手机.{0,8}拍(?:违停|违章|车辆|照).{0,24}(?:日\s*结|当天结|一百|100|赚|收入)|拍(?:违停|违章).{0,24}(?:日\s*结|当天结|一百|100|赚|收入))/.test(body);
+  // “洗米” is an obfuscated money-laundering recruitment phrase. An earning
+  // claim is required so food-related conversation is never matched.
+  const moneyLaunderingPitch = /(?:做|招|带|收).{0,8}洗米.{0,16}(?:赚|收益|日(?:赚|入)|\d)|洗米.{0,16}(?:赚|收益|日(?:赚|入)).{0,10}\d/.test(body);
+  // Investment lead scams pair a claimed win/loss with an @handle. Two pitch
+  // signals are required to avoid blocking ordinary market discussion.
+  const investmentSignals = [/(?:又)?赚(?:钱|了)|盈利|收益/.test(body), /(?:跟对(?:人|他)|带单|老师带|爆仓|翻仓)/.test(body)];
+  const investmentLeadPitch = contact && investmentSignals.filter(Boolean).length >= 2;
   // Confirmed repeated scam campaign. These accounts use the unusual "码多来"
   // lead-in and rotate only the claimed hourly/daily payout, so a link or
   // contact handle cannot be required before removing the first message.
@@ -87,6 +105,10 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (scamPitch) add(2, '包含收益承诺或高风险招揽话术');
   if (recruitmentSlogan && dailyIncome) add(4, '包含招揽口号和日收入承诺');
   if (photoGigPitch) add(4, '包含拍照日结兼职招揽');
+  if (phonePhotoGigPitch) add(4, '包含手机拍违停日结招揽');
+  if (profileContactPitch) add(7, '付费拍照广告昵称附短账号引流');
+  if (moneyLaunderingPitch) add(4, '包含“洗米”收益招揽');
+  if (investmentLeadPitch) add(4, '包含投资带单收益引流');
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
   if (resalePitch) add(4, '包含拆词商品分销和收益招揽');
   if (cryptoChartPitch) add(4, '图片附带加密货币收益引流文案');
@@ -96,7 +118,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
