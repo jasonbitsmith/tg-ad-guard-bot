@@ -374,7 +374,18 @@ export class GuardState extends DurableObject {
     this.sql.exec("UPDATE jobs SET status='pending',attempts=0,due=?,created=? WHERE id=?",Date.now(),Date.now(),job.id);
     await this.schedule(Date.now()+100); return {ok:true,queued:true};
   }
+  // Groups cache the sample list (see cachedSamples); tell them to drop it so
+  // an edit takes effect on the next message rather than after the cache ages out.
+  async broadcastSamplesChanged() {
+    await Promise.allSettled(this.listChats().map(chat => this.env.GUARD_STATE.getByName('chat:' + chat.id).invalidateSamples()));
+  }
   async editSample(action, body) {
+    const result = await this.applySampleEdit(action, body);
+    // New samples start as pending and do not match until activated.
+    if (action !== 'add') await this.broadcastSamplesChanged();
+    return result;
+  }
+  async applySampleEdit(action, body) {
     if (action === 'remove') { this.sql.exec('DELETE FROM samples WHERE id=?', Number(body.id)); return this.listSamples(); }
     if (action === 'activate' || action === 'disable') {
       if (!this.sql.exec('SELECT id FROM samples WHERE id=?', Number(body.id)).toArray().length) throw new Error('样本不存在');
@@ -399,6 +410,13 @@ export class GuardState extends DurableObject {
     if (failed) this.log({ action: 'quiet-maintenance', outcome: 'failed', errors: failed });
     return { checked: chats.length, switched, failed };
   }
+  async cachedSamples() {
+    if (this.samplesCache && this.samplesCache.at > Date.now() - 60000) return this.samplesCache.rules;
+    const rules = await this.env.GUARD_STATE.getByName('admin').listSamples();
+    this.samplesCache = { at: Date.now(), rules };
+    return rules;
+  }
+  invalidateSamples() { this.samplesCache = null; }
   dmitStatus() {
     return this.read('dmit:status', { enabled: this.env.DMIT_MONITOR_ENABLED === 'true', state: '尚未执行' });
   }
@@ -533,6 +551,15 @@ export class GuardState extends DurableObject {
   }
 
   async enqueue(update) {
+    // Register with the global admin object only when the title changes (and
+    // at least daily), instead of on every message, so group traffic does not
+    // all funnel through that single object.
+    const chat = (update.message || update.edited_message || update.callback_query?.message)?.chat;
+    const title = chat ? String(chat.title || chat.id) : null;
+    if (title !== null && this.read('registered-title') !== title) {
+      await this.env.GUARD_STATE.getByName('admin').register(chat);
+      this.write('registered-title', title, DAY);
+    }
     // Schedule before acknowledging durable receipt; an alarm survives request termination.
     await this.schedule(Date.now() + 200);
     const id = `u:${update.update_id}`;
@@ -917,7 +944,7 @@ export class GuardState extends DurableObject {
     const hasMedia = !!(msg.photo?.length || msg.video || msg.animation || msg.document || msg.audio || msg.voice || msg.video_note || msg.sticker);
     const mediaQuarantine = policy.newMemberMediaGuard && joined > Date.now() - policy.newMemberMediaMinutes * 60000 && hasMedia;
     if (linkQuarantine) { verdict.score = Math.max(4, verdict.score); verdict.reasons.push(`新成员链接隔离（入群 ${policy.newMemberLinkMinutes} 分钟内）`); }
-    const sampleRules = await this.env.GUARD_STATE.getByName('admin').listSamples();
+    const sampleRules = await this.cachedSamples();
     const sampleHits = sampleMatches(msg, sampleRules);
     if (sampleHits.length) {
       verdict.score = Math.max(7, verdict.score);
@@ -1282,6 +1309,11 @@ export class GuardState extends DurableObject {
     try{return await this.applyBackup(token);}finally{this.restoring=false;}
   }
   async applyBackup(token){
+    const result = await this.applyBackupJob(token);
+    await this.broadcastSamplesChanged();
+    return result;
+  }
+  async applyBackupJob(token){
     const key='backup-preview:'+String(token);let job=this.read(key);if(!job)throw Error('恢复预览已过期，请重新预览');
     if(job.complete)return {ok:true,complete:true,restored:job.done.length};
     if(!job.started){if(await this.backupFingerprint()!==job.baseline)throw Error('配置已变化，请重新预览，避免覆盖新修改');job.rollback=await this.exportBackup();job.started=true;job.done=[];this.write(key,job,DAY);this.write('backup:last-rollback',job.rollback,7*DAY);this.write('backup:active',String(token),DAY);}

@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.7.1';
+export const VERSION = '2.7.2';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -276,7 +276,6 @@ export default {
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return new Response('OK');
     if (!Number.isSafeInteger(msg.message_id) || !Number.isSafeInteger(msg.chat.id) || msg.chat.id >= 0) return new Response('Bad Request', { status: 400 });
     try {
-      await globalState(env).register(msg.chat);
       await group(env, msg.chat.id).enqueue(update);
       return new Response('OK');
     } catch {
@@ -284,10 +283,13 @@ export default {
       return new Response('Retry later', { status: 503 });
     }
   },
-  async scheduled(_controller, env, ctx) {
+  async scheduled(controller, env, ctx) {
     if (env.GUARD_STATE) {
       if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
-      ctx.waitUntil(globalState(env).runQuietMaintenance());
+      // Each group's own alarm already runs quiet-hours switching every minute
+      // while quiet mode is on; this sweep is only a safety net, so it wakes
+      // every group every 15 minutes instead of every minute.
+      if (new Date(controller.scheduledTime || Date.now()).getUTCMinutes() % 15 === 0) ctx.waitUntil(globalState(env).runQuietMaintenance());
       ctx.waitUntil(globalState(env).sendDailyReport());
       ctx.waitUntil(globalState(env).monitorOperations());
     }
