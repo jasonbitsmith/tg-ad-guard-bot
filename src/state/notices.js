@@ -19,6 +19,7 @@ const person = (name, userId, username) => {
 };
 const ACTION_NAMES = [['user-report', '被群友举报'], ['verification-timeout', '验证超时被封'], ['verification-passed', '通过入群验证'], ['welcome', '入群'], ['owner-undo', '被你解封'], ['federation-undo', '联防解封'], ['federation-ban', '联防封禁'], ['permanent-ban', '因广告被封'], ['delete-channel', '频道消息被删'], ['media-quarantine', '新成员媒体被删'], ['content-lock-delete', '违反内容限制被删'], ['review', '可疑消息待复核'], ['knowledge', '触发自动回复']];
 const actionName = action => ACTION_NAMES.find(([key]) => String(action).includes(key))?.[1] || String(action);
+const profileLink = profile => /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(profile?.username || '')) ? `https://t.me/${profile.username}` : /^\d{1,16}$/.test(String(profile?.userId || '')) ? `tg://user?id=${profile.userId}` : null;
 const messageLink = (chatId, messageId) => /^-100\d+$/.test(String(chatId)) && Number.isSafeInteger(Number(messageId)) && Number(messageId) > 0 ? `https://t.me/c/${String(chatId).slice(4)}/${messageId}` : null;
 
 export class NoticesMethods {
@@ -37,15 +38,26 @@ export class NoticesMethods {
   }
   describeLogTarget(target = this.logTarget()) { return target === 'off' ? '已关闭' : target === 'owners' ? '私信发给你' : `发到 ${target}`; }
 
-  async sendNotice(recipients, text, buttons, record, link) {
+  async sendNotice(recipients, text, buttons, record, link, profile) {
     const id = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
-    const rows = [];
-    if (buttons?.length) rows.push(buttons.map(([caption, act]) => ({ text: caption, callback_data: `n:${id}:${act}` })));
-    if (record) rows.push(this.infoRow(id, link)); else if (link) rows.push([{ text: '查看原消息', url: link }]);
+    const actions = buttons?.length ? [buttons.map(([caption, act]) => ({ text: caption, callback_data: `n:${id}:${act}` }))] : [];
     const tg = telegram(this.env.BOT_TOKEN), body = text.slice(0, 3500);
-    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: chatId, text: body, parse_mode: 'HTML', disable_web_page_preview: true, ...(rows.length ? { reply_markup: { inline_keyboard: rows } } : {}) })));
+    const profileUrl = profileLink(profile);
+    const keyboard = direct => record ? [...this.profileRows(id, direct ? profileUrl : null), ...actions, ...(link ? [[{ text: '查看原消息', url: link }]] : [])] : link ? [[{ text: '查看原消息', url: link }]] : [];
+    const send = (chatId, rows) => tg('sendMessage', { chat_id: chatId, text: body, parse_mode: 'HTML', disable_web_page_preview: true, ...(rows.length ? { reply_markup: { inline_keyboard: rows } } : {}) });
+    let direct = !!profileUrl;
+    const sent = await Promise.allSettled(recipients.map(async chatId => {
+      try { return await send(chatId, keyboard(direct)); }
+      catch (error) {
+        // tg://user buttons are refused when the member's privacy settings
+        // hide them; fall back to the bot-sent profile card button.
+        if (!direct || !/BUTTON|privacy|url/i.test(error.message || '')) throw error;
+        direct = false;
+        return send(chatId, keyboard(false));
+      }
+    }));
     // Keep every copy so a later result can be written onto each of them.
-    if (record) this.write(`notice:${id}`, { ...record, text: body, html: true, link: link || null, messages: sent.map(item => item.status === 'fulfilled' && Number.isSafeInteger(item.value?.message_id) ? { chatId: item.value.chat?.id ?? null, messageId: item.value.message_id } : null).map((item, index) => item && { ...item, chatId: item.chatId ?? recipients[index] }).filter(Boolean) }, 14 * DAY);
+    if (record) this.write(`notice:${id}`, { ...record, text: body, html: true, link: link || null, profileUrl: direct ? profileUrl : null, messages: sent.map(item => item.status === 'fulfilled' && Number.isSafeInteger(item.value?.message_id) ? { chatId: item.value.chat?.id ?? null, messageId: item.value.message_id } : null).map((item, index) => item && { ...item, chatId: item.chatId ?? recipients[index] }).filter(Boolean) }, 14 * DAY);
     return sent.some(item => item.status === 'fulfilled');
   }
   noticeTime() { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()); }
@@ -56,7 +68,7 @@ export class NoticesMethods {
     if (!record) return false;
     const status = record.status?.length ? record.status : record.done ? [`✅ ${record.done}`] : [];
     const text = record.html ? `${record.text}\n\n${status.map(esc).join('\n')}`.slice(0, 4000) : `${record.text || fallbackMessage?.text || ''}\n\n${status.join('\n')}`.slice(0, 4000);
-    const markup = { reply_markup: { inline_keyboard: [this.infoRow(id, record.link)] } };
+    const markup = { reply_markup: { inline_keyboard: [...this.profileRows(id, record.profileUrl), ...(record.link ? [[{ text: '查看原消息', url: record.link }]] : [])] } };
     const messages = record.messages?.length ? record.messages : fallbackMessage?.chat?.id ? [{ chatId: fallbackMessage.chat.id, messageId: fallbackMessage.message_id }] : [];
     const tg = telegram(this.env.BOT_TOKEN);
     const results = await Promise.allSettled(messages.map(item => tg('editMessageText', { chat_id: item.chatId, message_id: item.messageId, text, disable_web_page_preview: true, ...(record.html ? { parse_mode: 'HTML' } : {}), ...markup })));
@@ -86,14 +98,14 @@ export class NoticesMethods {
       return false;
     }
     const text = [`🚫 已封禁：${person(entry.userName, entry.userId, entry.userUsername)}`, `群：${esc(entry.chatTitle || entry.chatId)}`, `原因：${esc(label(entry.action))}${entry.reasons?.length ? ' · ' + esc(entry.reasons.slice(0, 3).join('；')) : ''}`, entry.federationTargets?.length ? `联防：已同步到另外 ${entry.federationTargets.length} 个群` : '', entry.text ? `内容：${esc(String(entry.text).slice(0, 200))}` : ''].filter(Boolean).join('\n');
-    return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null }, null);
+    return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null }, null, { userId: entry.userId, username: entry.userUsername });
   }
 
   async noticeReport(report) {
     const recipients = this.ownerChats();
     if (!recipients.length) return false;
     const text = [`📣 群友举报`, `群：${esc(report.chatTitle || report.chatId)}`, `被举报：${person(report.userName, report.userId, report.userUsername)}`, `举报人：${person(report.reporterName, report.reporterId, report.reporterUsername)}`, report.reason ? `理由：${esc(report.reason)}` : '', `内容：${esc(String(report.text || '（非文字消息）').slice(0, 300))}`].filter(Boolean).join('\n');
-    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId));
+    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId), { userId: report.userId, username: report.userUsername });
   }
 
   // Buttons only work if Telegram delivers callback_query updates. A webhook
@@ -117,7 +129,9 @@ export class NoticesMethods {
   }
   // Profile links in the text depend on the owner's Telegram client having
   // seen the member, so this button always works: the bot sends the details.
-  infoRow(id, link) { return [{ text: '👤 查看资料', callback_data: `n:${id}:info` }, ...(link ? [{ text: '查看原消息', url: link }] : [])]; }
+  // A direct link opens the profile in one tap; the callback button makes the
+  // bot send a profile card instead, for when no direct link is allowed.
+  profileRows(id, url) { return [[url ? { text: '👤 查看用户资料', url } : { text: '👤 查看用户资料', callback_data: `n:${id}:info` }]]; }
   // Without a known group, use the group that remembers the most about them.
   async findMemberSummary(userId) {
     const results = await Promise.allSettled((await this.listChats()).map(chat => this.env.GUARD_STATE.getByName('chat:' + chat.id).memberSummary(userId)));
