@@ -82,9 +82,12 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   ];
   const resalePitch = resaleSignals.filter(Boolean).length >= 2;
   // Screenshot/chart ads frequently put only a short profit claim in the
-  // caption. Limit this to media messages with a trading marker.
+  // caption. Limit this to media messages with a trading marker. A bare
+  // percentage (battery level, a discount) is not one on its own: it must come
+  // with a profit word or a contact pitch.
   const hasMedia = Array.isArray(msg.photo) || !!msg.video || !!msg.animation || !!msg.document;
-  const cryptoChartPitch = hasMedia && /(?:\d{1,4}\s*(?:个|点).{0,8}利润|\b(?:w|usdt)\b.{0,20}(?:利润|收益)|\d{2,3}(?:\.\d+)?\s*%)/i.test(body);
+  const percentProfit = /\d{2,3}(?:\.\d+)?\s*%/.test(body) && (/(?:利润|收益|盈利|回报|翻倍|带单|跟单|爆仓)/.test(body) || contact);
+  const cryptoChartPitch = hasMedia && (/(?:\d{1,4}\s*(?:个|点).{0,8}利润|\b(?:w|usdt)\b.{0,20}(?:利润|收益))/i.test(body) || percentProfit);
   // Product-card pitches aimed at cross-border sellers are commonly posted as
   // bare text, with the seller asking interested members to contact them later.
   // Require both the product language and a platform name so ordinary platform
