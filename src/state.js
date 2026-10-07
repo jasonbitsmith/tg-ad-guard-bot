@@ -211,6 +211,7 @@ export class GuardState extends DurableObject {
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
+        } else if(op.local==='notice-progress'){await this.env.GUARD_STATE.getByName('admin').noticeProgress(op.noticeId,op.line,true);
         } else if(op.local==='owner-report'){await this.env.GUARD_STATE.getByName('admin').noticeReport(op.body);
         } else if (op.local === 'sample') {
           await this.env.GUARD_STATE.getByName('admin').editSample('add',op.sample);
@@ -270,6 +271,7 @@ export class GuardState extends DurableObject {
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
+        if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
         await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${msg?.chat?.title || msg?.chat?.id || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
       }
     }

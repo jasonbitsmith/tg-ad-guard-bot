@@ -663,10 +663,23 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send({update_id:++seq,callback_query:{id:'cb-undo',from:{id:99,first_name:'主人'},data:data2,message:{message_id:2,chat:{id:99,type:'private'},text:notice.params.text}}});
     await tick(-401);
     assert.ok(actions(-401).some(x=>x.method==='unbanChatMember'&&x.params.user_id===666));
-    assert.ok(calls.some(c=>c.method==='editMessageText'&&c.params.chat_id===99&&c.params.text.includes('已解封')));
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-undo'&&c.params.text.includes('已撤销封禁')));
+    const edits=calls.filter(c=>c.method==='editMessageText'&&c.params.chat_id===99&&c.params.message_id===444);
+    assert.ok(edits.some(c=>c.params.text.includes('已撤销封禁并信任此人（主人')&&c.params.text.includes('正在解封')&&!c.params.reply_markup));
+    assert.ok(edits.at(-1).params.text.includes('解封成功')&&!edits.at(-1).params.text.includes('正在解封'));
+    assert.equal(await (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-401').readRecordTest('verification-pass:666'),true);
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');assert.equal(await state.getByName('chat:-401').readRecordTest('allow:666'),true);
     await send({update_id:++seq,callback_query:{id:'cb-again',from:{id:99},data:data2,message:{message_id:2,chat:{id:99,type:'private'}}}});
-    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-again'&&/已处理过/.test(c.params.text)));
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-again'&&/已经处理过/.test(c.params.text)));
+  });
+  await t.test('解封失败时通知上写明失败原因', async () => {
+    const join={update_id:++seq,message:{message_id:7101,date:Math.floor(Date.now()/1000),chat:{id:-405,type:'supergroup',title:'失败群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告号'}]}};
+    await send(join);await tick(-405);
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('失败群'));
+    failures.set('unbanChatMember:-405',{error_code:400,description:'Bad Request: not enough rights'});
+    await send({update_id:++seq,callback_query:{id:'cb-fail',from:{id:99,first_name:'主人'},data:notice.params.reply_markup.inline_keyboard[0][0].callback_data,message:{message_id:444,chat:{id:99,type:'private'},text:notice.params.text}}});
+    await tick(-405);
+    assert.ok(calls.findLast(c=>c.method==='editMessageText'&&c.params.chat_id===99).params.text.includes('❌ 解封失败'));
   });
   await t.test('简介含广告的成员发言即删除并封禁；普通成员不受影响', async () => {
     await send(update(-402,'大家好',{from:{id:667,first_name:'小王'}}));await tick(-402);
