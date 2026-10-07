@@ -72,6 +72,14 @@ test('拆词商品分销和图片收益引流首条即永久封禁', () => {
   const ordinaryChart = msg('这张图是本月服务器流量统计'); ordinaryChart.photo = [{ file_unique_id: 'usage' }];
   assert.equal(classify(ordinaryChart, DEFAULT_KEYWORDS).permanentBan, false);
 });
+test('图片配文只有百分数不算收益广告，带收益词或联系方式仍封禁', () => {
+  const photo = text => { const m = msg(text); m.photo = [{ file_unique_id: 'p-' + text }]; return m; };
+  for (const text of ['今天手机电量只剩 15%', '这件衣服打 30% 折扣', '本月 CPU 占用 85%'])
+    assert.equal(classify(photo(text), DEFAULT_KEYWORDS).permanentBan, false, text);
+  for (const text of ['USDT 一天收益 30%', '带单胜率 95% 跟上', '今日 88% 盈利 私聊我', '翻倍 120% 加微信'])
+    assert.equal(classify(photo(text), DEFAULT_KEYWORDS).permanentBan, true, text);
+});
+
 test('域名黑名单覆盖裸链接和隐藏链接，白名单只降低链接分', () => {
   assert.deepEqual(extractDomains('看 example.com 和 https://sub.example.net/path'), ['example.com', 'sub.example.net']);
   assert.equal(normalizeDomain('HTTPS://WWW.Example.COM/path'), 'example.com');

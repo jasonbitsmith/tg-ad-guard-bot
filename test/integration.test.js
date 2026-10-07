@@ -328,7 +328,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await group.expireVerificationTest(81);
     failures.set('banChatMember:-171',{error_code:500,description:'temporary failure'});
     const first=await tick(-171);assert.ok(await group.verification(81));assert.ok(first.jobs.some(x=>x.id.startsWith('verification-timeout:')&&x.status==='pending'));
-    await send(update(-171,'兼职',{from:{id:82,first_name:'其他广告号'}}));await tick(-171);
+    await send(update(-171,'兼职 私聊我',{from:{id:82,first_name:'其他广告号'}}));await tick(-171);
     assert.ok(actions(-171).some(x=>x.method==='banChatMember'&&x.params.user_id===82));
     await tick(-171,true);assert.equal(await group.verification(81),undefined);
     assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
@@ -365,6 +365,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-183,'改名后的消息',{chat:{id:-183,type:'supergroup',title:'改名后的测试群'},from:{id:91,first_name:'普通成员'}}));await tick(-183);
     assert.equal((await global.listChats()).find(x=>x.id==='-183').title,'改名后的测试群');
   });
+  await t.test('日常关键词单独出现只删消息不封号，叠加联系方式才永久封禁',async()=>{
+    const plain=update(-185,'我周末兼职做家教',{from:{id:93,first_name:'普通成员'}});await send(plain);await tick(-185);
+    assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===plain.message.message_id));
+    assert.ok(!actions(-185).some(x=>x.method==='banChatMember'));
+    await send(update(-185,'兼职日结 私聊我',{from:{id:94,first_name:'广告号'}}));await tick(-185);
+    assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===94));
+  });
   await t.test('联防各群独立执行，失败不挡其他群；撤销停用命中样本并取消未执行封禁',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
     for(const id of [-180,-181,-182])await global.setFederation(id,true);
@@ -384,7 +391,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('已有独立封禁不能被联防纠错解封',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
     await global.setFederation(-183,true);
-    await send(update(-183,'兼职',{from:{id:88,first_name:'原已封禁用户'}}));await tick(-183);
+    await send(update(-183,'兼职 私聊我',{from:{id:88,first_name:'原已封禁用户'}}));await tick(-183);
     const record=(await global.listCases()).find(x=>x.sourceChatId==='-183');assert.ok(record);
     await global.reverseCase(record.id);await tick(-183,true);
     assert.ok(!actions(-183).some(x=>x.method==='unbanChatMember'&&x.params.user_id===88));
@@ -393,7 +400,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('只重试失败联防群；后续手动封禁不被旧记录撤销',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');await global.setFederation(-184,true);
     failures.set('banChatMember:-181',{error_code:403,description:'permission missing'});
-    await send(update(-184,'兼职',{from:{id:89,first_name:'待处理用户'}}));await tick(-184);await tick(-181);await tick(-182);
+    await send(update(-184,'兼职 私聊我',{from:{id:89,first_name:'待处理用户'}}));await tick(-184);await tick(-181);await tick(-182);
     const record=(await global.listCases()).find(x=>x.sourceChatId==='-184');assert.equal(record.groups.find(x=>x.chatId==='-181').status,'failed');
     await global.retryCase(record.id,'-181');await tick(-181,true);
     assert.equal((await global.listCases()).find(x=>x.id===record.id).groups.find(x=>x.chatId==='-181').status,'success');
@@ -477,8 +484,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,1);
     assert.equal(actions(-196).filter(x=>x.method==='deleteMessage').length,0);
     await send(update(-196,'官网入口',{entities:[{type:'text_link',offset:0,length:4,url:'https://trial-only.example/private'}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,2);
-    await send(update(-196,'兼职'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
-    await group.editTrial('promote',{id:trial.id});await send(update(-196,'再聊观察词'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,2);
+    await send(update(-196,'兼职 私聊我'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
+    await group.editTrial('promote',{id:trial.id});const promoted=update(-196,'再聊观察词');await send(promoted);await tick(-196);
+    // A promoted keyword is enforced: on its own it deletes the message but does not ban.
+    assert.ok(actions(-196).some(x=>x.method==='deleteMessage'&&x.params.message_id===promoted.message.message_id));assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
     assert.ok((await group.config()).keywords.includes('观察词'));
     await group.editTrial('add',{kind:'keyword',value:'渠道正品'});await send(update(-196,'',{photo:[{file_id:'trial-ocr',file_unique_id:'trial-ocr-unique',file_size:12000}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.value==='渠道正品').hits,1);
   });

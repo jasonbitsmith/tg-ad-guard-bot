@@ -166,6 +166,13 @@ export class ModerationMethods {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     }
+    // A blacklist word with no other ad signal (contact pitch, link, income
+    // promise, flood, sample, nickname...) only removes the message. Everyday
+    // words such as 兼职 or USDT must not permanently ban an ordinary member.
+    if (verdict.deleteOnKeyword && !verdict.permanentBan && verdict.score <= Math.min(verdict.hits.length, 2)) {
+      ops.push({ local: 'processed', messageId: msg.message_id });
+      return { ops, entry: { ...entry, action: 'keyword-delete' } };
+    }
     ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
     const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
     // Linked groups are dispatched to independent durable jobs by runJob.
