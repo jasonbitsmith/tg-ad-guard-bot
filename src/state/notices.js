@@ -99,12 +99,30 @@ export class NoticesMethods {
   // Profile links in the text depend on the owner's Telegram client having
   // seen the member, so this button always works: the bot sends the details.
   infoRow(id, link) { return [{ text: '👤 查看资料', callback_data: `n:${id}:info` }, ...(link ? [{ text: '查看原消息', url: link }] : [])]; }
+  // Without a known group, use the group that remembers the most about them.
+  async findMemberSummary(userId) {
+    const results = await Promise.allSettled((await this.listChats()).map(chat => this.env.GUARD_STATE.getByName('chat:' + chat.id).memberSummary(userId)));
+    const found = results.filter(item => item.status === 'fulfilled' && item.value).map(item => item.value);
+    return found.sort((a, b) => b.messages.length - a.messages.length || (b.seen || 0) - (a.seen || 0))[0] || null;
+  }
+  // Owner replies to any older notice (or sends /who <ID>) to get the card.
+  async profileLookup(text, replyText, toChatId) {
+    const userId = /^\/who(?:@\w+)?\s+(\d{1,16})\s*$/i.exec(String(text || '').trim())?.[1] || /（(\d{1,16})）/.exec(String(replyText || '').split('\n').find(line => /^(?:🚫|被举报|👤)/.test(line)) || '')?.[1];
+    if (!userId) {
+      await telegram(this.env.BOT_TOKEN)('sendMessage', { chat_id: toChatId, text: '查看某人资料：回复一条封禁或举报通知（随便发个字），或者发送 /who 用户ID。' });
+      return false;
+    }
+    const title = /群：(.+)/.exec(String(replyText || ''))?.[1]?.trim();
+    const chat = title ? (await this.listChats()).find(item => item.title === title) : null;
+    await this.sendProfileCard({ userId, chatId: chat?.id || null }, toChatId);
+    return true;
+  }
   async sendProfileCard(record, chatId) {
     const tg = telegram(this.env.BOT_TOKEN), userId = Number(record.userId);
     const [chat, photos, local] = await Promise.all([
       tg('getChat', { chat_id: userId }).catch(() => null),
       tg('getUserProfilePhotos', { user_id: userId, limit: 1 }).catch(() => null),
-      this.env.GUARD_STATE.getByName('chat:' + record.chatId).memberSummary(userId).catch(() => null),
+      record.chatId ? this.env.GUARD_STATE.getByName('chat:' + record.chatId).memberSummary(userId).catch(() => null) : this.findMemberSummary(userId),
     ]);
     const name = [chat?.first_name, chat?.last_name].filter(Boolean).join(' ') || local?.name || '';
     const username = chat?.username || local?.username || '';
