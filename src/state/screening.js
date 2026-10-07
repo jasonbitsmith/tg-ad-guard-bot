@@ -75,6 +75,15 @@ export class ScreeningMethods {
     this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', id, '{}', JSON.stringify(plan), Date.now(), Date.now());
     return { queued: true };
   }
+  // What this group knows about a member, for the owner's profile card.
+  memberSummary(userId) {
+    const profile = this.sql.exec('SELECT username,name,seen FROM member_profiles WHERE user_id=?', String(userId)).toArray()[0];
+    const time = ts => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ts));
+    const messages = this.sql.exec("SELECT ts,data FROM logs WHERE CAST(json_extract(data,'$.userId') AS TEXT)=? ORDER BY id DESC LIMIT 20", String(userId)).toArray()
+      .map(row => ({ ts: row.ts, log: JSON.parse(row.data) })).filter(item => item.log.action && item.log.outcome !== 'retrying').slice(0, 5)
+      .map(item => ({ time: time(item.ts), action: String(item.log.action), text: String(item.log.text || '').slice(0, 120) }));
+    return { name: profile?.name || '', username: profile?.username || '', seen: profile?.seen || null, casListed: this.read(`cas:${userId}`) === true, messages };
+  }
   // Trusted members skip spam checks and, on their next join, verification.
   allowMember(userId) { this.write(`allow:${userId}`, true); this.write(`verification-pass:${userId}`, true, 7 * DAY); return true; }
 }

@@ -17,6 +17,8 @@ const person = (name, userId, username) => {
   const handle = /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(username || '')) ? ` <a href="https://t.me/${username}">@${esc(username)}</a>` : '';
   return `${linked}${handle}（${esc(id)}）`;
 };
+const ACTION_NAMES = [['user-report', '被群友举报'], ['verification-timeout', '验证超时被封'], ['verification-passed', '通过入群验证'], ['welcome', '入群'], ['owner-undo', '被你解封'], ['federation-undo', '联防解封'], ['federation-ban', '联防封禁'], ['permanent-ban', '因广告被封'], ['delete-channel', '频道消息被删'], ['media-quarantine', '新成员媒体被删'], ['content-lock-delete', '违反内容限制被删'], ['review', '可疑消息待复核'], ['knowledge', '触发自动回复']];
+const actionName = action => ACTION_NAMES.find(([key]) => String(action).includes(key))?.[1] || String(action);
 const messageLink = (chatId, messageId) => /^-100\d+$/.test(String(chatId)) && Number.isSafeInteger(Number(messageId)) && Number(messageId) > 0 ? `https://t.me/c/${String(chatId).slice(4)}/${messageId}` : null;
 
 export class NoticesMethods {
@@ -39,7 +41,7 @@ export class NoticesMethods {
     const id = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
     const rows = [];
     if (buttons?.length) rows.push(buttons.map(([caption, act]) => ({ text: caption, callback_data: `n:${id}:${act}` })));
-    if (link) rows.push([{ text: '查看原消息', url: link }]);
+    if (record) rows.push(this.infoRow(id, link)); else if (link) rows.push([{ text: '查看原消息', url: link }]);
     const tg = telegram(this.env.BOT_TOKEN), body = text.slice(0, 3500);
     const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: chatId, text: body, parse_mode: 'HTML', disable_web_page_preview: true, ...(rows.length ? { reply_markup: { inline_keyboard: rows } } : {}) })));
     // Keep every copy so a later result can be written onto each of them.
@@ -54,7 +56,7 @@ export class NoticesMethods {
     if (!record) return false;
     const status = record.status?.length ? record.status : record.done ? [`✅ ${record.done}`] : [];
     const text = record.html ? `${record.text}\n\n${status.map(esc).join('\n')}`.slice(0, 4000) : `${record.text || fallbackMessage?.text || ''}\n\n${status.join('\n')}`.slice(0, 4000);
-    const markup = record.link ? { reply_markup: { inline_keyboard: [[{ text: '查看原消息', url: record.link }]] } } : {};
+    const markup = { reply_markup: { inline_keyboard: [this.infoRow(id, record.link)] } };
     const messages = record.messages?.length ? record.messages : fallbackMessage?.chat?.id ? [{ chatId: fallbackMessage.chat.id, messageId: fallbackMessage.message_id }] : [];
     const tg = telegram(this.env.BOT_TOKEN);
     const results = await Promise.allSettled(messages.map(item => tg('editMessageText', { chat_id: item.chatId, message_id: item.messageId, text, disable_web_page_preview: true, ...(record.html ? { parse_mode: 'HTML' } : {}), ...markup })));
@@ -94,15 +96,47 @@ export class NoticesMethods {
     return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId));
   }
 
+  // Profile links in the text depend on the owner's Telegram client having
+  // seen the member, so this button always works: the bot sends the details.
+  infoRow(id, link) { return [{ text: '👤 查看资料', callback_data: `n:${id}:info` }, ...(link ? [{ text: '查看原消息', url: link }] : [])]; }
+  async sendProfileCard(record, chatId) {
+    const tg = telegram(this.env.BOT_TOKEN), userId = Number(record.userId);
+    const [chat, photos, local] = await Promise.all([
+      tg('getChat', { chat_id: userId }).catch(() => null),
+      tg('getUserProfilePhotos', { user_id: userId, limit: 1 }).catch(() => null),
+      this.env.GUARD_STATE.getByName('chat:' + record.chatId).memberSummary(userId).catch(() => null),
+    ]);
+    const name = [chat?.first_name, chat?.last_name].filter(Boolean).join(' ') || local?.name || '';
+    const username = chat?.username || local?.username || '';
+    const lines = [`👤 ${person(name, userId, username)}`];
+    lines.push(username ? `用户名：<a href="https://t.me/${username}">@${esc(username)}</a>（点开可直接看资料）` : '用户名：没有设置');
+    if (chat?.bio) lines.push(`简介：${esc(chat.bio)}`);
+    else if (!chat) lines.push('简介：Telegram 不允许机器人读取此人的资料');
+    if (photos) lines.push(`头像：${photos.total_count ? `共 ${photos.total_count} 张` : '没有头像'}`);
+    if (local?.casListed) lines.push('⚠️ 在全网广告号黑名单（CAS）上');
+    if (local?.seen) lines.push(`机器人最后见到他：${new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(local.seen))}`);
+    if (local?.messages?.length) lines.push('', '最近在本群的记录：', ...local.messages.map(item => `· ${esc(item.time)} ${esc(actionName(item.action))}${item.text ? '：' + esc(item.text) : ''}`));
+    const text = lines.join('\n').slice(0, 1000);
+    const fileId = photos?.photos?.[0]?.at(-1)?.file_id;
+    if (fileId) {
+      try { return await tg('sendPhoto', { chat_id: chatId, photo: fileId, caption: text, parse_mode: 'HTML' }); } catch { /* Fall back to text. */ }
+    }
+    return tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true });
+  }
+
   async noticeAction(callback) {
     const tg = telegram(this.env.BOT_TOKEN);
     const answer = (text, alert = false) => tg('answerCallbackQuery', { callback_query_id: callback.id, text: text.slice(0, 190), show_alert: alert }).catch(() => {});
-    const match = /^n:([a-f0-9]{16}):(ban|ignore|undo)$/.exec(String(callback.data || ''));
+    const match = /^n:([a-f0-9]{16}):(ban|ignore|undo|info)$/.exec(String(callback.data || ''));
     if (!match || !this.owners().includes(String(callback.from?.id))) return answer('只有机器人所有者可以操作。', true);
     const id = match[1], key = `notice:${id}`, record = this.read(key);
     if (!record) return answer('这条记录已过期，请到管理后台处理。', true);
     // Notices sent before message tracking existed: adopt the tapped copy.
     if (!record.messages?.length && callback.message?.chat?.id) { record.messages = [{ chatId: callback.message.chat.id, messageId: callback.message.message_id }]; record.text = record.text || String(callback.message.text || '').split('\n\n✅')[0]; this.write(key, record, 14 * DAY); }
+    if (match[2] === 'info') {
+      try { await this.sendProfileCard(record, callback.message?.chat?.id || Number(callback.from.id)); return answer('资料已发送'); }
+      catch (error) { return answer('读取资料失败：' + String(error.message || '').slice(0, 120), true); }
+    }
     if (record.done) { await this.renderNotice(id, callback.message); return answer('已经处理过了：' + record.done, true); }
     const group = this.env.GUARD_STATE.getByName('chat:' + record.chatId);
     const who = [callback.from.first_name, callback.from.last_name].filter(Boolean).join(' ') || String(callback.from.id), when = this.noticeTime();
