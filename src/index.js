@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.9.2';
+export const VERSION = '2.10.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -172,7 +172,7 @@ async function mutateAdmin(request,env,url,state,path){
   }
   if (request.method === 'POST' && path === 'verification') {
     const body = await readJson(request, 4096);
-    return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel));
+    return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel, body.timeoutAction));
   }
   if (request.method === 'POST' && path === 'raid') {
     const body = await readJson(request, 4096);
@@ -257,6 +257,14 @@ export default {
     if (/^n:/.test(String(update.callback_query?.data || ''))) {
       try { await globalState(env).noticeAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'notice_action_failed', updateId: update.update_id })); }
       return new Response('OK');
+    }
+    // Join requests and the buttons of private join-request challenges belong
+    // to the group being joined.
+    const joinRequest = update.chat_join_request;
+    const requestCallback = /^vj:(-\d{1,16}):/.exec(String(update.callback_query?.data || ''));
+    if ((joinRequest?.chat && ['group','supergroup'].includes(joinRequest.chat.type)) || requestCallback) {
+      try { await group(env, joinRequest ? joinRequest.chat.id : requestCallback[1]).enqueue(update); return new Response('OK'); }
+      catch { console.error(JSON.stringify({ event: 'enqueue_failed', updateId: update.update_id })); return new Response('Retry later', { status: 503 }); }
     }
     const privateMessage = update.message;
     if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
