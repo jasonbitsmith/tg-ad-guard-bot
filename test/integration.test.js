@@ -649,13 +649,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   });
 
   await t.test('全网黑名单账号入群即封禁，所有者收到带撤销按钮的通知，撤销后解封并加白', async () => {
-    const join={update_id:++seq,message:{message_id:7001,date:Math.floor(Date.now()/1000),chat:{id:-401,type:'supergroup',title:'CAS群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告号'}]}};
+    const join={update_id:++seq,message:{message_id:7001,date:Math.floor(Date.now()/1000),chat:{id:-401,type:'supergroup',title:'CAS群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告<号>',username:'Spam_Acc'}]}};
     await send(join);const {data}=await tick(-401);
     assert.ok(actions(-401).some(x=>x.method==='banChatMember'&&x.params.user_id===666));
     assert.ok(actions(-401).some(x=>x.method==='deleteMessage'&&x.params.message_id===7001));
     assert.equal(data.logs[0].action,'cas-permanent-ban');
     const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('已封禁'));
     assert.ok(notice);assert.match(notice.params.text,/全网广告号黑名单/);
+    assert.equal(notice.params.parse_mode,'HTML');
+    assert.ok(notice.params.text.includes('<a href="tg://user?id=666">广告&lt;号&gt;</a> <a href="https://t.me/spam_acc">@spam_acc</a>'));
     const data2=notice.params.reply_markup.inline_keyboard[0][0].callback_data;assert.match(data2,/^n:[a-f0-9]{16}:undo$/);
     const stranger=await send({update_id:++seq,callback_query:{id:'cb-x',from:{id:5,first_name:'路人'},data:data2,message:{message_id:1,chat:{id:5,type:'private'},text:notice.params.text}}});assert.equal(stranger.status,200);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-x'&&/所有者/.test(c.params.text)));
@@ -693,6 +695,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const report=update(-403,'/report 发广告',{from:{id:671,first_name:'热心群友'},reply_to_message:target.message});await send(report);await tick(-403);
     const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报'));
     assert.ok(notice);assert.match(notice.params.text,/发广告/);
+    assert.ok(notice.params.text.includes('<a href="tg://user?id=670">可疑人</a>')&&notice.params.text.includes('<a href="tg://user?id=671">热心群友</a>'));
     const [ban,ignore]=notice.params.reply_markup.inline_keyboard[0];assert.match(ban.callback_data,/:ban$/);assert.match(ignore.callback_data,/:ignore$/);
     await send(update(-403,'/report',{from:{id:672,first_name:'另一位'},reply_to_message:target.message}));await tick(-403);
     assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报')&&c.params.text.includes('可疑人')).length,1);

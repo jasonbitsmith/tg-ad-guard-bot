@@ -7,6 +7,16 @@ import { DAY } from './shared.js';
 const NOTICE_HOURLY_LIMIT = 60;
 const ACTION_LABELS = { cas: '全网广告号黑名单', profile: '昵称/简介广告', 'content-lock': '内容限制', 'verification-timeout-ban': '验证超时', 'spam-delete-and-permanent-ban': '管理员 /spam' };
 const label = action => Object.entries(ACTION_LABELS).find(([key]) => String(action).startsWith(key))?.[1] || '广告命中';
+const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+// Name opens the member's profile; @username (when known) is a plain t.me link
+// that works even when their privacy settings hide the profile link.
+const person = (name, userId, username) => {
+  const id = String(userId || '');
+  const label = esc(name || '用户');
+  const linked = /^\d{1,16}$/.test(id) ? `<a href="tg://user?id=${id}">${label}</a>` : label;
+  const handle = /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(username || '')) ? ` <a href="https://t.me/${username}">@${esc(username)}</a>` : '';
+  return `${linked}${handle}（${esc(id)}）`;
+};
 const messageLink = (chatId, messageId) => /^-100\d+$/.test(String(chatId)) && Number.isSafeInteger(Number(messageId)) && Number(messageId) > 0 ? `https://t.me/c/${String(chatId).slice(4)}/${messageId}` : null;
 
 export class NoticesMethods {
@@ -31,9 +41,9 @@ export class NoticesMethods {
     if (buttons?.length) rows.push(buttons.map(([caption, act]) => ({ text: caption, callback_data: `n:${id}:${act}` })));
     if (link) rows.push([{ text: '查看原消息', url: link }]);
     const tg = telegram(this.env.BOT_TOKEN), body = text.slice(0, 3500);
-    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: chatId, text: body, disable_web_page_preview: true, ...(rows.length ? { reply_markup: { inline_keyboard: rows } } : {}) })));
+    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: chatId, text: body, parse_mode: 'HTML', disable_web_page_preview: true, ...(rows.length ? { reply_markup: { inline_keyboard: rows } } : {}) })));
     // Keep every copy so a later result can be written onto each of them.
-    if (record) this.write(`notice:${id}`, { ...record, text: body, link: link || null, messages: sent.map(item => item.status === 'fulfilled' && Number.isSafeInteger(item.value?.message_id) ? { chatId: item.value.chat?.id ?? null, messageId: item.value.message_id } : null).map((item, index) => item && { ...item, chatId: item.chatId ?? recipients[index] }).filter(Boolean) }, 14 * DAY);
+    if (record) this.write(`notice:${id}`, { ...record, text: body, html: true, link: link || null, messages: sent.map(item => item.status === 'fulfilled' && Number.isSafeInteger(item.value?.message_id) ? { chatId: item.value.chat?.id ?? null, messageId: item.value.message_id } : null).map((item, index) => item && { ...item, chatId: item.chatId ?? recipients[index] }).filter(Boolean) }, 14 * DAY);
     return sent.some(item => item.status === 'fulfilled');
   }
   noticeTime() { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()); }
@@ -43,11 +53,11 @@ export class NoticesMethods {
     const record = this.read(`notice:${id}`);
     if (!record) return false;
     const status = record.status?.length ? record.status : record.done ? [`✅ ${record.done}`] : [];
-    const text = `${record.text || fallbackMessage?.text || ''}\n\n${status.join('\n')}`.slice(0, 4000);
+    const text = record.html ? `${record.text}\n\n${status.map(esc).join('\n')}`.slice(0, 4000) : `${record.text || fallbackMessage?.text || ''}\n\n${status.join('\n')}`.slice(0, 4000);
     const markup = record.link ? { reply_markup: { inline_keyboard: [[{ text: '查看原消息', url: record.link }]] } } : {};
     const messages = record.messages?.length ? record.messages : fallbackMessage?.chat?.id ? [{ chatId: fallbackMessage.chat.id, messageId: fallbackMessage.message_id }] : [];
     const tg = telegram(this.env.BOT_TOKEN);
-    const results = await Promise.allSettled(messages.map(item => tg('editMessageText', { chat_id: item.chatId, message_id: item.messageId, text, disable_web_page_preview: true, ...markup })));
+    const results = await Promise.allSettled(messages.map(item => tg('editMessageText', { chat_id: item.chatId, message_id: item.messageId, text, disable_web_page_preview: true, ...(record.html ? { parse_mode: 'HTML' } : {}), ...markup })));
     // If the original cannot be edited, the result still reaches the owner.
     for (const [index, result] of results.entries()) if (result.status === 'rejected' && !/message is not modified/i.test(result.reason?.message || '')) await tg('sendMessage', { chat_id: messages[index].chatId, text: status.at(-1) || '已处理', reply_to_message_id: messages[index].messageId, allow_sending_without_reply: true }).catch(() => {});
     return true;
@@ -73,14 +83,14 @@ export class NoticesMethods {
       if (count === NOTICE_HOURLY_LIMIT + 1) await this.sendNotice(recipients, `⚠️ 这一小时处理次数超过 ${NOTICE_HOURLY_LIMIT} 次，暂停逐条通知，可在管理后台查看全部记录。`);
       return false;
     }
-    const text = [`🚫 已封禁：${entry.userName || '用户'}（${entry.userId}）`, `群：${entry.chatTitle || entry.chatId}`, `原因：${label(entry.action)}${entry.reasons?.length ? ' · ' + entry.reasons.slice(0, 3).join('；') : ''}`, entry.federationTargets?.length ? `联防：已同步到另外 ${entry.federationTargets.length} 个群` : '', entry.text ? `内容：${String(entry.text).slice(0, 200)}` : ''].filter(Boolean).join('\n');
+    const text = [`🚫 已封禁：${person(entry.userName, entry.userId, entry.userUsername)}`, `群：${esc(entry.chatTitle || entry.chatId)}`, `原因：${esc(label(entry.action))}${entry.reasons?.length ? ' · ' + esc(entry.reasons.slice(0, 3).join('；')) : ''}`, entry.federationTargets?.length ? `联防：已同步到另外 ${entry.federationTargets.length} 个群` : '', entry.text ? `内容：${esc(String(entry.text).slice(0, 200))}` : ''].filter(Boolean).join('\n');
     return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null }, null);
   }
 
   async noticeReport(report) {
     const recipients = this.ownerChats();
     if (!recipients.length) return false;
-    const text = [`📣 群友举报`, `群：${report.chatTitle || report.chatId}`, `被举报：${report.userName || '用户'}（${report.userId}）`, `举报人：${report.reporterName || report.reporterId}`, report.reason ? `理由：${report.reason}` : '', `内容：${String(report.text || '（非文字消息）').slice(0, 300)}`].filter(Boolean).join('\n');
+    const text = [`📣 群友举报`, `群：${esc(report.chatTitle || report.chatId)}`, `被举报：${person(report.userName, report.userId, report.userUsername)}`, `举报人：${person(report.reporterName, report.reporterId, report.reporterUsername)}`, report.reason ? `理由：${esc(report.reason)}` : '', `内容：${esc(String(report.text || '（非文字消息）').slice(0, 300))}`].filter(Boolean).join('\n');
     return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId));
   }
 

@@ -264,7 +264,7 @@ export class ModerationMethods {
     if (ADMIN_STATUS.includes(member.status) || this.owners().includes(String(target.from.id))) return reply('不能举报群管理员或机器人所有者。');
     if (this.read(`report:${target.message_id}`)) return reply('这条消息已经有人举报过，管理员会尽快处理。');
     this.write(`report:${target.message_id}`, true, DAY);
-    const report = { chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: target.from.id, userName: [target.from.first_name, target.from.last_name].filter(Boolean).join(' '), reporterId: msg.from.id, reporterName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), messageId: target.message_id, text: (target.text || target.caption || '').slice(0, 300), reason: reason.slice(0, 100) };
+    const report = { chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: target.from.id, userName: [target.from.first_name, target.from.last_name].filter(Boolean).join(' '), userUsername: target.from.username || '', reporterUsername: msg.from.username || '', reporterId: msg.from.id, reporterName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), messageId: target.message_id, text: (target.text || target.caption || '').slice(0, 300), reason: reason.slice(0, 100) };
     return { ops: [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { method: 'sendMessage', params: { chat_id: msg.chat.id, text: '✅ 举报已收到，已通知管理员处理。谢谢！' } }, { local: 'owner-report', body: report }], entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', actorId: msg.from.id, userId: target.from.id, messageId: target.message_id, action: 'user-report', outcome: 'success', text: (target.text || target.caption || '').slice(0, 300), reasons: [reason.slice(0, 100) || '成员举报'] } };
   }
 
