@@ -1,3 +1,4 @@
+import { aiReviewCandidate } from '../ai-review.js';
 // Message classification into action plans, commands and callbacks.
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
@@ -93,6 +94,7 @@ export class ModerationMethods {
       return { ops, entry: { ...entry, action: 'content-lock-delete' } };
     }
     this.observeTrials(msg);
+    let reviewText=text;
     const joined = this.read(`join:${senderId}`, 0);
     const verdict = classify(msg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
     // Only same-user, same-group text from the last three minutes. Never quoted reply text.
@@ -121,6 +123,7 @@ export class ModerationMethods {
       if (ocrText) {
         const ocrMsg = { ...msg, text: [text, ocrText].filter(Boolean).join('\n') };
         this.observeTrials(ocrMsg);
+        reviewText=[text,ocrText].filter(Boolean).join('\n');
         const ocrVerdict = classify(ocrMsg, policy.keywords, joined > Date.now() - policy.newMemberMinutes * 60000, { allowlist: policy.domainAllowlist, denylist: policy.domainDenylist });
         const ocrSampleHits = sampleMatches(ocrMsg, sampleRules, ocrText);
         if (ocrSampleHits.length) { ocrVerdict.sampleIds=ocrSampleHits.map(x=>x.id);ocrVerdict.score = Math.max(7, ocrVerdict.score); ocrVerdict.reasons.push(`OCR 样本库：${ocrSampleHits.slice(0, 3).map(sample => sample.label || sample.value).join('、')}`); }
@@ -149,6 +152,13 @@ export class ModerationMethods {
         verdict.reasons.push('10 分钟内多个账号重复相同内容');
       }
     }
+    let aiReview;
+    if(policy.aiReviewEnabled&&aiReviewCandidate(reviewText,verdict)){
+      aiReview=await this.reviewWithAi(msg,reviewText);
+      if(aiReview.decision==='ad'){verdict.permanentBan=true;verdict.score=Math.max(7,verdict.score);verdict.reasons.push('AI 确认广告：'+aiReview.reason);}
+      else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];}
+      else {return {ops:mediaQuarantine?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
+    }
     const knowledge = this.findKnowledgeTrigger(text, policy);
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && knowledge) {
       const cooldown = `knowledge:${senderId}:${knowledge.id}`;
@@ -158,20 +168,13 @@ export class ModerationMethods {
       }
     }
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine) return empty;
-    const entry = { sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
+    const entry = { aiReview, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, `新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
     if (msg.sender_chat) {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
-    }
-    // A blacklist word with no other ad signal (contact pitch, link, income
-    // promise, flood, sample, nickname...) only removes the message. Everyday
-    // words such as 兼职 or USDT must not permanently ban an ordinary member.
-    if (verdict.deleteOnKeyword && !verdict.permanentBan && verdict.score <= Math.min(verdict.hits.length, 2)) {
-      ops.push({ local: 'processed', messageId: msg.message_id });
-      return { ops, entry: { ...entry, action: 'keyword-delete' } };
     }
     ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
     const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);

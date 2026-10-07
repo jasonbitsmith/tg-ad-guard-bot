@@ -11,10 +11,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       owners(){return this.read('test:owners') || super.owners();}
       seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
       seedLogTest(data){this.log(data);}
+      readRecordTest(key){return this.read(key);}
+      async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
+      async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
       async realOcrTest(msg){this.env.AI={run:async()=>({answer:'广告图片测试'})};return super.ocr(msg,async()=>({file_path:'ocr.jpg'}));}
       async ocr(msg){ return Array.isArray(msg.photo) ? '水果机 渠道正品 日搞1w 当日下单 秒发' : ''; }
       forceNoticesTest(){const notices=this.quietNotices().map(x=>({...x,retryAt:0}));this.write('quiet:notices',notices);return notices;}
       seedNoticesTest(notices){this.write('quiet:notices',notices);}
+      async automaticBackupTest(id){try{return {backup:await this.automaticBackup(id)};}catch(error){return {error:error.message};}}
       async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
       async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
       seedFutureJobTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('future','{}','pending',?,?)",Date.now()+3600000,Date.now()-3600000);}
@@ -47,8 +51,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const method = url.pathname.split('/').at(-1), params = await request.json();
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
-      const failure = failures.get(key);
-      if (failure) { failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
+      const configured=failures.get(key),failure=Array.isArray(configured)?configured.shift():configured;
+      if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
       if (method === 'getWebhookInfo') result = webhookState;
@@ -333,6 +337,52 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await tick(-171,true);assert.equal(await group.verification(81),undefined);
     assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
   });
+  await t.test('跨群用户名定位验证超时：手动解封、免验证一次且继续拦截广告',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-181');
+    await g.editVerification('math',5,'');
+    await send(update(-181,'',{new_chat_members:[{id:88,username:'Recover_User',first_name:'待救成员'}]}));await tick(-181);await g.expireVerificationTest(88);await tick(-181);
+    const found=await ns.getByName('admin').findVerificationMembers('@RECOVER_USER');
+    assert.ok(found.members.some(x=>x.chatId==='-181'&&x.userId==='88'&&x.state==='timeout'));
+    assert.equal((await ns.getByName('admin').findVerificationMembers('@Unknown_User')).members.length,0);
+    const result=await g.releaseVerification('-181','88');assert.equal(result.queued,true);await tick(-181);
+    assert.ok(actions(-181).some(x=>x.method==='unbanChatMember'&&x.params.user_id===88&&x.params.only_if_banned));
+    assert.equal((await g.verificationMembers('88'))[0].state,'released');
+    await send(update(-181,'',{new_chat_members:[{id:88,username:'Recover_User'}]}));await tick(-181);assert.equal(await g.verification(88),undefined);
+    await send(update(-181,'兼职',{from:{id:88,username:'Recover_User'}}));await tick(-181);assert.ok(actions(-181).filter(x=>x.method==='banChatMember'&&x.params.user_id===88).length>=2);
+  });
+  await t.test('管理员手动通过取消旧超时任务，恢复群默认权限，不影响其他群',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-182'),other=ns.getByName('chat:-183');
+    for(const [chat,groupState] of [[-182,g],[-183,other]]){await groupState.editVerification('math',5,'');await send(update(chat,'',{new_chat_members:[{id:12,username:'Pending_User'}]}));await tick(chat);}
+    await g.expireVerificationTest(12);failures.set('banChatMember:-182',{error_code:500,description:'temporary failure'});await tick(-182);
+    const bans=actions(-182).filter(x=>x.method==='banChatMember').length;await g.releaseVerification('-182','12');await tick(-182,true);
+    assert.equal(actions(-182).filter(x=>x.method==='banChatMember').length,bans);assert.equal(await g.verification(12),undefined);assert.ok(await other.verification(12));
+    assert.ok(actions(-182).some(x=>x.method==='restrictChatMember'&&x.params.permissions.can_send_messages&&x.params.permissions.can_send_photos===false));
+  });
+  await t.test('解封失败保留处理中；出现新广告封禁后停止旧解封任务',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-184');await g.editVerification('math',5,'');
+    await send(update(-184,'',{new_chat_members:[{id:88,username:'Retry_User'}]}));await tick(-184);await g.expireVerificationTest(88);await tick(-184);
+    failures.set('unbanChatMember:-184',{error_code:500,description:'temporary failure'});await g.releaseVerification('-184','88');await tick(-184);assert.equal((await g.verificationMembers('88'))[0].state,'processing');
+    await g.seedRecordTest('member-ban:88',{action:'advertisement-permanent-ban',jobId:'new-ad'});const unbans=actions(-184).filter(x=>x.method==='unbanChatMember').length;await tick(-184,true);
+    assert.equal(actions(-184).filter(x=>x.method==='unbanChatMember').length,unbans);assert.equal((await g.verificationMembers('88'))[0].canRelease,false);
+  });
+  await t.test('验证限制恢复失败可手动重试，历史超时日志也能按 ID 找到',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-185');await g.editVerification('math',5,'');
+    await send(update(-185,'',{new_chat_members:[{id:12,username:'Failed_User'}]}));await tick(-185);
+    failures.set('restrictChatMember:-185',{error_code:400,description:'permission error'});await g.releaseVerification('-185','12');await tick(-185);
+    const row=(await g.verificationMembers('12'))[0];assert.equal(row.state,'failed');assert.equal(row.canRelease,true);
+    const retried=await g.releaseVerification('-185','12');assert.equal(retried.id,row.jobId);await tick(-185);assert.equal((await g.verificationMembers('12'))[0].state,'released');assert.ok((await g.verificationMembers()).some(x=>x.userId==='12'&&x.state==='released'));
+    await g.seedLogTest({chatId:-185,userId:'100888',action:'verification-timeout-ban',outcome:'success',steps:[{method:'banChatMember',done:true}]});assert.equal((await g.verificationMembers('100888'))[0].state,'timeout');
+  });
+  await t.test('后台解封鉴权与私聊指令仅所有者可用，成员可查询自己的 ID',async()=>{
+    const denied=await mf.dispatchFetch('https://bot.test/admin/api/verification/members?query=88');assert.equal(denied.status,401);
+    const before=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id===7).length;
+    await send(update(7,'/release 88 -181',{chat:{id:7,type:'private'},from:{id:7}}));assert.equal(calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id===7).length,before);
+    await send(update(7,'/myid',{chat:{id:7,type:'private'},from:{id:7}}));assert.ok(calls.some(x=>x.method==='sendMessage'&&x.params.chat_id===7&&x.params.text.includes('ID：7')));
+    await send(update(99,'/findmember @Pending_User',{chat:{id:99,type:'private'},from:{id:99}}));assert.ok(calls.some(x=>x.method==='sendMessage'&&x.params.chat_id===99&&x.params.text.includes('/release 12 -183')));
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const search=await mf.dispatchFetch('https://bot.test/admin/api/verification/members?query=12',{headers:{Cookie:cookie}});assert.equal(search.status,200);assert.ok((await search.json()).members.some(x=>x.chatId==='-183'));
+    const release=await mf.dispatchFetch('https://bot.test/admin/api/verification/release',{method:'POST',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({chatId:'-183',userId:'12'})});assert.equal(release.status,200);assert.equal((await release.json()).queued,true);
+  });
   await t.test('DMIT 备用公告同时提供推广购买链接和官方公告链接',async()=>{
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');await global.monitorDmit();assert.ok(!calls.some(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal'));
     officialPostId=9877;await global.monitorDmit();
@@ -365,10 +415,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-183,'改名后的消息',{chat:{id:-183,type:'supergroup',title:'改名后的测试群'},from:{id:91,first_name:'普通成员'}}));await tick(-183);
     assert.equal((await global.listChats()).find(x=>x.id==='-183').title,'改名后的测试群');
   });
-  await t.test('日常关键词单独出现只删消息不封号，叠加联系方式才永久封禁',async()=>{
+  await t.test('明确黑名单词命中直接封号，带联系方式仍直接封号',async()=>{
     const plain=update(-185,'我周末兼职做家教',{from:{id:93,first_name:'普通成员'}});await send(plain);await tick(-185);
     assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===plain.message.message_id));
-    assert.ok(!actions(-185).some(x=>x.method==='banChatMember'));
+    assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===93));
     await send(update(-185,'兼职日结 私聊我',{from:{id:94,first_name:'广告号'}}));await tick(-185);
     assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===94));
   });
@@ -486,8 +536,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-196,'官网入口',{entities:[{type:'text_link',offset:0,length:4,url:'https://trial-only.example/private'}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,2);
     await send(update(-196,'兼职 私聊我'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
     await group.editTrial('promote',{id:trial.id});const promoted=update(-196,'再聊观察词');await send(promoted);await tick(-196);
-    // A promoted keyword is enforced: on its own it deletes the message but does not ban.
-    assert.ok(actions(-196).some(x=>x.method==='deleteMessage'&&x.params.message_id===promoted.message.message_id));assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
+    // Promoted blacklist words delete and ban immediately.
+    assert.ok(actions(-196).some(x=>x.method==='deleteMessage'&&x.params.message_id===promoted.message.message_id));assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,2);
     assert.ok((await group.config()).keywords.includes('观察词'));
     await group.editTrial('add',{kind:'keyword',value:'渠道正品'});await send(update(-196,'',{photo:[{file_id:'trial-ocr',file_unique_id:'trial-ocr-unique',file_size:12000}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.value==='渠道正品').hits,1);
   });
@@ -529,6 +579,19 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};await global.monitorOperations(true);assert.equal((await global.incidentList()).find(x=>x.id==='webhook').active,false);
   });
 
+  await t.test('Telegram 自检偶发服务错误复查后不报警，持续失败保留具体接口和错误码',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    failures.set('getWebhookInfo:undefined',{error_code:503,description:'temporary connection failure'});
+    let start=calls.length;await global.monitorOperations(true);
+    assert.equal(calls.slice(start).filter(x=>x.method==='getWebhookInfo').length,2);
+    assert.ok(!(await global.incidentList()).some(x=>x.id==='telegram-api'&&x.active));
+    failures.set('getWebhookInfo:undefined',[{error_code:503,description:'connection timed out'},{error_code:503,description:'connection timed out'}]);
+    await global.monitorOperations(true);let incident=(await global.incidentList()).find(x=>x.id==='telegram-api');assert.equal(incident.active,true);assert.match(incident.details,/503/);assert.match(incident.details,/getWebhookInfo/);assert.match(incident.details,/connection timed out/);
+    await global.monitorOperations(true);assert.equal((await global.incidentList()).find(x=>x.id==='telegram-api').active,false);
+    failures.set('getMe:undefined',{error_code:401,description:'Unauthorized'});start=calls.length;await global.monitorOperations(true);
+    assert.equal(calls.slice(start).filter(x=>x.method==='getMe').length,1);assert.match((await global.incidentList()).find(x=>x.id==='telegram-api').details,/401/);
+    await global.monitorOperations(true);
+  });
   await t.test('部分恢复后的新修改阻止旧任务续作；批量静默审计只记录相关字段',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;
     backup.groups[0].config.keywords.push('续作冲突测试词');const preview=await global.previewBackup(backup),target=backup.groups[1];await ns.getByName('chat:'+target.id).seedRecordTest('test:restore-fail',true);
@@ -536,6 +599,52 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const restore=()=>mf.dispatchFetch('https://bot.test/admin/api/backup/restore',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({token:preview.token})});
     assert.equal((await restore()).status,400);await ns.getByName('chat:'+target.id).editWord('add','部分恢复后新词');assert.equal((await restore()).status,400);assert.ok((await ns.getByName('chat:'+target.id).config()).keywords.includes('部分恢复后新词'));
     const quiet=await global.auditSnapshot('quiet',{scope:'all'});assert.ok(quiet['quiet:'+target.id]);assert.deepEqual(Object.keys(quiet['quiet:'+target.id]).sort(),['quietEnabled','quietEnd','quietNotify','quietStart']);
+  });
+
+  await t.test('AI 确认广告永久封禁，正常内容放行，服务失败待审，黑名单不等待 AI',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
+    for(const [chatId,mock,expected] of [
+      [-301,{decision:'ad',confidence:0.99,reason:'明确招揽',evidence:['招募代理']},'banChatMember'],
+      [-302,{decision:'normal',confidence:0.99,reason:'正常讨论',evidence:[]},null],
+      [-303,{fail:true},null],
+      [-304,{decision:'ad',confidence:0.8,reason:'不确定',evidence:['招募代理']},null],
+    ]){
+      const group=ns.getByName('chat:'+chatId);await group.seedRecordTest('test:ai',mock);
+      await send(update(chatId,'最近有招募代理的消息，大家怎么看？'));const {data}=await tick(chatId);
+      assert.equal(actions(chatId).some(x=>x.method==='banChatMember'),expected==='banChatMember');
+      if(mock.fail||mock.confidence===0.8)assert.ok(data.logs.some(x=>x.action==='review'&&x.aiReview));
+      const input=await group.readRecordTest('test:ai-input');assert.deepEqual(Object.keys(JSON.parse(input.messages[1].content)),['message']);
+      assert.ok(!input.messages[1].content.includes('测试用户'));
+    }
+    const group=ns.getByName('chat:-305');await group.seedRecordTest('test:ai',{fail:true});
+    await send(update(-305,'USDT'));await tick(-305);assert.ok(actions(-305).some(x=>x.method==='banChatMember'));assert.equal(await group.readRecordTest('test:ai-calls'),null);
+  });
+  await t.test('AI 缓存按正文区分，修改后的消息重新判断，群与全局额度均生效',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-306'),global=ns.getByName('admin');
+    const mock={decision:'normal',confidence:0.99,reason:'正常',evidence:[]};await group.seedRecordTest('test:ai',mock);
+    const msg={chat:{id:-306},message_id:1};await group.reviewWithAi(msg,'如何讨论优惠？');await group.reviewWithAi(msg,'如何讨论优惠？');assert.equal(await group.readRecordTest('test:ai-calls'),1);
+    await group.reviewWithAi(msg,'代理技术交流内容');assert.equal(await group.readRecordTest('test:ai-calls'),2);
+    const hour=Math.floor(Date.now()/3600000);await group.seedRecordTest('ai:quota:'+hour,20);assert.equal((await group.reviewWithAi({...msg,message_id:2},'新的优惠讨论内容')).decision,'quota');
+    await group.seedRecordTest('ai:quota:'+hour,0);await global.seedRecordTest('ai:global-quota:'+hour,100);
+    assert.equal((await group.reviewWithAi({...msg,message_id:3},'又一条优惠内容')).decision,'quota');assert.equal(await group.readRecordTest('test:ai-calls'),2);
+    await global.seedRecordTest('ai:global-quota:'+hour,0);
+  });
+  await t.test('每周备份首次立即生成、周一三点轮换、失败重试且校验损坏文件',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    const now=Date.parse('2026-10-11T12:00:00Z');await global.runAutomaticBackup(now);
+    let status=await global.automaticBackupStatus();assert.equal(status.last.outcome,'success');assert.equal(status.backups[0].id,'2026-10-05');
+    const id=status.backups[0].id,backup=await global.automaticBackup(id);assert.ok(backup.groups.length);assert.ok(!JSON.stringify(backup).includes('password-for-test'));
+    await global.runAutomaticBackup(now+1000);assert.equal((await global.automaticBackupStatus()).backups.length,1);
+    await global.runAutomaticBackup(Date.parse('2026-10-11T18:59:59Z'));assert.equal((await global.automaticBackupStatus()).backups.length,1);
+    await global.seedRecordTest('test:backup-fail',true);const next=Date.parse('2026-10-11T19:00:00Z');await global.runAutomaticBackup(next);assert.equal((await global.automaticBackupStatus()).last.outcome,'failed');
+    await global.seedRecordTest('test:backup-fail',false);await global.runAutomaticBackup(next+1000);assert.equal((await global.automaticBackupStatus()).backups.length,1);
+    await global.runAutomaticBackup(next+15*60000);assert.equal((await global.automaticBackupStatus()).backups[0].id,'2026-10-12');
+    for(let i=1;i<=8;i++)await global.runAutomaticBackup(next+i*7*86400000);
+    status=await global.automaticBackupStatus();assert.equal(status.backups.length,8);assert.equal(status.backups[0].id,'2026-12-07');
+    const latest=status.backups[0].id;await kv.put('automatic-backup:'+latest,JSON.stringify({...backup,created:'tampered'}));assert.match((await global.automaticBackupTest(latest)).error,/校验失败/);
+    for(const path of ['backup/status','backup/automatic?id='+latest])assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/'+path)).status,401);
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const save=await mf.dispatchFetch('https://bot.test/admin/api/ai-review',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({chatId:-306,enabled:false})});assert.equal(save.status,200);assert.equal((await save.json()).config.aiReviewEnabled,false);
   });
 
 });
