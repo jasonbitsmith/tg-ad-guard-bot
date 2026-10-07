@@ -52,6 +52,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const method = url.pathname.split('/').at(-1), params = await request.json();
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
+      if(method==='sendMessage'&&JSON.stringify(params.reply_markup||{}).includes('tg://user?id=670'))return MFResponse.json({ok:false,error_code:400,description:'Bad Request: BUTTON_USER_PRIVACY_RESTRICTED'},{status:400});
       const configured=failures.get(key),failure=Array.isArray(configured)?configured.shift():configured;
       if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
@@ -719,8 +720,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(notice);assert.match(notice.params.text,/全网广告号黑名单/);
     assert.equal(notice.params.parse_mode,'HTML');
     assert.ok(notice.params.text.includes('<a href="tg://user?id=666">广告&lt;号&gt;</a> <a href="https://t.me/spam_acc">@spam_acc</a>'));
-    const data2=notice.params.reply_markup.inline_keyboard[0][0].callback_data;assert.match(data2,/^n:[a-f0-9]{16}:undo$/);
-    const info=notice.params.reply_markup.inline_keyboard[1][0];assert.equal(info.text,'👤 查看资料');
+    assert.deepEqual(notice.params.reply_markup.inline_keyboard[0],[{text:'👤 查看用户资料',url:'https://t.me/spam_acc'}]);
+    const data2=notice.params.reply_markup.inline_keyboard[1][0].callback_data;assert.match(data2,/^n:[a-f0-9]{16}:undo$/);
+    const info={callback_data:data2.replace(/:undo$/,':info')};
     await send({update_id:++seq,callback_query:{id:'cb-info',from:{id:99},data:info.callback_data,message:{message_id:1,chat:{id:99,type:'private'},text:notice.params.text}}});
     const card=calls.findLast(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===99&&(c.params.text||c.params.caption||'').startsWith('👤'));
     assert.ok(card);const body=card.params.text||card.params.caption;assert.ok(body.includes('https://t.me/spam_acc'));assert.match(body,/全网广告号黑名单/);assert.match(body,/因广告被封/);
@@ -764,7 +766,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(join);await tick(-405);
     const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('失败群'));
     failures.set('unbanChatMember:-405',{error_code:400,description:'Bad Request: not enough rights'});
-    await send({update_id:++seq,callback_query:{id:'cb-fail',from:{id:99,first_name:'主人'},data:notice.params.reply_markup.inline_keyboard[0][0].callback_data,message:{message_id:444,chat:{id:99,type:'private'},text:notice.params.text}}});
+    await send({update_id:++seq,callback_query:{id:'cb-fail',from:{id:99,first_name:'主人'},data:notice.params.reply_markup.inline_keyboard[1][0].callback_data,message:{message_id:444,chat:{id:99,type:'private'},text:notice.params.text}}});
     await tick(-405);
     assert.ok(calls.findLast(c=>c.method==='editMessageText'&&c.params.chat_id===99).params.text.includes('❌ 解封失败'));
   });
@@ -781,9 +783,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报'));
     assert.ok(notice);assert.match(notice.params.text,/发广告/);
     assert.ok(notice.params.text.includes('<a href="tg://user?id=670">可疑人</a>')&&notice.params.text.includes('<a href="tg://user?id=671">热心群友</a>'));
-    const [ban,ignore]=notice.params.reply_markup.inline_keyboard[0];assert.match(ban.callback_data,/:ban$/);assert.match(ignore.callback_data,/:ignore$/);
+    // 670 hides direct profile links, so the notice falls back to the profile-card button.
+    assert.match(notice.params.reply_markup.inline_keyboard[0][0].callback_data,/:info$/);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&JSON.stringify(c.params.reply_markup||{}).includes('tg://user?id=670')));
+    const [ban,ignore]=notice.params.reply_markup.inline_keyboard[1];assert.match(ban.callback_data,/:ban$/);assert.match(ignore.callback_data,/:ignore$/);
     await send(update(-403,'/report',{from:{id:672,first_name:'另一位'},reply_to_message:target.message}));await tick(-403);
-    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报')&&c.params.text.includes('可疑人')).length,1);
+    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报')&&c.params.text.includes('可疑人')&&!JSON.stringify(c.params.reply_markup).includes('tg://user')).length,1);
     await send({update_id:++seq,callback_query:{id:'cb-ban',from:{id:99},data:ban.callback_data,message:{message_id:3,chat:{id:99,type:'private'},text:notice.params.text}}});
     await tick(-403);
     assert.ok(actions(-403).some(x=>x.method==='banChatMember'&&x.params.user_id===670));
