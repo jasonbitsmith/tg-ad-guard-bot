@@ -46,6 +46,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const url = new URL(request.url);
       if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
       if(url.hostname==='t.me')return new MFResponse('<div data-post="DMIT_INC/'+officialPostId+'"><div class="tgme_widget_message_text">HKG restocked and back in stock</div></div>');
+      if(url.hostname==='api.cas.chat')return MFResponse.json(url.searchParams.get('user_id')==='666'?{ok:true,result:{offenses:3}}:{ok:false,description:'Record not found.'});
       assert.equal(url.hostname, 'api.telegram.org');
       if (url.pathname.includes('/file/botfake/')) return new MFResponse(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpeg' } });
       const method = url.pathname.split('/').at(-1), params = await request.json();
@@ -58,7 +59,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getWebhookInfo') result = webhookState;
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
       if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true};
-      if (method === 'getChat') result = { permissions: { can_send_messages: true, can_send_photos: false } };
+      if (method === 'getChat') result = params.chat_id===667 ? { id: 667, type: 'private', bio: '兼职日结 私聊我 @abc12345' } : { permissions: { can_send_messages: true, can_send_photos: false } };
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'sendMessage') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
@@ -645,6 +646,58 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     for(const path of ['backup/status','backup/automatic?id='+latest])assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/'+path)).status,401);
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
     const save=await mf.dispatchFetch('https://bot.test/admin/api/ai-review',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({chatId:-306,enabled:false})});assert.equal(save.status,200);assert.equal((await save.json()).config.aiReviewEnabled,false);
+  });
+
+  await t.test('全网黑名单账号入群即封禁，所有者收到带撤销按钮的通知，撤销后解封并加白', async () => {
+    const join={update_id:++seq,message:{message_id:7001,date:Math.floor(Date.now()/1000),chat:{id:-401,type:'supergroup',title:'CAS群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告号'}]}};
+    await send(join);const {data}=await tick(-401);
+    assert.ok(actions(-401).some(x=>x.method==='banChatMember'&&x.params.user_id===666));
+    assert.ok(actions(-401).some(x=>x.method==='deleteMessage'&&x.params.message_id===7001));
+    assert.equal(data.logs[0].action,'cas-permanent-ban');
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('已封禁'));
+    assert.ok(notice);assert.match(notice.params.text,/全网广告号黑名单/);
+    const data2=notice.params.reply_markup.inline_keyboard[0][0].callback_data;assert.match(data2,/^n:[a-f0-9]{16}:undo$/);
+    const stranger=await send({update_id:++seq,callback_query:{id:'cb-x',from:{id:5,first_name:'路人'},data:data2,message:{message_id:1,chat:{id:5,type:'private'},text:notice.params.text}}});assert.equal(stranger.status,200);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-x'&&/所有者/.test(c.params.text)));
+    assert.ok(!actions(-401).some(x=>x.method==='unbanChatMember'));
+    await send({update_id:++seq,callback_query:{id:'cb-undo',from:{id:99,first_name:'主人'},data:data2,message:{message_id:2,chat:{id:99,type:'private'},text:notice.params.text}}});
+    await tick(-401);
+    assert.ok(actions(-401).some(x=>x.method==='unbanChatMember'&&x.params.user_id===666));
+    assert.ok(calls.some(c=>c.method==='editMessageText'&&c.params.chat_id===99&&c.params.text.includes('已解封')));
+    const state=await mf.getDurableObjectNamespace('GUARD_STATE');assert.equal(await state.getByName('chat:-401').readRecordTest('allow:666'),true);
+    await send({update_id:++seq,callback_query:{id:'cb-again',from:{id:99},data:data2,message:{message_id:2,chat:{id:99,type:'private'}}}});
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-again'&&/已处理过/.test(c.params.text)));
+  });
+  await t.test('简介含广告的成员发言即删除并封禁；普通成员不受影响', async () => {
+    await send(update(-402,'大家好',{from:{id:667,first_name:'小王'}}));await tick(-402);
+    assert.ok(actions(-402).some(x=>x.method==='banChatMember'&&x.params.user_id===667));
+    const {data}=await tick(-402);assert.equal(data.logs[0].action,'profile-permanent-ban');
+    await send(update(-402,'大家好，今天天气不错',{from:{id:668,first_name:'小李'}}));await tick(-402);
+    assert.ok(!actions(-402).some(x=>x.params.user_id===668));
+  });
+  await t.test('群友 /report 私信所有者，点击按钮即删除并封禁；同一消息只通知一次', async () => {
+    const target=update(-403,'这条消息有问题',{from:{id:670,first_name:'可疑人'}});await send(target);await tick(-403);
+    const report=update(-403,'/report 发广告',{from:{id:671,first_name:'热心群友'},reply_to_message:target.message});await send(report);await tick(-403);
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报'));
+    assert.ok(notice);assert.match(notice.params.text,/发广告/);
+    const [ban,ignore]=notice.params.reply_markup.inline_keyboard[0];assert.match(ban.callback_data,/:ban$/);assert.match(ignore.callback_data,/:ignore$/);
+    await send(update(-403,'/report',{from:{id:672,first_name:'另一位'},reply_to_message:target.message}));await tick(-403);
+    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('群友举报')&&c.params.text.includes('可疑人')).length,1);
+    await send({update_id:++seq,callback_query:{id:'cb-ban',from:{id:99},data:ban.callback_data,message:{message_id:3,chat:{id:99,type:'private'},text:notice.params.text}}});
+    await tick(-403);
+    assert.ok(actions(-403).some(x=>x.method==='banChatMember'&&x.params.user_id===670));
+    assert.ok(actions(-403).some(x=>x.method==='deleteMessage'&&x.params.message_id===target.message.message_id));
+  });
+  await t.test('所有者可以用 /log 切换处理记录的接收位置', async () => {
+    const dm=text=>send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99},text}});
+    await dm('/log off');assert.match(calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99).params.text,/已关闭/);
+    const before=calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99).length;
+    await send(update(-404,'兼职招聘 私聊我'));await tick(-404);assert.ok(actions(-404).some(x=>x.method==='banChatMember'));
+    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99).length,before);
+    await dm('/log @guard_log_channel');assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id==='@guard_log_channel'));
+    await send(update(-404,'兼职招聘 私聊我 再来'));await tick(-404);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id==='@guard_log_channel'&&c.params.text.includes('已封禁')));
+    await dm('/log me');assert.match(calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99).params.text,/私信/);
   });
 
 });
