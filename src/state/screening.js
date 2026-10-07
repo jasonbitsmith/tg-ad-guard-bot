@@ -61,16 +61,20 @@ export class ScreeningMethods {
     return { ops, entry: { chatId: chat.id, chatTitle: chat.title || '', userId: String(user.id), userName: [user.first_name, user.last_name].filter(Boolean).join(' '), messageId: messageIds[0], text: (extra.text ?? screen.text ?? '').slice(0, 300), reasons: screen.reasons, action: `${screen.kind}-${federationTargets.length ? 'federated-permanent-ban' : 'permanent-ban'}`, federationTargets } };
   }
 
-  // Undo of a single-group ban from the owner's notice: unban and trust.
-  async queueManualUnban(userId, source) {
+  // Undo of a single-group ban from the owner's notice: unban and trust,
+  // then report the real outcome back onto the notice.
+  async queueManualUnban(userId, source, noticeId) {
     const chat = this.read('chat');
     if (!chat?.id) throw new Error('该群暂无记录，无法解封');
-    this.write(`allow:${userId}`, true);
+    this.allowMember(userId);
     const id = `owner-unban:${userId}:${Date.now()}`;
-    const plan = { ops: [{ method: 'unbanChatMember', params: { chat_id: chat.id, user_id: Number(userId), only_if_banned: true } }], entry: { chatId: chat.id, chatTitle: chat.title || '', userId: String(userId), actorId: source, action: 'owner-undo-unban', reasons: ['所有者撤销误封，已加入本群白名单'] } };
+    const ops = [{ method: 'unbanChatMember', params: { chat_id: chat.id, user_id: Number(userId), only_if_banned: true } }];
+    if (noticeId) ops.push({ local: 'notice-progress', noticeId, line: '✅ 解封成功，此人可以重新进群，且不会再被自动处理' });
+    const plan = { ops, entry: { chatId: chat.id, chatTitle: chat.title || '', userId: String(userId), actorId: source, action: 'owner-undo-unban', noticeId, reasons: ['所有者撤销误封，已加入本群白名单'] } };
     await this.schedule(Date.now() + 100);
     this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', id, '{}', JSON.stringify(plan), Date.now(), Date.now());
     return { queued: true };
   }
-  allowMember(userId) { this.write(`allow:${userId}`, true); return true; }
+  // Trusted members skip spam checks and, on their next join, verification.
+  allowMember(userId) { this.write(`allow:${userId}`, true); this.write(`verification-pass:${userId}`, true, 7 * DAY); return true; }
 }
