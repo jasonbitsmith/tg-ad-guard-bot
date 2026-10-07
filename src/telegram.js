@@ -32,6 +32,33 @@ export function telegram(token, transport = fetch) {
   };
 }
 
+export function telegramUpload(token, method, fields, file, transport = fetch) {
+  return (async () => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) form.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+    }
+    form.append(file.field, new File([file.bytes], file.name, { type: file.mime }));
+    let response;
+    try {
+      response = await transport(`https://api.telegram.org/bot${token}/${method}`, {
+        method: 'POST', body: form, signal: AbortSignal.timeout(20000),
+      });
+    } catch {
+      throw new TelegramError(method, 503, 'network timeout or connection failure');
+    }
+    let data;
+    try { data = await response.json(); } catch {
+      throw new TelegramError(method, 502, 'invalid upstream response');
+    }
+    if (!response.ok || data.ok !== true) {
+      const description = String(data.description || 'upstream failure').replaceAll(token, '[redacted]').slice(0, 300);
+      throw new TelegramError(method, data.error_code || response.status, description, data.parameters?.retry_after || 0);
+    }
+    return data.result;
+  })();
+}
+
 export async function secureEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
   const enc = new TextEncoder();

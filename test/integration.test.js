@@ -4,11 +4,21 @@ import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
 
 test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后台', async t => {
-  const calls = [], failures = new Map();
+  const calls = [], failures = new Map();let officialPostId=9876,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
   const wrapper = `import worker, { GuardState as Base } from './index.js';
     export class GuardState extends Base {
       constructor(ctx,env) { super(ctx,env); }
+      owners(){return this.read('test:owners') || super.owners();}
+      seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
+      seedLogTest(data){this.log(data);}
+      async realOcrTest(msg){this.env.AI={run:async()=>({answer:'广告图片测试'})};return super.ocr(msg,async()=>({file_path:'ocr.jpg'}));}
       async ocr(msg){ return Array.isArray(msg.photo) ? '水果机 渠道正品 日搞1w 当日下单 秒发' : ''; }
+      forceNoticesTest(){const notices=this.quietNotices().map(x=>({...x,retryAt:0}));this.write('quiet:notices',notices);return notices;}
+      seedNoticesTest(notices){this.write('quiet:notices',notices);}
+      async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
+      async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
+      seedFutureJobTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('future','{}','pending',?,?)",Date.now()+3600000,Date.now()-3600000);}
+      expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
         if(force) this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending'");
         await this.alarm();
@@ -24,9 +34,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     compatibilityDate: '2026-09-22', compatibilityFlags: ['nodejs_compat'],
     modules: [{ type: 'ESModule', path: 'test-wrapper.js', contents: wrapper }, { type: 'ESModule', path: 'index.js', contents: await readFile(new URL('../dist/index.js', import.meta.url), 'utf8') }],
     durableObjects: { GUARD_STATE: { className: 'GuardState', useSQLite: true } },
-    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
+    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', DMIT_MONITOR_ENABLED:'true',DMIT_AFFILIATE_ID:'16962',DMIT_NOTIFY_CHAT:'@jason_vps_deal', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
     outboundService: async request => {
       const url = new URL(request.url);
+      if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
+      if(url.hostname==='t.me')return new MFResponse('<div data-post="DMIT_INC/'+officialPostId+'"><div class="tgme_widget_message_text">HKG restocked and back in stock</div></div>');
       assert.equal(url.hostname, 'api.telegram.org');
       if (url.pathname.includes('/file/botfake/')) return new MFResponse(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpeg' } });
       const method = url.pathname.split('/').at(-1), params = await request.json();
@@ -36,8 +48,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (failure) { failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
-      if (method === 'getWebhookInfo') result = { url: 'https://bot.test/webhook/path', pending_update_count: 0 };
-      if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : 'member', can_restrict_members: false };
+      if (method === 'getWebhookInfo') result = webhookState;
+      if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
+      if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true};
       if (method === 'getChat') result = { permissions: { can_send_messages: true, can_send_photos: false } };
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'sendMessage') result = { message_id: 444 };
@@ -168,7 +181,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await request('keywords/add',{chatId:-120,word:'本群测试词'})).status,200);
     assert.equal((await request('domains/deny/add',{chatId:-120,domain:'bad.example'})).status,200);
     assert.equal((await request('domains/allow/add',{chatId:-120,domain:'trusted.example'})).status,200);
-    assert.equal((await request('review/resolve',{chatId:-120,userId:66,messageId:123})).status,200);
+    const added=await request('samples/add',{kind:'text',value:'后台接口样本',label:'接口测试'});assert.equal(added.status,200);
+    const addedSamples=(await added.json()).samples;assert.ok(Array.isArray(addedSamples));
+    const item=addedSamples.find(x=>x.label==='接口测试');assert.ok(item);
+    assert.ok(Array.isArray((await (await request('samples')).json()).samples));
+    assert.equal((await (await request('samples/disable',{id:item.id})).json()).samples.find(x=>x.id===item.id).status,'disabled');
+    assert.equal((await (await request('samples/test',{kind:'text',value:'后台接口样本',text:'后.台.接.口.样.本'})).json()).matched,true);
+    assert.ok(Array.isArray((await (await request('federation')).json()).chats));
+    const review=await request('review/resolve',{chatId:-120,userId:66,messageId:123});assert.equal(review.status,200);assert.equal((await review.json()).queued,true);await tick(-120);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-120&&c.params.user_id===66));
     const health=await (await request('status?all=1')).json();
     assert.ok(Array.isArray(health.groups) && health.groups.length >= 6);
@@ -199,7 +219,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await request('federation',{chatId:-140,enabled:true});await request('federation',{chatId:-141,enabled:true});
     const quiet=await (await request('quiet',{scope:'all',enabled:true,start:'00:00',end:'08:00',notify:true})).json();
     assert.ok(quiet.updated >= 6);
-    await send(update(-140,'兼职招聘 私聊我',{from:{id:77,first_name:'广告号'}}));await tick(-140);
+    const quietState = (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('-149');
+    await quietState.editQuiet({ id: -149, title: '静默测试群' }, true, '00:00', '08:00', true);
+    await quietState.quietTick('00:00');
+    failures.set('deleteMessage:-149', { error_code: 500, description: 'temporary failure' });
+    await quietState.quietTick('08:00');
+    await quietState.forceNoticesTest();
+    await quietState.quietTick('08:01');
+    assert.equal(calls.filter(c => c.method === 'deleteMessage' && c.params.chat_id === -149 && c.params.message_id === 444).length, 2);
+    await send(update(-140,'兼职招聘 私聊我',{from:{id:77,first_name:'广告号'}}));await tick(-140);await tick(-141);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-141&&c.params.user_id===77));
     await request('verification',{chatId:-142,mode:'math',minutes:10,channel:''});
     await send(update(-142,'',{new_chat_members:[{id:44,first_name:'新人'}]}));await tick(-142);
@@ -227,5 +255,264 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-146,'',{from:{id:62,first_name:'发图号'},animation:{file_unique_id:'plain-animation'}}));await tick(-146);
     assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-146));
     assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-146&&c.params.user_id===62));
+    const knowledge=await (await request('knowledge/upsert',{chatId:-148,item:{title:'VPS 购买',command:'vps',triggers:'怎么购买,有没有官网吗',response:'购买说明：https://example.com/buy',enabled:true}})).json();
+    assert.equal(knowledge.knowledgeBase.length,1);
+    await send(update(-148,'/vps',{from:{id:67,first_name:'提问者'}}));await tick(-148);
+    await send(update(-148,'请问怎么购买？',{from:{id:68,first_name:'提问者二'}}));await tick(-148);
+    assert.ok(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===-148&&c.params.text.includes('购买说明')).length>=2);
+    await request('content-locks',{chatId:-147,locks:{forward:{enabled:true,action:'delete'},invite:{enabled:true,action:'ban'},sticker:{enabled:true,action:'delete'}}});
+    await send(update(-147,'转发内容',{from:{id:63,first_name:'转发号'},forward_origin:{type:'user'}}));await tick(-147);
+    await send(update(-147,'加入 https://t.me/+abcdef',{from:{id:64,first_name:'引流号'}}));await tick(-147);
+    await send(update(-147,'',{from:{id:65,first_name:'贴纸号'},sticker:{file_unique_id:'sticker-1'}}));await tick(-147);
+    assert.equal(actions(-147).filter(x=>x.method==='deleteMessage').length,3);
+    assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-147&&c.params.user_id===64));
+    assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-147&&c.params.user_id===63));
   });
+  await t.test('/spam 保护管理员、删除封禁且样本待审；停用和启用可纠错', async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'), global=ns.getByName('admin');
+    const target={message_id:9991,from:{id:77,first_name:'广告号'},text:'独立样本测试文案abcd'};
+    await send(update(-160,'/spam',{from:{id:99},reply_to_message:target}));await tick(-160);
+    assert.ok(actions(-160).some(x=>x.method==='banChatMember'&&x.params.user_id===77));
+    assert.ok(actions(-160).some(x=>x.method==='deleteMessage'&&x.params.message_id===9991));
+    const sample=(await global.listSamples()).find(x=>x.label.includes('/spam'));assert.equal(sample.status,'pending');
+    await send(update(-161,target.text));await tick(-161);assert.equal(actions(-161).length,0);
+    await global.editSample('activate',{id:sample.id,previewToken:(await global.previewSample(sample.id)).previewToken});await send(update(-162,target.text));await tick(-162);assert.ok(actions(-162).some(x=>x.method==='banChatMember'));
+    await global.editSample('disable',{id:sample.id});await send(update(-163,target.text));await tick(-163);assert.equal(actions(-163).length,0);
+    assert.equal((await global.testSample({kind:'text',value:'独立样本测试',text:'独.立.样.本.测.试'})).matched,true);
+    await send(update(-164,'/spam',{from:{id:99},reply_to_message:{...target,from:{id:11}}}));await tick(-164);assert.ok(!actions(-164).some(x=>x.method==='banChatMember'));
+  });
+  await t.test('同用户分段广告可识别，跨用户内容不拼接',async()=>{
+    await send(update(-165,'又赚钱了!!!'));await tick(-165);
+    await send(update(-165,'都说了跟对他很重要 @advertiser'));await tick(-165);
+    assert.ok(actions(-165).some(x=>x.method==='banChatMember'));
+    await send(update(-166,'又赚钱了!!!'));await tick(-166);
+    await send(update(-166,'都说了跟对他很重要 @advertiser',{from:{id:78}}));await tick(-166);
+    assert.ok(!actions(-166).some(x=>x.method==='banChatMember'));
+  });
+  await t.test('失败任务可显式重试，成功之前日报不计处罚',async()=>{
+    failures.set('deleteMessage:-167',{error_code:403,description:'Forbidden'});
+    await send(update(-167,'兼职'));const before=await tick(-167);
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-167');
+    assert.equal((await group.dailySummary(Date.now()-60000,Date.now()+1000)).intercepted,0);
+    assert.equal((await group.healthSummary()).failed,1);
+    await group.retryJob(before.jobs[0].id);await tick(-167,true);
+    assert.equal((await group.dailySummary(Date.now()-60000,Date.now()+1000)).intercepted,1);
+    assert.equal((await group.healthSummary()).failed,0);
+  });
+
+  await t.test('静默期间关闭功能立即恢复原权限；删除失败通知不覆盖且退避',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-170');
+    await group.editQuiet({id:-170,title:'关闭静默测试'},true,'00:00','08:00',true);
+    await group.quietTick('00:00');
+    failures.set('deleteMessage:-170',{error_code:500,description:'temporary failure'});
+    await group.editQuiet({id:-170,title:'关闭静默测试'},false,'00:00','08:00',false);
+    assert.ok(calls.some(x=>x.method==='setChatPermissions'&&x.params.chat_id===-170&&x.params.permissions.can_send_messages===true));
+    const count=calls.filter(x=>x.method==='deleteMessage'&&x.params.chat_id===-170).length;
+    await group.quietTick('08:00');assert.equal(calls.filter(x=>x.method==='deleteMessage'&&x.params.chat_id===-170).length,count);
+    assert.equal((await group.quietNotices()).length,1);
+    await group.forceNoticesTest();await group.quietTick('08:00');assert.equal((await group.quietNotices()).length,0);
+    await group.seedNoticesTest([{id:1234,retryAt:0,attempts:0}]);
+    await group.editQuiet({id:-170,title:'关闭静默测试'},true,'00:00','08:00',true);await group.quietTick('00:00');
+    assert.deepEqual((await group.quietNotices()).map(x=>x.id),[1234,444]);
+    failures.set('setChatPermissions:-170',{error_code:500,description:'restore temporarily fails'});
+    const result=await group.editQuiet({id:-170,title:'关闭静默测试'},false,'00:00','08:00',false);assert.equal(result.quietRestorePending,true);
+    await group.quietTick('08:00');assert.equal((await group.quietNotices()).length,0);
+  });
+  await t.test('验证超时封禁失败保留记录并重试，成功后才清理',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-171');
+    await group.editVerification('math',5,'');
+    await send(update(-171,'',{new_chat_members:[{id:81,first_name:'超时新人'}]}));await tick(-171);
+    await group.expireVerificationTest(81);
+    failures.set('banChatMember:-171',{error_code:500,description:'temporary failure'});
+    const first=await tick(-171);assert.ok(await group.verification(81));assert.ok(first.jobs.some(x=>x.id.startsWith('verification-timeout:')&&x.status==='pending'));
+    await send(update(-171,'兼职',{from:{id:82,first_name:'其他广告号'}}));await tick(-171);
+    assert.ok(actions(-171).some(x=>x.method==='banChatMember'&&x.params.user_id===82));
+    await tick(-171,true);assert.equal(await group.verification(81),undefined);
+    assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
+  });
+  await t.test('DMIT 备用公告同时提供推广购买链接和官方公告链接',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');await global.monitorDmit();assert.ok(!calls.some(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal'));
+    officialPostId=9877;await global.monitorDmit();
+    const pushed=calls.find(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal');assert.ok(pushed);
+    const buttons=pushed.params.reply_markup.inline_keyboard.flat();
+    assert.equal(new URL(buttons[0].url).searchParams.get('aff'),'16962');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
+    const count=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length;await global.monitorDmit();officialPostId=9875;await global.monitorDmit();assert.equal(calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length,count);assert.equal((await global.dmitStatus()).sourceType,'official-announcement');
+  });
+
+  await t.test('样本默认待审核，启用须预览；短样本和错误票据不能启用',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const activate=body=>mf.dispatchFetch('https://bot.test/admin/api/samples/activate',{method:'POST',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify(body)});
+    const sample=(await global.editSample('add',{kind:'text',value:'这个服务器怎么买',label:'预览测试'})).find(x=>x.label==='预览测试');assert.equal(sample.status,'pending');
+    const noPreview=await activate({id:sample.id});assert.equal(noPreview.status,400);assert.match((await noPreview.json()).error,/预览/);
+    const preview=await global.previewSample(sample.id);assert.ok(preview.matches.length>0);
+    const wrong=await activate({id:sample.id,previewToken:'wrong'});assert.equal(wrong.status,400);assert.match((await wrong.json()).error,/预览/);
+    const short=(await global.editSample('add',{kind:'text',value:'赚',pending:true})).find(x=>x.value==='赚');assert.equal(short.status,'disabled');
+    assert.equal((await global.previewSample(short.id)).eligible,false);
+    const shortResult=await activate({id:short.id,previewToken:(await global.previewSample(short.id)).previewToken});assert.equal(shortResult.status,400);assert.match((await shortResult.json()).error,/至少/);
+  });
+  await t.test('联防各群独立执行，失败不挡其他群；撤销停用命中样本并取消未执行封禁',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    for(const id of [-180,-181,-182])await global.setFederation(id,true);
+    const sample=(await global.editSample('add',{kind:'text',value:'联防纠错样本文案',label:'纠错测试'})).find(x=>x.label==='纠错测试');
+    await global.editSample('activate',{id:sample.id,previewToken:(await global.previewSample(sample.id)).previewToken});
+    failures.set('banChatMember:-181',{error_code:500,description:'target fails'});
+    await send(update(-180,'联防纠错样本文案',{from:{id:87,first_name:'样本发送者'}}));await tick(-180);await tick(-181);await tick(-182);
+    const record=(await global.listCases()).find(x=>x.sourceChatId==='-180');assert.ok(record);
+    assert.equal(record.groups.find(x=>x.chatId==='-181').status,'retrying');assert.equal(record.groups.find(x=>x.chatId==='-182').status,'success');
+    assert.equal(record.groups.find(x=>x.chatId==='-180').status,'success');
+    await global.reverseCase(record.id);await tick(-180,true);await tick(-181,true);await tick(-182,true);
+    assert.equal((await global.listSamples()).find(x=>x.id===sample.id).status,'disabled');
+    assert.ok(actions(-180).some(x=>x.method==='unbanChatMember'&&x.params.user_id===87));assert.ok(actions(-182).some(x=>x.method==='unbanChatMember'&&x.params.user_id===87));
+    assert.equal(actions(-181).filter(x=>x.method==='banChatMember'&&x.params.user_id===87).length,1);
+    await global.reverseCase(record.id);await tick(-180,true);assert.equal(actions(-180).filter(x=>x.method==='unbanChatMember'&&x.params.user_id===87).length,1);
+  });
+  await t.test('已有独立封禁不能被联防纠错解封',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    await global.setFederation(-183,true);
+    await send(update(-183,'兼职',{from:{id:88,first_name:'原已封禁用户'}}));await tick(-183);
+    const record=(await global.listCases()).find(x=>x.sourceChatId==='-183');assert.ok(record);
+    await global.reverseCase(record.id);await tick(-183,true);
+    assert.ok(!actions(-183).some(x=>x.method==='unbanChatMember'&&x.params.user_id===88));
+  });
+
+  await t.test('只重试失败联防群；后续手动封禁不被旧记录撤销',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');await global.setFederation(-184,true);
+    failures.set('banChatMember:-181',{error_code:403,description:'permission missing'});
+    await send(update(-184,'兼职',{from:{id:89,first_name:'待处理用户'}}));await tick(-184);await tick(-181);await tick(-182);
+    const record=(await global.listCases()).find(x=>x.sourceChatId==='-184');assert.equal(record.groups.find(x=>x.chatId==='-181').status,'failed');
+    await global.retryCase(record.id,'-181');await tick(-181,true);
+    assert.equal((await global.listCases()).find(x=>x.id===record.id).groups.find(x=>x.chatId==='-181').status,'success');
+    assert.equal(actions(-184).filter(x=>x.method==='banChatMember'&&x.params.user_id===89).length,1);
+    await send(update(-184,'/ban 89',{from:{id:99}}));await tick(-184);
+    await global.reverseCase(record.id);await tick(-184,true);assert.ok(!actions(-184).some(x=>x.method==='unbanChatMember'&&x.params.user_id===89));
+    assert.deepEqual(await global.federationTargets('-199'),[]);
+  });
+
+  await t.test('日报按实际步骤去重统计联防封禁、广告账号和成功撤销',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-190');
+    await group.seedLogTest({updateId:'job1',userId:77,action:'federation-ban',outcome:'retrying',steps:[{method:'banChatMember',done:true}]});
+    await group.seedLogTest({updateId:'job1',userId:77,action:'federation-ban',outcome:'success',steps:[{method:'banChatMember',done:true}]});
+    await group.seedLogTest({updateId:'job2',userId:77,action:'delete-and-permanent-ban',outcome:'success',steps:[{method:'deleteMessage',done:true},{method:'banChatMember',done:true}]});
+    await group.seedLogTest({updateId:'job3',userId:78,action:'federation-ban',outcome:'partial',steps:[{method:'banChatMember',done:true,skipped:'管理员'}]});
+    await group.seedLogTest({updateId:'job4',action:'federation-undo',outcome:'success',steps:[{method:'case-unban',done:true,undoOutcome:'skipped'}]});
+    await group.seedLogTest({updateId:'job5',action:'federation-undo',outcome:'success',steps:[{method:'case-unban',done:true,undoOutcome:'success'}]});
+    await group.seedLogTest({updateId:'yesterday',userId:79,action:'federation-ban',outcome:'success',steps:[{method:'banChatMember',done:true,doneAt:Date.now()-86400000}]});
+    const stats=await group.dailySummary(Date.now()-60000,Date.now()+1000);assert.equal(stats.banned,2);assert.deepEqual(stats.adUsers,['77']);assert.equal(stats.reversals,1);assert.equal(stats.intercepted,1);assert.equal(stats.retries,1);
+  });
+  await t.test('日报部分接收人失败，仅重试未送达者，成功后停止重发',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');await global.seedRecordTest('test:owners',['99','100']);
+    const now=Date.parse('2026-09-28T01:00:00Z'),start=calls.length;
+    failures.set('sendMessage:100',{error_code:500,description:'recipient temporarily unavailable'});
+    assert.deepEqual(await Promise.all([global.sendDailyReport(now),global.sendDailyReport(now)]),[false,false]);assert.equal(await global.sendDailyReport(now+3600000),true);assert.equal(await global.sendDailyReport(now+3600000),false);
+    const sent=calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text.includes('群防日报'));
+    assert.equal(sent.filter(x=>x.params.chat_id===99).length,1);assert.equal(sent.filter(x=>x.params.chat_id===100).length,2);
+    assert.equal(sent.find(x=>x.params.chat_id===99).params.text,sent.filter(x=>x.params.chat_id===100).at(-1).params.text);
+    await global.seedRecordTest('test:owners',['99']);
+  });
+  await t.test('OCR 固定窗口、超额提醒去重、缓存不占额度，过期可恢复',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-191');const resetAt=Date.now()+3600000;
+    await group.seedRecordTest('ocr:quota:-191',{used:29,resetAt},3600000);
+    const msg={chat:{id:-191,title:'OCR测试群'},message_id:1,photo:[{file_id:'test',file_unique_id:'quota-test',file_size:12000}]};
+    assert.equal(await group.realOcrTest(msg),'广告图片测试');const quota=await group.ocrQuota(-191);assert.equal(quota.used,30);assert.equal(quota.resetAt,resetAt);assert.equal(quota.remaining,0);
+    assert.equal(await group.realOcrTest(msg),'广告图片测试');assert.equal((await group.ocrQuota(-191)).used,30);
+    const before=calls.length;const other={...msg,photo:[{...msg.photo[0],file_unique_id:'quota-other'}]};assert.equal(await group.realOcrTest(other),'');assert.equal(await group.realOcrTest(other),'');
+    assert.equal(calls.slice(before).filter(x=>x.method==='sendMessage'&&x.params.text.includes('OCR 图片识别额度已用完')).length,1);
+    assert.equal((await group.dailySummary(Date.now()-60000,Date.now()+1000)).ocrSkipped,2);
+    await group.seedRecordTest('ocr:quota:-191',{used:30,resetAt:Date.now()-1000});assert.equal((await group.ocrQuota(-191)).remaining,30);
+    assert.equal(await group.realOcrTest(other),'广告图片测试');assert.equal((await group.ocrQuota(-191)).used,1);
+  });
+  await t.test('联防搜索可分页，群和状态必须匹配同一目标，更新不破坏游标',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    for(let i=0;i<55;i++)await global.ensureCase({id:'page-'+i,userId:200,chatId:'-192',federationTargets:['-193']});
+    await global.caseStatus('page-0','-193',{status:'failed'});
+    const page=await global.searchCases({userId:'200'});assert.equal(page.cases.length,50);assert.ok(page.next);
+    await global.caseStatus('page-0','-192',{status:'success'});
+    const last=await global.searchCases({userId:'200',before:page.next});assert.equal(last.cases.length,5);assert.equal(last.next,null);assert.equal(new Set([...page.cases,...last.cases].map(x=>x.id)).size,55);
+    assert.equal((await global.searchCases({userId:'200',chatId:'-192',status:'failed'})).cases.length,0);
+    assert.equal((await global.searchCases({userId:'200',chatId:'-193',status:'failed'})).cases[0].id,'page-0');
+  });
+  await t.test('人工确认案例脱敏后参与预览，删除案例后结果同步变化',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    const sample=(await global.editSample('add',{kind:'text',value:'测试案例重复短语'})).find(x=>x.value==='测试案例重复短语');
+    const examples=await global.editReviewExample('add',{confirmed:true,verdict:'normal',text:'正常讨论测试案例重复短语 @testuser 13812345678 abc@example.com https://example.com/private?token=secret'});
+    const normal=examples[0];assert.ok(!normal.text.includes('testuser'));assert.ok(!normal.text.includes('13812345678'));assert.ok(!normal.text.includes('abc@'));assert.ok(!normal.text.includes('secret'));
+    await global.editReviewExample('add',{confirmed:true,verdict:'advertisement',text:'测试案例重复短语这是广告'});
+    const preview=await global.previewSample(sample.id);assert.equal(preview.cases.length,2);assert.ok(preview.cases.every(x=>x.matched));
+    await global.editReviewExample('remove',{id:normal.id});assert.equal((await global.previewSample(sample.id)).cases.length,1);
+  });
+
+  await t.test('案例与搜索后台接口验证输入和登录权限',async()=>{
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{'Origin':'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('Set-Cookie').split(';')[0];
+    const add=body=>mf.dispatchFetch('https://bot.test/admin/api/review-examples/add',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    assert.equal((await add({verdict:'normal',text:'这是正常测试消息',confirmed:false})).status,400);
+    const created=await add({verdict:'normal',text:'测试正常消息 '.repeat(300),confirmed:true});assert.equal(created.status,200);
+    const unauthorized=await mf.dispatchFetch('https://bot.test/admin/api/review-examples');assert.equal(unauthorized.status,401);
+    const invalid=await mf.dispatchFetch('https://bot.test/admin/api/federation/cases?status=unknown',{headers:{Cookie:cookie}});assert.equal(invalid.status,400);
+    const page=await mf.dispatchFetch('https://bot.test/admin/api/federation/cases?userId=200',{headers:{Cookie:cookie}});assert.equal(page.status,200);assert.equal((await page.json()).cases.length,50);
+  });
+
+  await t.test('试运行仅观察；去重命中、域名试运行、正式启用不影响现有拦截',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-196');
+    const trial=(await group.editTrial('add',{kind:'keyword',value:'观察词'})).trials[0];
+    const msg=update(-196,'技术讨论观察词');await send(msg);await send(msg);await tick(-196);
+    assert.equal(actions(-196).filter(x=>['deleteMessage','banChatMember'].includes(x.method)).length,0);
+    assert.equal((await group.listTrials())[0].hits,1);
+    await group.editTrial('add',{kind:'domain',value:'trial-only.example'});await send(update(-196,'官网 https://trial-only.example 怎么用'));await tick(-196);
+    assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,1);
+    assert.equal(actions(-196).filter(x=>x.method==='deleteMessage').length,0);
+    await send(update(-196,'官网入口',{entities:[{type:'text_link',offset:0,length:4,url:'https://trial-only.example/private'}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,2);
+    await send(update(-196,'兼职'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
+    await group.editTrial('promote',{id:trial.id});await send(update(-196,'再聊观察词'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,2);
+    assert.ok((await group.config()).keywords.includes('观察词'));
+    await group.editTrial('add',{kind:'keyword',value:'渠道正品'});await send(update(-196,'',{photo:[{file_id:'trial-ocr',file_unique_id:'trial-ocr-unique',file_size:12000}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.value==='渠道正品').hits,1);
+  });
+  await t.test('完整备份可预览恢复、保留回退包和稳定样本 ID；部分失败可续作',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;
+    assert.ok(backup.groups.length>0);assert.ok(!JSON.stringify(backup).includes('fake'));assert.ok(!Object.hasOwn(backup,'session'));
+    const target=backup.groups[0];target.config.keywords.push('备份恢复测试词');
+    const original=await ns.getByName('chat:'+target.id).config();const preview=await global.previewBackup(backup);assert.ok(preview.groups.some(x=>x.id===target.id));
+    assert.ok(!(await ns.getByName('chat:'+target.id).config()).keywords.includes('备份恢复测试词'));
+    const sampleBefore=(await global.listSamples()).map(x=>[x.kind,x.value,x.id]);
+    await ns.getByName('chat:'+backup.groups[1].id).seedRecordTest('test:restore-fail',true);
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const restore=()=>mf.dispatchFetch('https://bot.test/admin/api/backup/restore',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({token:preview.token})});
+    assert.equal((await restore()).status,400);assert.ok(await global.lastRollback());
+    const completed=await restore();assert.equal(completed.status,200);assert.equal((await completed.json()).complete,true);
+    assert.ok((await ns.getByName('chat:'+target.id).config()).keywords.includes('备份恢复测试词'));
+    assert.deepEqual((await global.listSamples()).map(x=>[x.kind,x.value,x.id]),sampleBefore);
+    assert.deepEqual(JSON.parse(JSON.stringify((await global.lastRollback()).groups.find(x=>x.id===target.id).config)),JSON.parse(JSON.stringify(original)));
+    assert.equal((await restore()).status,200);
+    const audit=await global.listAudit();assert.ok(audit.entries.some(x=>x.action==='backup/restore'&&x.status==='failed'));assert.ok(audit.entries.some(x=>x.action==='backup/restore'&&x.status==='success'));
+  });
+  await t.test('恢复预览后配置发生变化会拒绝覆盖，审计可查看具体字段差异',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;const preview=await global.previewBackup(backup);
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+    const chatId=backup.groups[0].id;assert.equal((await request('keywords/add',{chatId,word:'预览后新修改词'})).status,200);
+    const stale=await request('backup/restore',{token:preview.token});assert.equal(stale.status,400);assert.match((await stale.json()).error,/配置已变化/);
+    const audits=(await (await request('audit')).json()).entries;const entry=audits.find(x=>x.action==='keywords/add'&&x.status==='success');assert.ok(entry.changes.some(x=>x.field==='keywords'&&x.after.includes('预览后新修改词')));
+    assert.match(entry.actor,/^session:[a-f0-9]{12}$/);assert.ok(!JSON.stringify(audits).includes('password-for-test'));
+    assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/backup/export')).status,401);
+  });
+  await t.test('异常与恢复只提醒一次，未来到期任务不误报积压，Webhook 异常可自动检查',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),start=calls.length;
+    await global.checkIncident('test-transition',true,'测试权限异常');await global.checkIncident('test-transition',true,'测试权限异常');await global.checkIncident('test-transition',false,'测试权限恢复');await global.checkIncident('test-transition',false,'测试权限恢复');
+    const reminders=calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text.includes('测试权限'));assert.equal(reminders.length,2);assert.equal((await global.incidentList()).find(x=>x.id==='test-transition').active,false);
+    await global.register({id:'-197',title:'未来到期测试群'});await ns.getByName('chat:-197').seedFutureJobTest();assert.equal((await ns.getByName('chat:-197').healthSummary()).overdueSeconds,0);
+    botPermissionsHealthy=true;webhookState={url:'https://bot.test/webhook/path',pending_update_count:5,last_error_date:Math.floor(Date.now()/1000)};
+    await global.monitorOperations(true);assert.ok((await global.incidentList()).find(x=>x.id==='webhook').active);assert.ok(!(await global.incidentList()).some(x=>x.id==='queue--197'&&x.active));
+    webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};await global.monitorOperations(true);assert.equal((await global.incidentList()).find(x=>x.id==='webhook').active,false);
+  });
+
+  await t.test('部分恢复后的新修改阻止旧任务续作；批量静默审计只记录相关字段',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;
+    backup.groups[0].config.keywords.push('续作冲突测试词');const preview=await global.previewBackup(backup),target=backup.groups[1];await ns.getByName('chat:'+target.id).seedRecordTest('test:restore-fail',true);
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
+    const restore=()=>mf.dispatchFetch('https://bot.test/admin/api/backup/restore',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({token:preview.token})});
+    assert.equal((await restore()).status,400);await ns.getByName('chat:'+target.id).editWord('add','部分恢复后新词');assert.equal((await restore()).status,400);assert.ok((await ns.getByName('chat:'+target.id).config()).keywords.includes('部分恢复后新词'));
+    const quiet=await global.auditSnapshot('quiet',{scope:'all'});assert.ok(quiet['quiet:'+target.id]);assert.deepEqual(Object.keys(quiet['quiet:'+target.id]).sort(),['quietEnabled','quietEnd','quietNotify','quietStart']);
+  });
+
 });

@@ -57,8 +57,27 @@ export function parseDmitPricing(html, sourceUrl) {
   return [...products.values()];
 }
 
+// DMIT's public announcement channel is a useful official fallback when its
+// storefront deliberately rejects automated requests.  This is intentionally
+// narrow: maintenance announcements never become restock notifications.
+export function parseDmitOfficialRestocks(html) {
+  if (typeof html !== 'string' || html.length < 20) return [];
+  const posts = [...html.matchAll(/data-post=["']DMIT_INC\/(\d+)["'][\s\S]*?(?=data-post=["']DMIT_INC\/|$)/gi)];
+  return posts.map(match => {
+    const id = match[1];
+    const body = match[0].match(/tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/i)?.[1] || '';
+    const message = text(body);
+    const isRestock = /\b(?:restock(?:ed|ing)?|back\s+in\s+stock|available\s+again)\b|补货|恢复销售|重新上架|现货/i.test(message);
+    return isRestock && message ? { id, message, url: `https://t.me/DMIT_INC/${id}` } : null;
+  }).filter(Boolean);
+}
+
 export function dmitNotification(item, channel) {
   return `✅ 【DMIT】监控雷达感知补货！\n\n• 产品：${item.product}\n• 区域：${item.region}\n• 线路：${item.route}\n• 配置：${item.config}\n• 流量/带宽：${item.bandwidth}\n• 价格：${item.price}\n\n🔍 更多产品，请关注 VPS 补货雷达\n${channel}`;
+}
+
+export function dmitOfficialNotification(item, channel) {
+  return `✅ 【DMIT】官方补货公告\n\n${item.message.slice(0, 1200)}\n\n🔍 更多产品，请关注 VPS 补货雷达\n${channel}`;
 }
 
 export function withDmitAffiliate(orderUrl, affiliateId) {
