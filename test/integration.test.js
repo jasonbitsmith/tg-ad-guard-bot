@@ -18,6 +18,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       async ocr(msg){ return Array.isArray(msg.photo) ? '水果机 渠道正品 日搞1w 当日下单 秒发' : ''; }
       forceNoticesTest(){const notices=this.quietNotices().map(x=>({...x,retryAt:0}));this.write('quiet:notices',notices);return notices;}
       seedNoticesTest(notices){this.write('quiet:notices',notices);}
+      // Quiet-hours tests drive quietTick() with a fake Beijing time. A real
+      // alarm would call quietTick() with the actual clock and undo that state,
+      // so groups under a fake clock skip real alarms.
+      fakeQuietClockTest(){this.write('test:fake-quiet-clock',true);}
+      async alarm(){if(this.read('test:fake-quiet-clock'))return;return super.alarm();}
       async automaticBackupTest(id){try{return {backup:await this.automaticBackup(id)};}catch(error){return {error:error.message};}}
       async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
       async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
@@ -229,6 +234,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const quiet=await (await request('quiet',{scope:'all',enabled:true,start:'00:00',end:'08:00',notify:true})).json();
     assert.ok(quiet.updated >= 6);
     const quietState = (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('-149');
+    await quietState.fakeQuietClockTest();
     await quietState.editQuiet({ id: -149, title: '静默测试群' }, true, '00:00', '08:00', true);
     await quietState.quietTick('00:00');
     failures.set('deleteMessage:-149', { error_code: 500, description: 'temporary failure' });
@@ -311,6 +317,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
 
   await t.test('静默期间关闭功能立即恢复原权限；删除失败通知不覆盖且退避',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-170');
+    await group.fakeQuietClockTest();
     await group.editQuiet({id:-170,title:'关闭静默测试'},true,'00:00','08:00',true);
     await group.quietTick('00:00');
     failures.set('deleteMessage:-170',{error_code:500,description:'temporary failure'});
