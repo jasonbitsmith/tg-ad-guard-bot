@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.8.0';
+export const VERSION = '2.9.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -252,12 +252,25 @@ export default {
     // Telegram does not expose an API to enumerate a bot's existing groups.
     // An owner can forward any message from an already-added group to the bot
     // privately; Telegram supplies the original chat metadata server-side.
+    // Buttons on owner notices (report / ban log) can live in a private chat
+    // or a log channel, so they are handled before the group-only routing.
+    if (/^n:/.test(String(update.callback_query?.data || ''))) {
+      try { await globalState(env).noticeAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'notice_action_failed', updateId: update.update_id })); }
+      return new Response('OK');
+    }
     const privateMessage = update.message;
     if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
     if (privateMessage?.chat?.type === 'private' && owners(env).has(String(privateMessage.from?.id))) {
       const text=String(privateMessage.text||'').trim(),tg=telegram(env.BOT_TOKEN);
       const release=/^\/release\s+(\d{1,16})\s+(-\d+)$/i.exec(text);
       const find=/^\/findmember(?:\s+(.+))?$/i.exec(text);
+      const logTarget=/^\/log(?:channel)?(?:\s+(\S+))?$/i.exec(text);
+      if(logTarget){
+        let reply;
+        try{reply=logTarget[1]?'✅ 处理记录：'+(await globalState(env).describeLogTarget(await globalState(env).setLogTarget(logTarget[1]))):'处理记录当前：'+(await globalState(env).describeLogTarget())+'\n\n/log me 发给我\n/log @频道用户名 发到频道（先把机器人加为频道管理员）\n/log off 关闭';}
+        catch(error){reply='设置未完成：'+String(error.message).slice(0,300);}
+        await tg('sendMessage',{chat_id:privateMessage.chat.id,text:reply});return new Response('OK');
+      }
       if(release||find||/^@[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(text)){
         try{
           let reply;

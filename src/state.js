@@ -14,6 +14,8 @@ import { ModerationMethods } from './state/moderation.js';
 import { SettingsMethods } from './state/settings.js';
 import { BackupMethods } from './state/backup.js';
 import { AuthMethods } from './state/auth.js';
+import { ScreeningMethods } from './state/screening.js';
+import { NoticesMethods } from './state/notices.js';
 
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
@@ -209,6 +211,7 @@ export class GuardState extends DurableObject {
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
+        } else if(op.local==='owner-report'){await this.env.GUARD_STATE.getByName('admin').noticeReport(op.body);
         } else if (op.local === 'sample') {
           await this.env.GUARD_STATE.getByName('admin').editSample('add',op.sample);
         } else if (op.local === 'warning') {
@@ -250,6 +253,10 @@ export class GuardState extends DurableObject {
       this.write('health:last-completion',{at:new Date().toISOString(),latencyMs:Date.now()-job.created});
       if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
       this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?", job.id);
+      // Owner notice with an undo button. Manual admin bans and per-group
+      // federation copies are left out; the source group's ban covers the case.
+      if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
+        await this.env.GUARD_STATE.getByName('admin').noticeBan(plan.entry).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
     } catch (error) {
       if(job.id.startsWith('verification-timeout:') && error.code===403){error.retryable=true;error.retryAfter=1800;}
       const attempts = job.attempts + 1;
@@ -301,7 +308,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);
