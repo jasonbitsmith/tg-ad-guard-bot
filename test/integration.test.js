@@ -21,6 +21,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
         if(force) this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending'");
+        // A real alarm may already be running (alarm() then returns early);
+        // wait for it so the tick below actually processes pending jobs.
+        for(let i=0;i<100 && this.running;i++)await new Promise(r=>setTimeout(r,20));
         await this.alarm();
         return { data:await this.adminData(), jobs:this.sql.exec('SELECT id,status,due,attempts FROM jobs').toArray() };
       }
@@ -350,6 +353,17 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const short=(await global.editSample('add',{kind:'text',value:'赚',pending:true})).find(x=>x.value==='赚');assert.equal(short.status,'disabled');
     assert.equal((await global.previewSample(short.id)).eligible,false);
     const shortResult=await activate({id:short.id,previewToken:(await global.previewSample(short.id)).previewToken});assert.equal(shortResult.status,400);assert.match((await shortResult.json()).error,/至少/);
+  });
+  await t.test('群内样本缓存：启用样本后下一条消息立即生效，群改名后重新登记',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    await send(update(-183,'先发一条普通消息填充缓存',{from:{id:91,first_name:'普通成员'}}));await tick(-183);
+    assert.ok(!actions(-183).some(x=>x.method==='banChatMember'));
+    const sample=(await global.editSample('add',{kind:'text',value:'缓存失效样本文案',label:'缓存测试'})).find(x=>x.label==='缓存测试');
+    await global.editSample('activate',{id:sample.id,previewToken:(await global.previewSample(sample.id)).previewToken});
+    await send(update(-183,'缓存失效样本文案',{from:{id:92,first_name:'样本发送者'}}));await tick(-183);
+    assert.ok(actions(-183).some(x=>x.method==='banChatMember'&&x.params.user_id===92));
+    await send(update(-183,'改名后的消息',{chat:{id:-183,type:'supergroup',title:'改名后的测试群'},from:{id:91,first_name:'普通成员'}}));await tick(-183);
+    assert.equal((await global.listChats()).find(x=>x.id==='-183').title,'改名后的测试群');
   });
   await t.test('联防各群独立执行，失败不挡其他群；撤销停用命中样本并取消未执行封禁',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
