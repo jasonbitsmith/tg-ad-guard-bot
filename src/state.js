@@ -257,7 +257,7 @@ export class GuardState extends DurableObject {
       // Owner notice with an undo button. Manual admin bans and per-group
       // federation copies are left out; the source group's ban covers the case.
       if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
-        await this.env.GUARD_STATE.getByName('admin').noticeBan(plan.entry).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
+        await this.env.GUARD_STATE.getByName('admin').noticeBan(this.withProfile(plan.entry)).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
     } catch (error) {
       if(job.id.startsWith('verification-timeout:') && error.code===403){error.retryable=true;error.retryAfter=1800;}
       const attempts = job.attempts + 1;
@@ -291,6 +291,11 @@ export class GuardState extends DurableObject {
     if (winner) return winner;
     this.write('config', initial);
     return initial;
+  }
+  // Fill in the name and @username remembered for a member, for owner notices.
+  withProfile(entry) {
+    const profile = /^\d{1,16}$/.test(String(entry.userId)) ? this.sql.exec('SELECT username,name FROM member_profiles WHERE user_id=?', String(entry.userId)).toArray()[0] : null;
+    return { ...entry, userName: entry.userName || profile?.name || '', userUsername: entry.userUsername || profile?.username || '' };
   }
   owners() { return (this.env.ADMIN_IDS || '').split(',').map(x => x.trim()).filter(Boolean); }
   async me(tg) {
