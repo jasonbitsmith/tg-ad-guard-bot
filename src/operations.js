@@ -30,7 +30,7 @@ export function validateConfig(raw){
   for(const key of ['welcomeMessage','rulesMessage'])if(config[key].length>2500)throw Error('欢迎语或群规过长');
   if(!Array.isArray(raw.keywords) || raw.keywords.length>500)throw Error('关键词数量无效');config.keywords=[...new Set(raw.keywords.map(validateWord))];
   for(const key of ['domainAllowlist','domainDenylist']){if(!Array.isArray(config[key]) || config[key].length>300)throw Error('域名名单无效');config[key]=[...new Set(config[key].map(normalizeDomain))];}
-  if(!['off','math','channel'].includes(config.verificationMode) || config.verificationMinutes>60 || (config.verificationMode==='channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(config.verificationChannel)))throw Error('验证配置无效');
+  if(!['off','math','button','channel'].includes(config.verificationMode) || !['ban','kick'].includes(config.verificationTimeoutAction) || config.verificationMinutes>60 || (config.verificationMode==='channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(config.verificationChannel)))throw Error('验证配置无效');
   if(config.raidJoinLimit<2 || config.raidJoinLimit>30 || config.raidMinutes<5 || config.raidMinutes>120)throw Error('入群防护配置无效');
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.quietStart) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.quietEnd) || (config.quietEnabled && config.quietStart===config.quietEnd))throw Error('静默时段无效');
   if(!config.contentLocks || typeof config.contentLocks!=='object' || Array.isArray(config.contentLocks))throw Error('内容限制无效');
