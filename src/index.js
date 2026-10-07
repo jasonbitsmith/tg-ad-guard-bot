@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.7.4';
+export const VERSION = '2.8.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -112,6 +112,8 @@ async function admin(request, env, url) {
   }
   if(request.method==='GET' && path==='review-examples')return json({examples:await state.listReviewExamples()});
   if(request.method==='GET' && path==='federation/cases')return json(await state.searchCases(Object.fromEntries(url.searchParams)));
+  if(request.method==='GET' && path==='backup/automatic')return json(await state.automaticBackup(url.searchParams.get('id')));
+  if(request.method==='GET' && path==='backup/status')return json(await state.automaticBackupStatus());
   if(request.method==='GET' && path==='backup/export')return json(await state.exportBackup());
   if(request.method==='GET' && path==='backup/rollback')return json({backup:await state.lastRollback()});
   if(request.method==='GET' && path==='audit')return json(await state.listAudit(Number(url.searchParams.get('before'))||0));
@@ -131,6 +133,7 @@ async function admin(request, env, url) {
   }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
 }
 async function mutateAdmin(request,env,url,state,path){
+  if(path==='ai-review'){const body=await readJson(request,4096);return json(await group(env,body.chatId).editAiReview(body.enabled));}
   if(path==='verification/release'){const body=await readJson(request,4096);return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));}
   if(path==='backup/preview'){const body=await readJson(request,600000);return json(await state.previewBackup(body.backup));}
   if(path==='backup/restore'){const body=await readJson(request,4096);return json(await state.restoreBackup(body.token));}
@@ -285,6 +288,7 @@ export default {
   },
   async scheduled(controller, env, ctx) {
     if (env.GUARD_STATE) {
+      ctx.waitUntil(globalState(env).runAutomaticBackup());
       if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
       // Each group's own alarm already runs quiet-hours switching every minute
       // while quiet mode is on; this sweep is only a safety net, so it wakes

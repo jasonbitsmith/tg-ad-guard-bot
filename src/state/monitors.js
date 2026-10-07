@@ -1,7 +1,8 @@
 // DMIT restock radar, OCR, and operational incident monitoring.
 // Methods are copied onto GuardState.prototype in ../state.js.
-import { telegram } from '../telegram.js';
+import { digest, telegram } from '../telegram.js';
 import { dmitNotification, dmitOfficialNotification, parseDmitOfficialRestocks, parseDmitPricing, withDmitAffiliate } from '../dmit.js';
+import { AI_REVIEW_MODEL, AI_REVIEW_PROMPT, parseAiReview } from '../ai-review.js';
 import { DAY, ADMIN_STATUS } from './shared.js';
 
 export class MonitorsMethods {
@@ -57,6 +58,32 @@ export class MonitorsMethods {
       await this.env.GUARD_STATE.getByName('admin').alertOwner('ocr-failure', `OCR 图片识别失败\n群：${msg.chat.title || msg.chat.id}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
       return '';
     }
+  }
+  aiQuota(){
+    const limit=Math.max(1,Math.min(100,Number(this.env.AI_REVIEW_MAX_PER_CHAT_HOUR)||20)),hour=Math.floor(Date.now()/3600000),used=this.read('ai:quota:'+hour,0);
+    return {limit,used,remaining:Math.max(0,limit-used),resetAt:(hour+1)*3600000};
+  }
+  reserveAiBudget(){
+    const limit=Math.max(1,Math.min(1000,Number(this.env.AI_REVIEW_MAX_GLOBAL_HOUR)||100)),hour=Math.floor(Date.now()/3600000),key='ai:global-quota:'+hour,used=this.read(key,0);
+    if(used>=limit)return false;this.write(key,used+1,2*3600000);return true;
+  }
+  async editAiReview(enabled){if(typeof enabled!=='boolean')throw Error('AI 设置无效');const config=await this.config();this.saveConfig({...config,aiReviewEnabled:enabled},'修改 AI 二次判断');return {config:await this.config()};}
+  async reviewWithAi(msg,text){
+    if(this.env.AI_REVIEW_ENABLED==='false'||!this.env.AI)return {decision:'unavailable',reason:'AI 未启用或绑定缺失'};
+    const cache='ai:message:'+msg.message_id+':'+await digest(String(text)),previous=this.read(cache);if(previous)return previous;
+    const quota=this.aiQuota();if(!quota.remaining)return {decision:'quota',reason:'本群 AI 额度已用完'};
+    this.write('ai:quota:'+Math.floor(Date.now()/3600000),quota.used+1,2*3600000);
+    let timer;
+    try{
+      if(!await this.env.GUARD_STATE.getByName('admin').reserveAiBudget())return {decision:'quota',reason:'全局 AI 额度已用完'};
+      const input=String(text).slice(0,2500);
+      const result=await Promise.race([this.env.AI.run(AI_REVIEW_MODEL,{messages:[{role:'system',content:AI_REVIEW_PROMPT},{role:'user',content:JSON.stringify({message:input})}],response_format:{type:'json_object'},max_tokens:350,temperature:0}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('AI 请求超时')),8000);})]);
+      const verdict=parseAiReview(result,input);this.write(cache,verdict,7*DAY);
+      this.log({action:'ai-review',chatId:msg.chat.id,messageId:msg.message_id,outcome:verdict.decision,confidence:verdict.confidence,reasons:[verdict.reason]});return verdict;
+    }catch{
+      this.log({action:'ai-review',chatId:msg.chat.id,messageId:msg.message_id,outcome:'failed',error:'AI 超时、服务不可用或返回证据无效，保留待审'});
+      return {decision:'unavailable',reason:'AI 判断未完成，待人工核对'};
+    }finally{clearTimeout(timer);}
   }
   async monitorDmit() {
     const source = this.env.DMIT_PRICING_URL || 'https://www.dmit.io/pages/pricing';

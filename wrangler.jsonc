@@ -71,6 +71,10 @@
     "DMIT_PRICING_URL": "https://www.dmit.io/pages/pricing",
     "DMIT_NOTIFY_CHAT": "@jason_vps_deal",
     "DMIT_AFFILIATE_ID": "16962",
+    "AUTO_BACKUP_ENABLED": "true",
+    "AI_REVIEW_ENABLED": "true",
+    "AI_REVIEW_MAX_PER_CHAT_HOUR": "20",
+    "AI_REVIEW_MAX_GLOBAL_HOUR": "100",
     "OCR_ENABLED": "true",
     "OCR_MAX_PER_CHAT_HOUR": "30"
   },

@@ -35,6 +35,30 @@ export class BackupMethods {
     const samples=rows.map(row=>({kind:row.kind,value:row.value,label:row.label,status:row.kind==='text'&&[...row.value].length<6?'disabled':this.read('sample-status:'+row.id,'active')}));
     return validateBackup({schema:1,created:new Date().toISOString(),groups,samples,federation:this.federation()});
   }
+  automaticBackupStatus(){return {enabled:this.env.AUTO_BACKUP_ENABLED!=='false',schedule:'北京时间每周一 03:00，首次启用立即备份',retention:8,last:this.read('backup:auto-status'),backups:this.read('backup:auto-index',[])};}
+  async automaticBackup(id){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(String(id))||!this.read('backup:auto-index',[]).some(x=>x.id===id))throw Error('未找到自动备份');
+    const encoded=await this.env.BOT_KV.get('automatic-backup:'+id);if(!encoded)throw Error('备份已过期或暂时无法读取');const entry=this.read('backup:auto-index',[]).find(x=>x.id===id);if(await digest(encoded)!==entry.checksum)throw Error('备份校验失败，请勿恢复');return validateBackup(JSON.parse(encoded));
+  }
+  async runAutomaticBackup(now=Date.now()){
+    if(this.env.AUTO_BACKUP_ENABLED==='false'||this.backingUp||this.read('backup:auto-retry',0)>now)return;
+    const local=new Date(now+8*3600000),monday=new Date(local);monday.setUTCDate(local.getUTCDate()-(local.getUTCDay()+6)%7);monday.setUTCHours(3,0,0,0);
+    if(local<monday)monday.setUTCDate(monday.getUTCDate()-7);
+    const id=monday.toISOString().slice(0,10);if(this.read('backup:auto-index',[]).some(x=>x.id===id))return;
+    this.backingUp=true;
+    try{
+      const backup=await this.exportBackup(),encoded=JSON.stringify(backup),checksum=await digest(encoded);
+      await this.env.BOT_KV.put('automatic-backup:'+id,encoded,{expirationTtl:90*86400});
+      const entry={id,created:new Date(now).toISOString(),groups:backup.groups.length,samples:backup.samples.length,checksum};
+      this.write('backup:auto-index',[entry,...this.read('backup:auto-index',[])].slice(0,8),100*DAY);
+      this.write('backup:auto-status',{outcome:'success',at:entry.created,id});this.remove('backup:auto-retry');
+      this.log({action:'automatic-backup',outcome:'success',backupId:id,groups:entry.groups,samples:entry.samples});
+    }catch{
+      this.write('backup:auto-status',{outcome:'failed',at:new Date(now).toISOString(),error:'自动备份未完成，15 分钟后重试'});this.write('backup:auto-retry',now+15*60000,DAY);
+      this.log({action:'automatic-backup',outcome:'failed',error:'读取群配置或保存备份失败，未写入成功记录'});
+      await this.alertOwner('automatic-backup-failure','每周自动备份失败，15 分钟后自动重试；已有备份保留。').catch(()=>{});
+    }finally{this.backingUp=false;}
+  }
   async backupFingerprint(){const backup=await this.exportBackup();delete backup.created;return digest(JSON.stringify(backup));}
   async previewBackup(input){
     const backup=validateBackup(input), current=await this.exportBackup(), token=crypto.randomUUID();

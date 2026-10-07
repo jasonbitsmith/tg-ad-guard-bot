@@ -2,7 +2,11 @@
 
 线上 Worker：`tg-ad-guard-bot`。后台自定义域名：`https://bot.jasonselect.com/admin`。
 
-## 本次部署验证
+## v2.8.0 新增能力
+
+每周自动备份、AI 二次判断、恢复严格广告封禁，以及补齐成员解封和自检专项测试。配置、后台操作和边界说明见 [OPERATIONS-2.8.md](OPERATIONS-2.8.md)，成员解封见 [MEMBER-RECOVERY.md](MEMBER-RECOVERY.md)。
+
+## 历史部署验证
 
 2026-09-26 已部署 v2.2.0。该版本保留群管理能力，并新增每分钟运行一次的 DMIT 补货雷达：首次成功读取只建立库存基线，之后产品从缺货变为可下单时才会推送至 `@jason_vps_deal`。购买按钮保留产品下单参数并附加 DMIT 推广编号。
 

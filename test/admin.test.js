@@ -100,3 +100,16 @@ test('试运行列表展示命中例子和正式启用按钮，审计展示变�
  const trial=h.document.getElementById('trials').children[0];assert.match(trial.children[0].textContent,/命中 2 次/);assert.match(trial.children[1].textContent,/命中例子/);assert.equal(trial.children[2].textContent,'核对完成，正式启用');
  await h.document.getElementById('refreshAudit').onclick({preventDefault(){},currentTarget:h.document.getElementById('refreshAudit')});assert.match(h.document.getElementById('auditEntries').children[0].children[1].textContent,/新增规则/);
 });
+
+
+test('AI 设置保存反馈明确；每周备份仅填入恢复来源，不直接恢复',async()=>{
+  const backup={schema:1,groups:[],samples:[],federation:[]};
+  const h=harness({}, {'ai-review':{config:{aiReviewEnabled:false}},status:{enabled:true,schedule:'每周一 03:00',retention:8,last:{outcome:'success',at:'2026-10-07T00:00:00Z'},backups:[{id:'2026-10-05',created:'2026-10-07T00:00:00Z',groups:6,samples:2}]},'automatic?id=2026-10-05':backup});await flush();
+  await h.document.getElementById('loginForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('loginForm')});await flush();
+  h.document.getElementById('chatId').value='-100123';h.document.getElementById('aiReviewEnabled').checked=false;
+  await h.document.getElementById('aiReviewForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('aiReviewForm')});
+  assert.equal(h.document.getElementById('aiReviewEnabled').checked,false);assert.match(h.document.getElementById('notice').textContent,/AI 设置已保存/);
+  assert.match(h.document.getElementById('automaticBackupStatus').textContent,/已保存/);
+  const row=h.document.getElementById('automaticBackups').children[0];await row.children[2].onclick({preventDefault(){},currentTarget:row.children[2]});
+  assert.deepEqual(JSON.parse(h.document.getElementById('backupText').value),backup);assert.ok(!h.calls.some(x=>x.endsWith('/backup/restore')));
+});
