@@ -725,6 +725,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const card=calls.findLast(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===99&&(c.params.text||c.params.caption||'').startsWith('👤'));
     assert.ok(card);const body=card.params.text||card.params.caption;assert.ok(body.includes('https://t.me/spam_acc'));assert.match(body,/全网广告号黑名单/);assert.match(body,/因广告被封/);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-info'&&c.params.text==='资料已发送'));
+    const before=calls.length;
+    await send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99},text:'看看',reply_to_message:{message_id:1,from:{id:555,is_bot:true},chat:{id:99,type:'private'},text:'🚫 已封禁：广告<号> @spam_acc（666）\n群：CAS群\n原因：全网广告号黑名单'}}});
+    const viaReply=calls.slice(before).find(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===99&&(c.params.text||c.params.caption||'').startsWith('👤'));
+    assert.ok(viaReply&&(viaReply.params.text||viaReply.params.caption).includes('因广告被封'));
+    const before2=calls.length;
+    await send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99},text:'/who 666'}});
+    assert.ok(calls.slice(before2).some(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===99&&(c.params.text||c.params.caption||'').includes('全网广告号黑名单')));
     const stranger=await send({update_id:++seq,callback_query:{id:'cb-x',from:{id:5,first_name:'路人'},data:data2,message:{message_id:1,chat:{id:5,type:'private'},text:notice.params.text}}});assert.equal(stranger.status,200);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='cb-x'&&/所有者/.test(c.params.text)));
     assert.ok(!actions(-401).some(x=>x.method==='unbanChatMember'));

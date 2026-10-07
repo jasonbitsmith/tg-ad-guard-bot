@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.10.0';
+export const VERSION = '2.10.1';
 const COOKIE = '__Host-guard_session';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -286,6 +286,12 @@ export default {
           else {const result=await globalState(env).findVerificationMembers(find?find[1]||'':text);reply=result.members.length?result.members.slice(0,15).map(x=>`${x.name||x.username||x.userId} · ${x.chatTitle}\n用户 ID：${x.userId}；状态：${({pending:'等待验证',timeout:'验证超时封禁',processing:'解封处理中',failed:'解封失败',released:'已手动通过'})[x.state]||x.state}\n${x.canRelease?'/release '+x.userId+' '+x.chatId:'请在后台查看执行结果'}`).join('\n\n'):'未找到验证记录。用户名仅能匹配机器人已记录过的成员，请改用数字用户 ID，或让成员私聊机器人发送 /myid。';if(result.errors.length)reply+='\n部分群查询失败，请在后台重试。';}
           await tg('sendMessage',{chat_id:privateMessage.chat.id,text:reply.slice(0,4000)});return new Response('OK');
         }catch(error){await tg('sendMessage',{chat_id:privateMessage.chat.id,text:'操作未完成：'+String(error.message).slice(0,300)});return new Response('OK');}
+      }
+      const replied=privateMessage.reply_to_message?.from?.is_bot?String(privateMessage.reply_to_message.text||privateMessage.reply_to_message.caption||''):'';
+      if(/^\/who(?:@\w+)?(?:\s|$)/i.test(text)||/^(?:🚫 已封禁|📣 群友举报|👤)/.test(replied)){
+        try{await globalState(env).profileLookup(text,replied,privateMessage.chat.id);}
+        catch(error){await tg('sendMessage',{chat_id:privateMessage.chat.id,text:'读取资料失败：'+String(error.message).slice(0,300)});}
+        return new Response('OK');
       }
       const forwardedChat = privateMessage.forward_origin?.chat || privateMessage.forward_from_chat;
       if (forwardedChat && ['group', 'supergroup'].includes(forwardedChat.type) && Number.isSafeInteger(forwardedChat.id) && forwardedChat.id < 0) {
