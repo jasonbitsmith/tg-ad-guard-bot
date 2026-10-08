@@ -172,7 +172,7 @@ async function mutateAdmin(request,env,url,state,path){
   }
   if (request.method === 'POST' && path === 'verification') {
     const body = await readJson(request, 4096);
-    return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel));
+    return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel, body.timeoutAction));
   }
   if (request.method === 'POST' && path === 'raid') {
     const body = await readJson(request, 4096);
@@ -252,12 +252,33 @@ export default {
     // Telegram does not expose an API to enumerate a bot's existing groups.
     // An owner can forward any message from an already-added group to the bot
     // privately; Telegram supplies the original chat metadata server-side.
+    // Buttons on owner notices (report / ban log) can live in a private chat
+    // or a log channel, so they are handled before the group-only routing.
+    if (/^n:/.test(String(update.callback_query?.data || ''))) {
+      try { await globalState(env).noticeAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'notice_action_failed', updateId: update.update_id })); }
+      return new Response('OK');
+    }
+    // Join requests and the buttons of private join-request challenges belong
+    // to the group being joined.
+    const joinRequest = update.chat_join_request;
+    const requestCallback = /^vj:(-\d{1,16}):/.exec(String(update.callback_query?.data || ''));
+    if ((joinRequest?.chat && ['group','supergroup'].includes(joinRequest.chat.type)) || requestCallback) {
+      try { await group(env, joinRequest ? joinRequest.chat.id : requestCallback[1]).enqueue(update); return new Response('OK'); }
+      catch { console.error(JSON.stringify({ event: 'enqueue_failed', updateId: update.update_id })); return new Response('Retry later', { status: 503 }); }
+    }
     const privateMessage = update.message;
     if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
     if (privateMessage?.chat?.type === 'private' && owners(env).has(String(privateMessage.from?.id))) {
       const text=String(privateMessage.text||'').trim(),tg=telegram(env.BOT_TOKEN);
       const release=/^\/release\s+(\d{1,16})\s+(-\d+)$/i.exec(text);
       const find=/^\/findmember(?:\s+(.+))?$/i.exec(text);
+      const logTarget=/^\/log(?:channel)?(?:\s+(\S+))?$/i.exec(text);
+      if(logTarget){
+        let reply;
+        try{reply=logTarget[1]?'✅ 处理记录：'+(await globalState(env).describeLogTarget(await globalState(env).setLogTarget(logTarget[1]))):'处理记录当前：'+(await globalState(env).describeLogTarget())+'\n\n/log me 发给我\n/log @频道用户名 发到频道（先把机器人加为频道管理员）\n/log off 关闭';}
+        catch(error){reply='设置未完成：'+String(error.message).slice(0,300);}
+        await tg('sendMessage',{chat_id:privateMessage.chat.id,text:reply});return new Response('OK');
+      }
       if(release||find||/^@[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(text)){
         try{
           let reply;
@@ -265,6 +286,12 @@ export default {
           else {const result=await globalState(env).findVerificationMembers(find?find[1]||'':text);reply=result.members.length?result.members.slice(0,15).map(x=>`${x.name||x.username||x.userId} · ${x.chatTitle}\n用户 ID：${x.userId}；状态：${({pending:'等待验证',timeout:'验证超时封禁',processing:'解封处理中',failed:'解封失败',released:'已手动通过'})[x.state]||x.state}\n${x.canRelease?'/release '+x.userId+' '+x.chatId:'请在后台查看执行结果'}`).join('\n\n'):'未找到验证记录。用户名仅能匹配机器人已记录过的成员，请改用数字用户 ID，或让成员私聊机器人发送 /myid。';if(result.errors.length)reply+='\n部分群查询失败，请在后台重试。';}
           await tg('sendMessage',{chat_id:privateMessage.chat.id,text:reply.slice(0,4000)});return new Response('OK');
         }catch(error){await tg('sendMessage',{chat_id:privateMessage.chat.id,text:'操作未完成：'+String(error.message).slice(0,300)});return new Response('OK');}
+      }
+      const replied=privateMessage.reply_to_message?.from?.is_bot?String(privateMessage.reply_to_message.text||privateMessage.reply_to_message.caption||''):'';
+      if(/^\/who(?:@\w+)?(?:\s|$)/i.test(text)||/^(?:🚫 已封禁|📣 群友举报|👤)/.test(replied)){
+        try{await globalState(env).profileLookup(text,replied,privateMessage.chat.id);}
+        catch(error){await tg('sendMessage',{chat_id:privateMessage.chat.id,text:'读取资料失败：'+String(error.message).slice(0,300)});}
+        return new Response('OK');
       }
       const forwardedChat = privateMessage.forward_origin?.chat || privateMessage.forward_from_chat;
       if (forwardedChat && ['group', 'supergroup'].includes(forwardedChat.type) && Number.isSafeInteger(forwardedChat.id) && forwardedChat.id < 0) {
@@ -296,6 +323,7 @@ export default {
       if (new Date(controller.scheduledTime || Date.now()).getUTCMinutes() % 15 === 0) ctx.waitUntil(globalState(env).runQuietMaintenance());
       ctx.waitUntil(globalState(env).sendDailyReport());
       ctx.waitUntil(globalState(env).monitorOperations());
+      ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
     }
   },
 };
