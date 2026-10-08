@@ -156,3 +156,25 @@ test('备份校验限制范围、不接受密钥和未知配置，活动短样�
  assert.equal(validateConfig({...config,newMemberLinkMinutes:1440}).newMemberLinkMinutes,1440);
  assert.deepEqual(diffValues({a:1,b:2},{a:3,b:2}),[{field:'a',before:1,after:3}]);
 });
+
+
+test('富文本读取标题、嵌套段落和隐藏链接，不读取回复或用户资料', async () => {
+  const {moderationMessage}=await import('../src/message-content.js');
+  const input={from:{first_name:'兼职招聘'},reply_to_message:{text:'兼职'},rich_message:{blocks:[
+    {type:'heading',size:1,text:['替我',{type:'bold',text:'收钱'},' 一天7k']},
+    {type:'details',summary:'说明',blocks:[{type:'paragraph',text:{type:'url',text:'了解',url:'https://blocked.example/path'}}]},
+  ]}};
+  const parsed=moderationMessage(input);assert.match(parsed.text,/替我收钱/);assert.ok(!parsed.text.includes('兼职'));
+  assert.ok(classify(parsed,[],false,{denylist:['blocked.example']}).blockedDomains.includes('blocked.example'));
+  assert.equal(classify(parsed,[]).permanentBan,true);
+  const deep={type:'bold'};deep.text=deep;assert.doesNotThrow(()=>moderationMessage({rich_message:{blocks:[deep]}}));
+});
+
+test('截图招揽文案首次命中，正常摄影、抖音和防诈讨论不命中', () => {
+  for(const body of ['替我收钱 一天7k','有一台手机能拍照就可做，拍商家收款码照片80/张，日入3500，小白可做，具体了解 @example_user','小白轻松上手，只要你有抖音号我就帮你赚钱，日赚3500']) {
+    const verdict=classify(msg(body),[]);assert.equal(verdict.permanentBan,true,body);assert.ok(verdict.score>=4);
+  }
+  for(const body of ['抖音号怎么绑定手机','相机拍豪车照片，每张80元，讨论正常摄影收费','不要相信替我收钱一天7k的骗局']) {
+    const verdict=classify(msg(body),[]);assert.ok(verdict.score<4,body);
+  }
+});

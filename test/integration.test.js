@@ -819,4 +819,35 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await dm('/log me');assert.match(calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99).params.text,/私信/);
   });
 
+  await t.test('访客代发与富文本广告使用实际发送账号，首次删除封禁，不处罚调用者', async () => {
+    const group=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-410');
+    await group.seedRecordTest('config',{keywords:[],aiReviewEnabled:true,casEnabled:false,profileCheckEnabled:false});
+    await group.seedRecordTest('test:ai',{decision:'normal',confidence:1,reason:'不应调用',evidence:[]});
+    const body='有一台手机能拍照就可做，拍商家收款码照片80/张，日入3500，小白可做，具体了解 @example_user';
+    const guest=update(-410,'',{from:{id:7001,is_bot:true,first_name:'GuestAdBot'},guest_bot_caller_user:{id:99,is_bot:false,first_name:'无辜调用者'},rich_message:{blocks:[{type:'heading',size:1,text:body}]}});
+    await send(guest);await tick(-410);
+    assert.ok(actions(-410).some(x=>x.method==='deleteMessage'&&x.params.message_id===guest.message.message_id));
+    assert.ok(actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7001&&x.params.until_date===0));
+    assert.ok(!actions(-410).some(x=>x.params.user_id===99));
+    assert.equal(await group.readRecordTest('test:ai-calls'),null);
+    for(const extra of [
+      {from:{id:7002,is_bot:true,first_name:'GuestBot'},guest_bot_caller_user:{id:7010},rich_message:{blocks:[{type:'paragraph',text:'今天讨论服务器配置'}]}},
+      {from:{id:7003,is_bot:true},rich_message:{blocks:[{type:'heading',text:body}]}},
+      {from:{id:7004,is_bot:true},guest_bot_caller_user:{id:99},text:'/ban 7011'},
+    ]) {const before=actions(-410).length;await send(update(-410,'',extra));await tick(-410);assert.equal(actions(-410).length,before);}
+    const manual=update(-410,'',{from:{id:7020,is_bot:true},guest_bot_caller_user:{id:99},rich_message:{blocks:[{type:'heading',text:'管理员确认的广告样本'}]}});
+    await send(update(-410,'/spam',{from:{id:99},reply_to_message:manual.message}));await tick(-410);
+    assert.ok(actions(-410).some(x=>x.method==='deleteMessage'&&x.params.message_id===manual.message.message_id));
+    assert.ok(actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7020));
+    assert.ok(!actions(-410).some(x=>x.params.user_id===99));
+    const reportTarget=update(-410,'',{from:{id:7021,is_bot:true},guest_bot_caller_chat:{id:-999},rich_message:{blocks:[{type:'paragraph',text:'待举报的富文本样本'}]}});
+    await send(update(-410,'/report',{from:{id:7022},reply_to_message:reportTarget.message}));await tick(-410);
+    assert.ok(calls.some(x=>x.method==='sendMessage'&&x.params.chat_id===99&&x.params.text.includes('待举报的富文本样本')));
+    const inline=update(-410,'替我收钱 一天7k',{from:{id:7012,is_bot:false,first_name:'普通发送者'},via_bot:{id:7005,is_bot:true}});
+    await send(inline);await tick(-410);assert.ok(actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7012));
+    assert.ok(!actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7005));
+    const rich=update(-410,'',{from:{id:7013},rich_message:{blocks:[{type:'heading',text:'免.税集.团7.折出水.果..机 🔥17·p·m.ax入手只4k'},{type:'paragraph',text:'日搞1w 当.日.下.单 现.货.秒.发 具体 @example_user'}]}});
+    await send(rich);await tick(-410);assert.ok(actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7013));
+  });
+
 });
