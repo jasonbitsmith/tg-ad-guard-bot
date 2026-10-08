@@ -717,6 +717,16 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const save=await mf.dispatchFetch('https://bot.test/admin/api/ai-review',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({chatId:-306,enabled:false})});assert.equal(save.status,200);assert.equal((await save.json()).config.aiReviewEnabled,false);
   });
 
+  await t.test('拍照广告昵称与拆字招揽组合不依赖关键词或 AI，直接删除永久封号',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-307');
+    const config=await group.config();await group.replaceBackupConfig({id:'-307',title:'拍照变体测试',config:{...config,keywords:[]}});
+    for(const [text,id] of [['会拍·照就行📸 当天结算',71],['做过地推拍照的来📸',72]]){
+      await send(update(-307,text,{from:{id,first_name:'📱 手机*拍违停*一百圆*一张 🧧'}}));await tick(-307);
+      assert.ok(actions(-307).some(x=>x.method==='banChatMember'&&x.params.user_id===id&&x.params.until_date===0));
+    }
+    assert.equal(actions(-307).filter(x=>x.method==='deleteMessage').length,2);
+    assert.equal(await group.readRecordTest('test:ai-calls'),null);
+  });
   await t.test('全网黑名单账号入群即封禁，所有者收到带撤销按钮的通知，撤销后解封并加白', async () => {
     const join={update_id:++seq,message:{message_id:7001,date:Math.floor(Date.now()/1000),chat:{id:-401,type:'supergroup',title:'CAS群'},from:{id:666,first_name:'广告号'},new_chat_members:[{id:666,first_name:'广告<号>',username:'Spam_Acc'}]}};
     await send(join);const {data}=await tick(-401);

@@ -156,3 +156,13 @@ test('备份校验限制范围、不接受密钥和未知配置，活动短样�
  assert.equal(validateConfig({...config,newMemberLinkMinutes:1440}).newMemberLinkMinutes,1440);
  assert.deepEqual(diffValues({a:1,b:2},{a:3,b:2}),[{field:'a',before:1,after:3}]);
 });
+
+
+test('付费拍照广告昵称叠加拆字招揽，首次即可永久封禁',()=>{
+ const first_name='📱 手机*拍违停*一百圆*一张 🧧';
+ for(const text of ['会拍·照就行📸 当天结算','做过地推拍照的来📸','会拍\u200b照就行 当天结算','还缺人','找兼职的来']){
+   const verdict=classify({text,from:{id:1,first_name}},[]);assert.equal(verdict.permanentBan,true,text);assert.ok(verdict.score>=7,text);
+ }
+ for(const text of ['香港服务器延迟多少？','以前做过地推拍照，现在做开发','警惕这种当天结算骗局','不要相信会拍照就行的广告'])assert.equal(classify({text,from:{id:1,first_name}},[]).permanentBan,false,text);
+ for(const text of ['做过地推拍照的来📸','当天结算','会拍照就行'])assert.equal(classify(msg(text),[]).permanentBan,false,text);
+});

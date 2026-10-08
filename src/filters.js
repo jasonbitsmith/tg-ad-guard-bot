@@ -38,6 +38,10 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const photoNamePitch = /拍(?:违停|违章|照).{0,16}(?:一百|100|百元|\d+元).{0,4}(?:张|次)/.test(compactName);
   const shortContactCode = /^@?[a-z][a-z0-9_]{4,31}$/.test(body) && /\d/.test(body);
   const profileContactPitch = photoNamePitch && shortContactCode;
+  // Paid-photo campaigns move the price into the display name and send only
+  // recruitment snippets. Require both signals; a nickname alone is insufficient.
+  const photoRecruitment = /(?:会拍照就行|拍照即可|做过地推拍照的?来|拍照兼职|拍照赚钱|当天结算|还缺人|找兼职的?来)/.test(compact);
+  const profilePhotoRecruitment = photoNamePitch && photoRecruitment && !/(?:警惕|谨防|骗局|诈骗|不要|别信|拒绝)/.test(compact);
   const entities = msg.entities || msg.caption_entities || [];
   const links = entities.filter(e => e.type === 'text_link' && typeof e.url === 'string').map(e => e.url);
   const destinations = [body, ...links.map(normalize)].join(' ');
@@ -110,6 +114,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (photoGigPitch) add(4, '包含拍照日结兼职招揽');
   if (phonePhotoGigPitch) add(4, '包含手机拍违停日结招揽');
   if (profileContactPitch) add(7, '付费拍照广告昵称附短账号引流');
+  if (profilePhotoRecruitment) add(7, '付费拍照广告昵称与招揽正文组合');
   if (moneyLaunderingPitch) add(4, '包含“洗米”收益招揽');
   if (investmentLeadPitch) add(4, '包含投资带单收益引流');
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
@@ -121,7 +126,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || photoGigPitch || phonePhotoGigPitch || profileContactPitch || profilePhotoRecruitment || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 

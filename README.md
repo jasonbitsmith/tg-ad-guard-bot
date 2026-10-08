@@ -2,6 +2,10 @@
 
 线上 Worker：`tg-ad-guard-bot`。后台自定义域名：`https://bot.jasonselect.com/admin`。
 
+## v2.10.4 拍照招揽变体修复
+
+付费拍照昵称叠加「会拍·照就行／当天结算」「做过地推拍照的来」等招揽正文，直接删消息并永久封号，不依赖关键词或 AI。单独昵称、正常技术讨论和防骗提醒不触发此组合规则。
+
 ## v2.8.0 新增能力
 
 每周自动备份、AI 二次判断、恢复严格广告封禁，以及补齐成员解封和自检专项测试。配置、后台操作和边界说明见 [OPERATIONS-2.8.md](OPERATIONS-2.8.md)，成员解封见 [MEMBER-RECOVERY.md](MEMBER-RECOVERY.md)。
