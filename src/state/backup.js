@@ -19,7 +19,7 @@ export class BackupMethods {
     return {entries:rows.slice(0,50).map(x=>({id:x.id,...JSON.parse(x.data)})),next:rows.length>50?rows[49].id:null};
   }
   async auditSnapshot(path,body){
-    if(path==='quiet' && body.scope==='all'){const result={};for(const chat of this.listChats()){const config=await this.env.GUARD_STATE.getByName('chat:'+chat.id).config();result['quiet:'+chat.id]={quietEnabled:config.quietEnabled,quietStart:config.quietStart,quietEnd:config.quietEnd,quietNotify:config.quietNotify};}return result;}
+    if(path==='quiet' && body.scope==='all'){const result={};for(const chat of this.listChats()){const config=await this.env.GUARD_STATE.getByName('chat:'+chat.id).config();result['quiet:'+chat.id]={quietEnabled:config.quietEnabled,quietStart:config.quietStart,quietEnd:config.quietEnd,quietNotify:config.quietNotify,quietEndNoticeMinutes:config.quietEndNoticeMinutes};}return result;}
     if(body.chatId && /^-[0-9]{1,16}$/.test(String(body.chatId)))return {...await this.env.GUARD_STATE.getByName('chat:'+String(body.chatId)).config(),trials:await this.env.GUARD_STATE.getByName('chat:'+String(body.chatId)).listTrials()};
     if(path.startsWith('samples/'))return {samples:this.listSamples()};
     if(path.startsWith('review-examples/'))return {examples:this.listReviewExamples().map(x=>({id:x.id,verdict:x.verdict}))};

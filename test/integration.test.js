@@ -18,6 +18,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       async ocr(msg){ return Array.isArray(msg.photo) ? '水果机 渠道正品 日搞1w 当日下单 秒发' : ''; }
       forceNoticesTest(){const notices=this.quietNotices().map(x=>({...x,retryAt:0}));this.write('quiet:notices',notices);return notices;}
       seedNoticesTest(notices){this.write('quiet:notices',notices);}
+      expireNoticesTest(){const notices=this.quietNotices().map(x=>x.deleteAt?{...x,deleteAt:Date.now()-1}:x);this.write('quiet:notices',notices);return notices;}
       // Quiet-hours tests drive quietTick() with a fake Beijing time. A real
       // alarm would call quietTick() with the actual clock and undo that state,
       // so groups under a fake clock skip real alarms.
@@ -339,6 +340,25 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     failures.set('setChatPermissions:-170',{error_code:500,description:'restore temporarily fails'});
     const result=await group.editQuiet({id:-170,title:'关闭静默测试'},false,'00:00','08:00',false);assert.equal(result.quietRestorePending,true);
     await group.quietTick('08:00');assert.equal((await group.quietNotices()).length,0);
+  });
+  await t.test('静默恢复提醒按设置的分钟数自动删除，0 表示不删除',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-172');
+    const deletes=()=>calls.filter(x=>x.method==='deleteMessage'&&x.params.chat_id===-172).length;
+    await group.fakeQuietClockTest();
+    const saved=await group.editQuiet({id:-172,title:'自动删除测试'},true,'00:00','08:00',true,5);assert.equal(saved.quietEndNoticeMinutes,5);
+        await group.quietTick('00:00');
+    const start=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id===-172).at(-1);
+    assert.equal(start.params.parse_mode,'HTML');assert.ok(start.params.text.includes('夜间静默已开启')&&start.params.text.includes('00:00 – 08:00'));
+    await group.quietTick('08:00');assert.equal(deletes(),1);
+    const end=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id===-172).at(-1);
+    assert.ok(end.params.text.includes('群聊已恢复发言')&&end.params.text.includes('5 分钟后自动删除'));
+    const pending=await group.quietNotices();assert.equal(pending.length,1);assert.ok(pending[0].deleteAt>Date.now());
+    await group.quietTick('08:01');assert.equal(deletes(),1);
+    await group.expireNoticesTest();await group.quietTick('08:06');assert.equal(deletes(),2);assert.equal((await group.quietNotices()).length,0);
+    await group.editQuiet({id:-172,title:'自动删除测试'},true,'00:00','08:00',true,0);
+    await group.quietTick('00:00');await group.quietTick('08:00');
+    const kept=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id===-172).at(-1);
+    assert.ok(!kept.params.text.includes('自动删除'));assert.equal((await group.quietNotices()).length,0);
   });
   await t.test('验证超时封禁失败保留记录并重试，成功后才清理',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-171');
@@ -674,7 +694,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
     const restore=()=>mf.dispatchFetch('https://bot.test/admin/api/backup/restore',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({token:preview.token})});
     assert.equal((await restore()).status,400);await ns.getByName('chat:'+target.id).editWord('add','部分恢复后新词');assert.equal((await restore()).status,400);assert.ok((await ns.getByName('chat:'+target.id).config()).keywords.includes('部分恢复后新词'));
-    const quiet=await global.auditSnapshot('quiet',{scope:'all'});assert.ok(quiet['quiet:'+target.id]);assert.deepEqual(Object.keys(quiet['quiet:'+target.id]).sort(),['quietEnabled','quietEnd','quietNotify','quietStart']);
+    const quiet=await global.auditSnapshot('quiet',{scope:'all'});assert.ok(quiet['quiet:'+target.id]);assert.deepEqual(Object.keys(quiet['quiet:'+target.id]).sort(),['quietEnabled','quietEnd','quietEndNoticeMinutes','quietNotify','quietStart']);
   });
 
   await t.test('AI 确认广告永久封禁，正常内容放行，服务失败待审，黑名单不等待 AI',async()=>{

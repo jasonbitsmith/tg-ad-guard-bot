@@ -2,6 +2,35 @@
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
 
+const keepLabel = minutes => minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
+export function quietStartText(config) {
+  return [
+    '🌙 <b>夜间静默已开启</b>',
+    '',
+    `⏰ 静默时段：北京时间 <b>${config.quietStart} – ${config.quietEnd}</b>`,
+    '🔇 期间普通成员暂停发言，管理员不受影响',
+    '🔔 到点自动恢复，无需任何操作',
+    '',
+    '⚠️ <b>防骗提醒</b>',
+    '• 不要相信私聊发来的开户链接、投资带单',
+    '• 官方不会私信索要验证码、密码或转账',
+    '• 遇到可疑账号，请直接举报给管理员',
+    '',
+    '晚安，明天见 🌙',
+  ].join('\n');
+}
+export function quietEndText(config, keep) {
+  return [
+    '☀️ <b>早上好，群聊已恢复发言</b>',
+    '',
+    `⏰ 夜间静默已于北京时间 ${config.quietEnd} 结束`,
+    '',
+    '⚠️ <b>防骗提醒</b>',
+    '官方不会私信索要验证码、密码或转账，陌生链接请勿点击。',
+    ...(keep > 0 ? ['', `<i>本消息将在 ${keepLabel(keep)}后自动删除</i>`] : []),
+  ].join('\n');
+}
+
 export class QuietMethods {
   quietActive(config, time) {
     if (!config.quietEnabled || config.quietStart === config.quietEnd) return false;
@@ -13,11 +42,14 @@ export class QuietMethods {
     if(Number.isSafeInteger(legacy)){this.write('quiet:notices',notices);this.remove('quiet:notice-message-id');}
     return notices;
   }
-  async clearQuietNotice(tg, chat) {
+  // Start notices (no deleteAt) are removed once quiet hours end; end notices
+  // carry their own deleteAt and are removed when it passes, even mid-quiet.
+  async clearQuietNotice(tg, chat, quiet = false) {
     if(!chat?.id)return false;
     const notices=this.quietNotices();let deleted=false;
     for(const notice of notices){
       if(notice.retryAt>Date.now())continue;
+      if(notice.deleteAt ? notice.deleteAt>Date.now() : quiet)continue;
       try {
         await tg('deleteMessage',{chat_id:chat.id,message_id:notice.id});notice.deleted=true;deleted=true;
         this.log({chatId:chat.id,action:'quiet-notice-delete',messageId:notice.id,outcome:'success'});
@@ -37,7 +69,7 @@ export class QuietMethods {
     if (!chat?.id) return false;
     const tg = telegram(this.env.BOT_TOKEN);
     if (this.read('quiet:active', false) === shouldMute) {
-      if (!shouldMute) await this.clearQuietNotice(tg, chat);
+      await this.clearQuietNotice(tg, chat, shouldMute);
       return false;
     }
     if (shouldMute) {
@@ -54,11 +86,15 @@ export class QuietMethods {
     this.write('quiet:active', shouldMute);
     if (!shouldMute) await this.clearQuietNotice(tg,chat);
     if (config.quietNotify) {
-      const text = shouldMute
-        ? `🌙 夜间静默通知\n\n为防范深夜诈骗信息及冒充官方账号的错误引导，本群将于北京时间 ${config.quietStart} 至 ${config.quietEnd} 开启静默模式。期间普通成员暂时不能发言，管理员不受影响；到点后将自动恢复。\n\n请勿轻信任何私聊、开户链接、转账或索要验证码的请求。感谢大家的理解与配合。`
-        : '☀️ 夜间静默已结束，群聊发言已恢复。请继续警惕私聊诈骗，官方不会私信索要验证码、密码或转账。';
-      await tg('sendMessage', { chat_id: chat.id, text, disable_web_page_preview: true })
-        .then(result => { if (shouldMute && Number.isSafeInteger(result?.message_id)) {const notices=this.quietNotices();if(!notices.some(x=>x.id===result.message_id))notices.push({id:result.message_id,created:Date.now(),retryAt:0,attempts:0});this.write('quiet:notices',notices);} })
+      const keep = Number.isInteger(config.quietEndNoticeMinutes) ? config.quietEndNoticeMinutes : 30;
+      const text = shouldMute ? quietStartText(config) : quietEndText(config, keep);
+      await tg('sendMessage', { chat_id: chat.id, text, parse_mode: 'HTML', disable_web_page_preview: true })
+        .then(result => {
+          if (!Number.isSafeInteger(result?.message_id) || (!shouldMute && keep <= 0)) return;
+          const notices = this.quietNotices();
+          if (!notices.some(x => x.id === result.message_id)) notices.push({ id: result.message_id, created: Date.now(), retryAt: 0, attempts: 0, ...(shouldMute ? {} : { deleteAt: Date.now() + keep * 60000 }) });
+          this.write('quiet:notices', notices);
+        })
         .catch(error => this.log({ chatId: chat.id, action: 'quiet-notice', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
     }
     this.log({ chatId: chat.id, chatTitle: chat.title || '', action: shouldMute ? 'quiet-started' : 'quiet-ended', outcome: 'success', reasons: [`北京时间 ${time}`] });
@@ -73,17 +109,18 @@ export class QuietMethods {
     if (failed) this.log({ action: 'quiet-maintenance', outcome: 'failed', errors: failed });
     return { checked: chats.length, switched, failed };
   }
-  async editQuiet(chat, enabled, start, end, notify) {
+  async editQuiet(chat, enabled, start, end, notify, endNoticeMinutes) {
     const valid = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
     if (typeof enabled !== 'boolean' || typeof notify !== 'boolean' || !valid(String(start)) || !valid(String(end))) throw new Error('请填写有效的 24 小时时间');
+    if (endNoticeMinutes !== undefined && (!Number.isInteger(endNoticeMinutes) || endNoticeMinutes < 0 || endNoticeMinutes > 1440)) throw new Error('自动删除时间需为 0 到 1440 分钟');
     if (enabled && start === end) throw new Error('开始和结束时间不能相同');
     const config = await this.config();
-    config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end; config.quietNotify = notify;
+    config.quietEnabled = enabled; config.quietStart = start; config.quietEnd = end; config.quietNotify = notify; if (endNoticeMinutes !== undefined) config.quietEndNoticeMinutes = endNoticeMinutes;
     this.saveConfig(config, '夜间静默');
     this.write('chat', { id: Number(chat.id), title: String(chat.title || chat.id) });
     await this.schedule(Date.now() + 100);
     if(!enabled && this.read('quiet:active',false))await this.quietTick().catch(error=>this.log({chatId:chat.id,action:'quiet-switch',outcome:'retrying',error:String(error.message||'').slice(0,200)}));
     this.log({ action: 'quiet-update', actorId: 'web-admin', outcome: 'success', text: `${enabled}:${start}-${end}` });
-    return { quietRestorePending:!enabled && this.read('quiet:active',false), quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd, quietNotify: config.quietNotify };
+    return { quietRestorePending:!enabled && this.read('quiet:active',false), quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd, quietNotify: config.quietNotify, quietEndNoticeMinutes: config.quietEndNoticeMinutes };
   }
 }

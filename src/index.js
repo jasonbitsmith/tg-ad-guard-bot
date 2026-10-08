@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.10.7';
+export const VERSION = '2.11.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -204,7 +204,7 @@ async function mutateAdmin(request,env,url,state,path){
     const targets = body.scope === 'all' ? registered : registered.filter(item => item.id === String(body.chatId));
     if (!targets.length && body.scope !== 'all') targets.push({ id: body.chatId, title: body.chatId });
     if (!targets.length) throw new Error('暂无可设置的群');
-    const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end, body.notify)));
+    const results = await Promise.allSettled(targets.map(chat => group(env, chat.id).editQuiet(chat, body.enabled, body.start, body.end, body.notify, body.endNoticeMinutes)));
     const failed = results.filter(result => result.status === 'rejected').length;
     if (failed) throw new Error(`${failed} 个群保存失败，请稍后重试`);
     return json({ updated: targets.length, restorePending:results.filter(x=>x.status==='fulfilled' && x.value.quietRestorePending).length, config: results[0].value });
