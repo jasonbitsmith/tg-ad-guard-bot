@@ -850,4 +850,19 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(rich);await tick(-410);assert.ok(actions(-410).some(x=>x.method==='banChatMember'&&x.params.user_id===7013));
   });
 
+  await t.test('话题中的账号供应广告首次删除封禁；正常 GV 求助通过', async () => {
+    const group=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-411');
+    await group.seedRecordTest('config',{keywords:[],aiReviewEnabled:true,casEnabled:false,profileCheckEnabled:false});
+    await group.seedRecordTest('test:ai',{decision:'normal',confidence:1,reason:'明确规则不应调用',evidence:[]});
+    const ad=update(-411,'新 批 次 纯 手 工：GV / 墨工 / Nextdoor / ChatSMS 🌟 纯海外独享环境，无封号风险，登录包保，支持一手测试！',{from:{id:7101,first_name:'供应商 SMS-GV-TN-TF-SL-ID'},message_thread_id:123});
+    await send(ad);const {data}=await tick(-411);
+    assert.ok(actions(-411).some(x=>x.method==='deleteMessage'&&x.params.message_id===ad.message.message_id));
+    assert.ok(actions(-411).some(x=>x.method==='banChatMember'&&x.params.user_id===7101&&x.params.until_date===0));
+    assert.ok(data.logs.some(x=>x.action==='delete-and-permanent-ban'&&x.outcome==='success'));
+    assert.equal(await group.readRecordTest('test:ai-calls'),null);
+    const before=actions(-411).length;
+    await send(update(-411,'GV 被停用了有解决办法吗？',{from:{id:7102},message_thread_id:123}));await tick(-411);
+    assert.equal(actions(-411).length,before);
+  });
+
 });
