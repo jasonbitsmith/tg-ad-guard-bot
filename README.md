@@ -1,6 +1,8 @@
 # TG 群管理机器人修正版
 
-线上 Worker：`tg-ad-guard-bot`。后台自定义域名：`https://bot.jasonselect.com/admin`。
+基于 Cloudflare Workers 的 Telegram 群管理机器人。个人部署的后台入口不在公开文档中展示。
+
+后台访问保护与个人部署说明见 [ADMIN-SECURITY.md](ADMIN-SECURITY.md)。
 
 ## v2.8.0 新增能力
 

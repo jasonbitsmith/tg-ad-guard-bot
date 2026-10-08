@@ -188,6 +188,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-111,'/unban 7',{from:{id:99,first_name:'owner'}}));await tick(-111);assert.equal(actions(-111)[0].params.only_if_banned,true);
   });
   await t.test('后台会话、CSRF、多群词库隔离和退出', async () => {
+    for (const path of ['/admin','/admin/app.js','/admin/api/chats']) {
+      const response=await mf.dispatchFetch('https://bot.test'+path);
+      assert.equal(response.headers.get('X-Robots-Tag'),'noindex, nofollow, noarchive');
+      assert.equal(response.headers.get('Cache-Control'),'no-store');
+      assert.equal(response.status,path==='/admin/api/chats'?401:200);
+    }
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
     assert.equal(login.status,200);const raw=login.headers.get('set-cookie');assert.ok(raw.includes('HttpOnly'));assert.ok(raw.includes('SameSite=Strict'));const cookie=raw.split(';')[0];
     const request=(path,body,origin='https://bot.test')=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
