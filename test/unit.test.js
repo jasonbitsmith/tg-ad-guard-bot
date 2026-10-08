@@ -178,3 +178,22 @@ test('截图招揽文案首次命中，正常摄影、抖音和防诈讨论不�
     const verdict=classify(msg(body),[]);assert.ok(verdict.score<4,body);
   }
 });
+
+
+test('账号供应广告需产品、供应、生产及售后信号；正常求助和防骗不命中', async () => {
+  const { aiReviewCandidate } = await import('../src/ai-review.js');
+  for (const body of [
+    '新 批 次 纯 手 工：GV / 墨工 / Nextdoor / ChatSMS 🌟 纯海外独享环境，无封号风险，登录包保，支持一手测试！',
+    '批量出售 Nextdoor 成品号，售后包保',
+    '供应 Google Voice 手工号，登陆包保',
+  ]) {
+    const verdict=classify(msg(body),[]);assert.equal(verdict.permanentBan,true,body);assert.ok(verdict.score>=4,body);assert.equal(aiReviewCandidate(body,verdict),false);
+  }
+  for (const body of [
+    'GV 被停用了有解决办法吗？', 'Nextdoor 怎么注册？', 'ChatSMS 和 GV 有什么区别？',
+    '供应商 SMS-GV-TN-TF-SL-ID', '纯海外独享环境，无封号风险',
+    '纯手工 GV 怎么申请，我想自己注册', '警惕新批次纯手工 GV 登录包保这种骗局',
+  ]) {const verdict=classify(msg(body),[]);assert.equal(verdict.permanentBan,false,body);assert.ok(verdict.score<4,body);}
+  const candidate='新批次纯手工 Nextdoor，有需要的来';
+  assert.equal(aiReviewCandidate(candidate,classify(msg(candidate),[])),true);
+});

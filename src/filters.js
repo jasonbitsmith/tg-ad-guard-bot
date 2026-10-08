@@ -58,6 +58,13 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const dailyIncome = /(?:一天|每日|日赚|日入).{0,4}\d+(?:\.\d+)?\s*(?:k|w|千|万)/i.test(body);
   const paidPhotoRecruitment = /拍(?:商家收款码|店铺牌匾|豪车)照片/.test(compact) && /\d+(?:至\d+)?(?:张|每张)/.test(compact) && /(?:日入|日赚|稳定赚钱|小白可做)/.test(compact) && contact;
   const douyinRecruitment = /(?:抖音号|手机和抖音)/.test(compact) && /(?:带你赚钱|帮你赚钱|新人可带|小白轻松上手)/.test(compact) && /日(?:赚|入)\d+/.test(compact);
+  // Account supply ads can omit links and prices. Require a named product,
+  // an explicit supply pitch, production wording and a sales guarantee.
+  const accountProduct = /(?:^|[^a-z0-9])(?:gv|nextdoor|chatsms)(?=$|[^a-z0-9])|google\s*voice|墨工/.test(body);
+  const accountSupplyPitch = accountProduct && /(?:新批次|批量|出货|供应|出售|售卖)/.test(compact)
+    && /(?:纯手工|手工号|成品号|账号|帐号)/.test(compact)
+    && /(?:登[录陆]包保|售后包保|支持一手测试)/.test(compact)
+    && !/(?:警惕|谨防|骗局|诈骗|防骗|不要买|别买|识别广告)/.test(compact);
   const photoGigPitch = /(?:拍\s*照.{0,8}兼职.{0,12}(?:日\s*结|当天结)|(?:日\s*结|当天结).{0,16}拍\s*照.{0,8}(?:兼职|即可做|赚钱|收入))/.test(body);
   // These variants recruit people to photograph vehicles or alleged parking
   // violations, often omitting the word “兼职” entirely.
@@ -111,6 +118,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (recruitmentSlogan && dailyIncome) add(4, '包含招揽口号和日收入承诺');
   if (paidPhotoRecruitment) add(7, '包含按张付费拍照与收益招揽');
   if (douyinRecruitment) add(7, '包含抖音账号高收益招揽');
+  if (accountSupplyPitch) add(7, '包含账号批量供应及售后保证招揽');
   if (photoGigPitch) add(4, '包含拍照日结兼职招揽');
   if (phonePhotoGigPitch) add(4, '包含手机拍违停日结招揽');
   if (profileContactPitch) add(7, '付费拍照广告昵称附短账号引流');
@@ -125,7 +133,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
