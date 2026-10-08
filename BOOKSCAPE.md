@@ -41,7 +41,7 @@ BookScape 图书帖固定在正文最底部保留以下落款：
 
 ## 接口
 
-固定基础地址 `https://bot.jasonselect.com/bookscape/api/`，Authorization: Bearer 发布凭据。
+基础地址为 `https://YOUR_WORKER_DOMAIN/bookscape/api/`（替换为自己的部署域名），Authorization: Bearer 发布凭据。
 GET status、receipt?id=ID；POST draft {text,format}、preview {id}、publish {id,confirmHash}、edit {messageId,text,format}。
 不支持通过参数更换频道或私聊接收人。不在 URL、日志或命令参数中传递密钥。
 
