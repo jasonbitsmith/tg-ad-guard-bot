@@ -1,3 +1,4 @@
+import { moderationMessage, isGuestMessage } from '../message-content.js';
 import { aiReviewCandidate } from '../ai-review.js';
 // Message classification into action plans, commands and callbacks.
 // Methods are copied onto GuardState.prototype in ../state.js.
@@ -10,8 +11,9 @@ export class ModerationMethods {
   async plan(update) {
     const empty = { ops: [] };
     if (update.chat_join_request) return this.joinRequestPlan(update.chat_join_request);
-    const msg = update.message || update.edited_message;
+    const msg = moderationMessage(update.message || update.edited_message);
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return empty;
+    const guest = isGuestMessage(msg);
     const tg = telegram(this.env.BOT_TOKEN);
     const chatId = msg.chat.id;
     this.write('chat', msg.chat);
@@ -50,10 +52,10 @@ export class ModerationMethods {
     }
     // Anonymous group admins and automatic linked-channel posts are trusted separately.
     if (msg.sender_chat?.id === chatId || msg.is_automatic_forward) return empty;
-    if (!msg.sender_chat && (!msg.from || msg.from.is_bot)) return empty;
+    if (!msg.sender_chat && (!msg.from || (msg.from.is_bot && !guest))) return empty;
     const senderId = msg.sender_chat ? `channel:${msg.sender_chat.id}` : String(msg.from.id);
     const text = msg.text || msg.caption || '';
-    if (!msg.sender_chat && text.startsWith('/')) {
+    if (!guest && !msg.rich_message && !msg.sender_chat && text.startsWith('/')) {
       const me = await this.me(tg);
       const command = parseCommand(text, me.username || '');
       if (command) {
@@ -92,7 +94,7 @@ export class ModerationMethods {
     }
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
-    if (!msg.sender_chat && !update.edited_message) {
+    if (!guest && !msg.sender_chat && !update.edited_message) {
       const screen = await this.screenMember(msg.from, policy, tg);
       if (screen) {
         const plan = await this.screenBanPlan(msg.chat, msg.from, screen, [msg.message_id], { text: screen.kind === 'profile' ? screen.text : text });
@@ -106,7 +108,7 @@ export class ModerationMethods {
       const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
       if (contentLock.action === 'ban' && !msg.sender_chat) {
         ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
-        const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
+        const federationTargets = guest ? [] : await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
         // Linked groups are dispatched to independent durable jobs by runJob.
         return { ops, entry: { ...entry, action: federationTargets.length ? 'content-lock-delete-and-federated-permanent-ban' : 'content-lock-delete-and-permanent-ban', federationTargets } };
       }
@@ -179,7 +181,7 @@ export class ModerationMethods {
       else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];}
       else {return {ops:mediaQuarantine?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
     }
-    const knowledge = this.findKnowledgeTrigger(text, policy);
+    const knowledge = guest ? null : this.findKnowledgeTrigger(text, policy);
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && knowledge) {
       const cooldown = `knowledge:${senderId}:${knowledge.id}`;
       if (!this.read(cooldown)) {
@@ -197,7 +199,7 @@ export class ModerationMethods {
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     }
     ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
-    const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
+    const federationTargets = guest ? [] : await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
     // Linked groups are dispatched to independent durable jobs by runJob.
     ops.push({ local: 'processed', messageId: msg.message_id });
     return { ops, entry: { ...entry, action: federationTargets.length ? 'delete-and-federated-permanent-ban' : 'delete-and-permanent-ban', federationTargets } };
@@ -233,8 +235,8 @@ export class ModerationMethods {
   }
 
   async spamPlan(msg,tg) {
-    const target=msg.reply_to_message;
-    if (!target?.from?.id || target.from.is_bot || target.sender_chat || target.chat?.id && target.chat.id!==msg.chat.id) throw new Error('请回复普通用户的广告消息发送 /spam');
+    const target=moderationMessage(msg.reply_to_message);
+    if (!target?.from?.id || (target.from.is_bot && !isGuestMessage(target)) || target.sender_chat || target.chat?.id && target.chat.id!==msg.chat.id) throw new Error('请回复用户或访客机器人的广告消息发送 /spam');
     if (!this.owners().includes(String(msg.from.id))) {
       const actor=await this.member(tg,msg.chat.id,msg.from.id);
       if(actor.status!=='creator' && !actor.can_restrict_members) throw new Error('缺少封禁成员权限');
@@ -249,9 +251,9 @@ export class ModerationMethods {
   }
 
   async reportPlan(msg, tg, reason = '') {
-    const target = msg.reply_to_message;
+    const target = moderationMessage(msg.reply_to_message);
     const reply = text => ({ ops: [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { method: 'sendMessage', params: { chat_id: msg.chat.id, text } }], entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', actorId: msg.from.id, action: 'user-report', outcome: 'pending' } });
-    if (!target?.from?.id || target.from.is_bot || target.sender_chat) return reply('请回复需要举报的普通用户消息后发送 /report。');
+    if (!target?.from?.id || (target.from.is_bot && !isGuestMessage(target)) || target.sender_chat) return reply('请回复需要举报的用户或访客机器人消息后发送 /report。');
     if (target.from.id === msg.from.id) return reply('不能举报自己的消息。');
     const member = await this.member(tg, msg.chat.id, target.from.id);
     if (ADMIN_STATUS.includes(member.status) || this.owners().includes(String(target.from.id))) return reply('不能举报群管理员或机器人所有者。');
