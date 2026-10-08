@@ -154,6 +154,7 @@ test('备份校验限制范围、不接受密钥和未知配置，活动短样�
  assert.throws(()=>validateBackup({...backup,federation:['-2']}),/联防/);
  assert.throws(()=>validateConfig({...config,quietEnabled:true,quietStart:'00:00',quietEnd:'00:00'}),/静默/);
  assert.equal(validateConfig({...config,newMemberLinkMinutes:1440}).newMemberLinkMinutes,1440);
+ assert.equal(validateConfig({...config,quietEndNoticeMinutes:0}).quietEndNoticeMinutes,0);assert.throws(()=>validateConfig({...config,quietEndNoticeMinutes:-1}),/数值/);assert.throws(()=>validateConfig({...config,newMemberLinkMinutes:0}),/数值/);
  assert.deepEqual(diffValues({a:1,b:2},{a:3,b:2}),[{field:'a',before:1,after:3}]);
 });
 

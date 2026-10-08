@@ -24,7 +24,7 @@ export function validateConfig(raw){
   for(const [key,value] of Object.entries(DEFAULT_POLICY)){
     if(['contentLocks','knowledgeBase','domainAllowlist','domainDenylist'].includes(key))continue;
     if(typeof config[key]!==typeof value)throw Error('配置类型无效：'+key);
-    if(typeof value==='number' && (!Number.isInteger(config[key]) || config[key]<1 || config[key]>1440))throw Error('配置数值无效：'+key);
+    if(typeof value==='number' && (!Number.isInteger(config[key]) || config[key]<(key==='quietEndNoticeMinutes'?0:1) || config[key]>1440))throw Error('配置数值无效：'+key);
   }
   for(const key of ['newMemberLinkMinutes','newMemberMediaMinutes'])if(config[key]>1440)throw Error('新人隔离时限无效');
   for(const key of ['welcomeMessage','rulesMessage'])if(config[key].length>2500)throw Error('欢迎语或群规过长');
