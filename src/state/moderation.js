@@ -22,15 +22,24 @@ export class ModerationMethods {
     this.rememberMember(msg.from);
     for(const user of msg.new_chat_members||[])this.rememberMember(user);
     this.rememberMember(msg.reply_to_message?.from);
-    // Someone who leaves on their own before verifying is not banned for the
-    // timeout; their prompt is removed and they are asked again if they rejoin.
-    const leaving = msg.left_chat_member, unverified = leaving && msg.from?.id === leaving.id && this.verification(leaving.id);
-    if (unverified && (unverified.via || 'group') === 'group') {
-      this.clearVerification(leaving.id);
-      const ops = unverified.prompt_message_id ? [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: unverified.prompt_message_id }, optional: true }] : [];
-      return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: leaving.id, action: 'verification-left', outcome: 'pending', reasons: ['验证完成前自行退群，已撤销验证'] } };
+    // "X joined / left the group" notices are removed unless turned off.
+    const service = (msg.new_chat_members || msg.left_chat_member) && update.message && (await this.config()).deleteServiceMessages !== false ? [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id }, optional: true, serviceCleanup: true }] : [];
+    if (update.message && msg.from && !msg.from.is_bot && !msg.sender_chat && !msg.new_chat_members && !msg.left_chat_member) this.countMessage(msg.from.id);
+    const leaving = msg.left_chat_member;
+    if (leaving) {
+      if (update.message && !leaving.is_bot) this.countMembers('leaves', 1);
+      // Someone who leaves on their own before verifying is not banned for the
+      // timeout; their prompt is removed and they are asked again if they rejoin.
+      const unverified = msg.from?.id === leaving.id && this.verification(leaving.id);
+      if (unverified && (unverified.via || 'group') === 'group') {
+        this.clearVerification(leaving.id);
+        const ops = unverified.prompt_message_id ? [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: unverified.prompt_message_id }, optional: true }] : [];
+        return { ops: [...service, ...ops], entry: { chatId, chatTitle: msg.chat.title || '', userId: leaving.id, action: 'verification-left', outcome: 'pending', reasons: ['验证完成前自行退群，已撤销验证'] } };
+      }
+      return { ops: service };
     }
     if (msg.new_chat_members) {
+      if (update.message) this.countMembers('joins', msg.new_chat_members.filter(member => !member.is_bot).length);
       for (const member of msg.new_chat_members) this.write(`join:${member.id}`, Date.now(), DAY);
       const config = await this.config();
       const recentJoins = this.read('raid:joins', []).filter(at => at > Date.now() - 5 * 60000);
@@ -48,7 +57,7 @@ export class ModerationMethods {
       }
       const names = joining.filter(member => !member.is_bot).map(member => [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员');
       const message = [config.welcomeMessage && config.welcomeMessage.replaceAll('{name}', names.join('、')).replaceAll('{group}', msg.chat.title || ''), config.rulesMessage && `群规：${config.rulesMessage}`].filter(Boolean).join('\n\n').slice(0, 4000);
-      const ops = message ? [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }] : [];
+      const ops = [...service, ...(message ? [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }] : [])];
       for (const [userId, screen] of blocked) ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: userId, until_date: 0 }, screenReasons: screen.reasons });
       const started = [];
       for (const member of joining) {

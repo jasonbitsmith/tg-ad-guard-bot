@@ -1,5 +1,6 @@
 import { DEFAULT_POLICY, CONTENT_LOCK_TYPES, validateWord, normalizeDomain } from './filters.js';
 import { validateSample } from './samples.js';
+import { normalizeAnnouncement } from './state/community.js';
 
 export function validateBackup(input) {
   if(new TextEncoder().encode(JSON.stringify(input)).length>512000)throw Error('备份不能超过 500 KB');
@@ -22,7 +23,7 @@ export function validateConfig(raw){
   if(Object.keys(raw).some(key=>!Object.hasOwn(DEFAULT_POLICY,key) && key!=='keywords'))throw Error('群配置含未知字段');
   const config={...DEFAULT_POLICY,...raw};
   for(const [key,value] of Object.entries(DEFAULT_POLICY)){
-    if(['contentLocks','knowledgeBase','domainAllowlist','domainDenylist'].includes(key))continue;
+    if(['contentLocks','knowledgeBase','domainAllowlist','domainDenylist','announcements'].includes(key))continue;
     if(typeof config[key]!==typeof value)throw Error('配置类型无效：'+key);
     if(typeof value==='number' && (!Number.isInteger(config[key]) || config[key]<(key==='quietEndNoticeMinutes'?0:1) || config[key]>1440))throw Error('配置数值无效：'+key);
   }
@@ -35,6 +36,7 @@ export function validateConfig(raw){
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.quietStart) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.quietEnd) || (config.quietEnabled && config.quietStart===config.quietEnd))throw Error('静默时段无效');
   if(!config.contentLocks || typeof config.contentLocks!=='object' || Array.isArray(config.contentLocks))throw Error('内容限制无效');
   for(const [kind,lock] of Object.entries(config.contentLocks)){if(!CONTENT_LOCK_TYPES.includes(kind) || !lock || typeof lock.enabled!=='boolean' || !['delete','ban'].includes(lock.action))throw Error('内容限制无效');}
+  if(!Array.isArray(config.announcements) || config.announcements.length>10)throw Error('定时公告无效');config.announcements=config.announcements.map(normalizeAnnouncement);
   if(!Array.isArray(config.knowledgeBase) || config.knowledgeBase.length>50)throw Error('知识库无效');
   const commands=new Set();
   for(const item of config.knowledgeBase){if(!item || typeof item.id!=='string' || typeof item.title!=='string' || item.title.length>40 || typeof item.command!=='string' || (item.command && !/^[a-z][a-z0-9_]{0,31}$/.test(item.command)) || (item.command && commands.has(item.command)) || typeof item.response!=='string' || !item.response || item.response.length>2500 || typeof item.enabled!=='boolean' || !Array.isArray(item.triggers) || item.triggers.length>12 || item.triggers.some(x=>typeof x!=='string'||!x||x.length>80) || (!item.command&&!item.triggers.length))throw Error('知识库条目无效');commands.add(item.command);}

@@ -16,6 +16,8 @@ import { BackupMethods } from './state/backup.js';
 import { AuthMethods } from './state/auth.js';
 import { ScreeningMethods } from './state/screening.js';
 import { NoticesMethods } from './state/notices.js';
+import { CommunityMethods } from './state/community.js';
+import { AppealMethods } from './state/appeals.js';
 
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
@@ -176,6 +178,8 @@ export class GuardState extends DurableObject {
       this.sql.exec('DELETE FROM logs WHERE ts<?', Date.now() - 30 * DAY);
       this.sql.exec('DELETE FROM member_profiles WHERE seen<?',Date.now()-90*DAY);
       await this.quietTick().catch(error => this.log({ action: 'quiet-switch', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
+      await this.announceTick().catch(error => this.log({ action: 'announcement-sent', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
+      this.pruneActivity();
     } finally {
       this.running = false;
       const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
@@ -183,7 +187,7 @@ export class GuardState extends DurableObject {
       const verificationDue = this.sql.exec("SELECT expires FROM verifications WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) ORDER BY expires LIMIT 1").toArray()[0]?.expires;
       const due = [next, timeoutDue, verificationDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];
       const config = await this.config();
-      const fallback = (config.quietEnabled || this.read('quiet:active',false) || this.quietNotices().length) ? Date.now() + 60000 : Date.now() + DAY;
+      const fallback = (config.quietEnabled || this.read('quiet:active',false) || this.quietNotices().length || (config.announcements||[]).some(item=>item.enabled)) ? Date.now() + 60000 : Date.now() + DAY;
       await this.ctx.storage.setAlarm(due === undefined ? fallback : Math.max(Date.now() + 100, due));
     }
   }
@@ -276,7 +280,7 @@ export class GuardState extends DurableObject {
       for(const op of plan.ops.filter(x=>x.trackCase))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.trackCase,op.params.chat_id,{status:op.skipped?'skipped':'success',error:null,owned:this.read(`ban-owner:${op.params.user_id}`)===op.trackCase});
       for(const op of plan.ops.filter(x=>x.local==='case-unban'))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.caseId,op.chatId,{undoStatus:op.undoOutcome});
       this.write('health:last-completion',{at:new Date().toISOString(),latencyMs:Date.now()-job.created});
-      if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
+      if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.serviceCleanup ? 'deleteServiceMessage' : x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
       this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?", job.id);
       // Owner notice with an undo button. Manual admin bans and per-group
       // federation copies are left out; the source group's ban covers the case.
@@ -339,7 +343,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);

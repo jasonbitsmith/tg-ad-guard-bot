@@ -182,7 +182,7 @@ export class NoticesMethods {
     let answered = false;
     const answer = (text, alert = false) => { if (answered) return Promise.resolve(); answered = true; return tg('answerCallbackQuery', { callback_query_id: callback.id, text: text.slice(0, 190), show_alert: alert }).catch(() => {}); };
     this.write('health:last-button', { at: Date.now() });
-    const match = /^n:([a-f0-9]{16}):(ban|ignore|undo|info)$/.exec(String(callback.data || ''));
+    const match = /^n:([a-f0-9]{16}):(ban|ignore|undo|info|accept|reject)$/.exec(String(callback.data || ''));
     if (!match || !this.owners().includes(String(callback.from?.id))) return answer('只有机器人所有者可以操作。', true);
     const id = match[1], key = `notice:${id}`, record = this.read(key);
     if (!record) return answer('这条记录已过期，请到管理后台处理。', true);
@@ -194,11 +194,12 @@ export class NoticesMethods {
     }
     if (record.done) { await answer('已经处理过了：' + record.done, true); await this.renderNotice(id, callback.message); return; }
     await answer('⏳ 正在处理，结果会写在这条通知下面');
-    const group = this.env.GUARD_STATE.getByName('chat:' + record.chatId);
+    const group = record.chatId ? this.env.GUARD_STATE.getByName('chat:' + record.chatId) : null;
     const who = [callback.from.first_name, callback.from.last_name].filter(Boolean).join(' ') || String(callback.from.id), when = this.noticeTime();
     let result, pending;
     try {
-      if (record.kind === 'report' && match[2] === 'ignore') result = '已忽略，不做处理';
+      if (record.kind === 'appeal' && ['accept', 'reject'].includes(match[2])) ({ result, pending } = await this.resolveAppeal(record, match[2] === 'accept', 'telegram:' + callback.from.id));
+      else if (record.kind === 'report' && match[2] === 'ignore') result = '已忽略，不做处理';
       else if (record.kind === 'report' && match[2] === 'ban') { await group.queueReview(record.chatId, Number(record.userId), record.messageId); result = '已提交删除消息并永久封禁，执行结果可在管理后台查看'; }
       else if (record.kind === 'ban' && match[2] === 'undo') {
         if (record.caseId && this.read(`federation-case:${record.caseId}`)) {
