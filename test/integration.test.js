@@ -440,6 +440,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-505&&c.params.message_id===prompt));
     assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-505&&c.params.user_id===98));
   });
+  await t.test('入群申请：未开启验证的群筛查后直接批准', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-507');await g.editVerification('off',10,'');
+    await send({update_id:++seq,chat_join_request:{chat:{id:-507,type:'supergroup',title:'无验证群'},from:{id:83,first_name:'普通人'},user_chat_id:83,date:Math.floor(Date.now()/1000)}});await tick(-507);
+    assert.ok(calls.some(c=>c.method==='approveChatJoinRequest'&&c.params.chat_id===-507&&c.params.user_id===83));
+    assert.equal(await g.verification(83),undefined);
+  });
   await t.test('入群申请：私聊验证，通过自动批准，超时自动拒绝', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-504');await g.editVerification('button',10,'');
     const joinRequest=id=>({update_id:++seq,chat_join_request:{chat:{id:-504,type:'supergroup',title:'申请群'},from:{id,first_name:'申请人'},user_chat_id:id,date:Math.floor(Date.now()/1000)}});

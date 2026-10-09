@@ -150,8 +150,10 @@ export class VerificationMethods {
     if (!chat || !Number.isSafeInteger(user?.id) || user.is_bot) return empty;
     this.write('chat', chat);
     this.rememberMember(user);
-    const config = await this.config(), mode = this.verificationMode(config);
-    if (mode === 'off') return empty;
+    const config = await this.config();
+    // Without a usable challenge the request is still screened, then approved,
+    // so applicants are never left waiting with nobody to let them in.
+    const mode = usesChannel(this.verificationMode(config)) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim()) ? 'off' : this.verificationMode(config);
     const tg = telegram(this.env.BOT_TOKEN), entry = { chatId: chat.id, chatTitle: chat.title || '', userId: String(user.id), userName: [user.first_name, user.last_name].filter(Boolean).join(' ') };
     const decline = { method: 'declineChatJoinRequest', params: { chat_id: chat.id, user_id: user.id }, optional: true };
     const screen = await this.screenMember(user, config, tg);
@@ -160,7 +162,7 @@ export class VerificationMethods {
     if (this.read(`verification-pass:${user.id}`) || this.read(`allow:${user.id}`) || this.owners().includes(String(user.id))) {
       return { ops: [approve], entry: { ...entry, action: 'join-request-approved', outcome: 'pending', reasons: ['已信任成员，免验证'] } };
     }
-    if (usesChannel(mode) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim())) return empty;
+    if (mode === 'off') return { ops: [approve], entry: { ...entry, action: 'join-request-approved', outcome: 'pending', reasons: ['本群未开启验证，筛查通过后自动批准'] } };
     const minutes = verificationMinutes(config), expires = Date.now() + minutes * 60000, dm = request.user_chat_id || user.id;
     const challenge = this.verificationChallenge(user, mode, minutes, config, { id: chat.id, title: chat.title });
     this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel,attempts,via,prompt_chat_id) VALUES (?,?,?,?,?,?,0,?,?)', String(user.id), challenge.answer, null, expires, mode, usesChannel(mode) ? config.verificationChannel.trim() : null, 'request', dm);
