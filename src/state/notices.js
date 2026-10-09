@@ -112,17 +112,17 @@ export class NoticesMethods {
   // registered with a narrow allowed_updates list silently drops them, so
   // widen it (keeping the URL and secret) when something needed is missing.
   async ensureWebhookUpdates(now = Date.now()) {
-    if (this.read('webhook-updates-checked')) return null;
-    this.write('webhook-updates-checked', true, 3600000);
-    const needed = ['message', 'edited_message', 'callback_query', 'my_chat_member', 'chat_join_request'];
+    if (this.read('webhook-updates-checked:operations-v1')) return null;
+    const needed = ['message', 'edited_message', 'callback_query', 'my_chat_member', 'chat_join_request', 'chat_member'];
     const tg = telegram(this.env.BOT_TOKEN);
     const info = await tg('getWebhookInfo').catch(() => null);
-    const current = Array.isArray(info?.allowed_updates) ? info.allowed_updates : null;
-    if (!info?.url || !current || !this.env.WEBHOOK_VERIFY_TOKEN) return { ok: true, allowed: current };
+    const current = Array.isArray(info?.allowed_updates) ? info.allowed_updates : [];
+    if (!info?.url || !this.env.WEBHOOK_VERIFY_TOKEN) return { ok: false, allowed: current };
     const missing = needed.filter(type => !current.includes(type));
-    if (!missing.length) return { ok: true, allowed: current };
+    if (!missing.length) {this.write('webhook-updates-checked:operations-v1',true,3600000);return { ok: true, allowed: current };}
     const allowed = [...new Set([...current, ...needed])];
     await tg('setWebhook', { url: info.url, secret_token: this.env.WEBHOOK_VERIFY_TOKEN, allowed_updates: allowed, ...(info.max_connections ? { max_connections: info.max_connections } : {}) });
+    this.write('webhook-updates-checked:operations-v1',true,3600000);
     this.log({ action: 'webhook-updates-fixed', outcome: 'success', text: missing.join(',') });
     await this.alertOwner('webhook-updates-fixed', `已修复：Telegram 之前没有把这些类型的消息发给机器人：${missing.join('、')}。通知上的按钮现在应该能用了，请再点一次试试。`).catch(() => {});
     return { ok: true, fixed: missing, allowed };

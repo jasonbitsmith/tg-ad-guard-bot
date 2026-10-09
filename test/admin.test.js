@@ -113,3 +113,16 @@ test('AI 设置保存反馈明确；每周备份仅填入恢复来源，不直�
   const row=h.document.getElementById('automaticBackups').children[0];await row.children[2].onclick({preventDefault(){},currentTarget:row.children[2]});
   assert.deepEqual(JSON.parse(h.document.getElementById('backupText').value),backup);assert.ok(!h.calls.some(x=>x.endsWith('/backup/restore')));
 });
+
+test('全群状态异常卡片与处罚分步结果正常显示',async()=>{
+ const h=harness({}, {overview:{groups:[{id:'-100123',title:'缺权限测试',attention:true,permissions:{deleteMessages:false,restrictMembers:true,inviteUsers:false},verification:'button',health:{pending:2,failed:1},raid:{active:false}}]},'jobs?chatId=-100123':{jobs:[{id:'u:9',action:'delete-and-permanent-ban',status:'failed',userId:7,steps:[{method:'deleteMessage',status:'failed',error:'权限不足'},{method:'banChatMember',status:'success'}]}]}});await flush();
+ await h.document.getElementById('loginForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('loginForm')});await flush();
+ assert.match(h.document.getElementById('operationsOverview').children[0].children[0].textContent,/缺权限测试/);
+ h.document.getElementById('chatId').value='-100123';await h.document.getElementById('refreshOperations').onclick({preventDefault(){},currentTarget:h.document.getElementById('refreshOperations')});
+ const row=h.document.getElementById('operationJobs').children[0];assert.ok(row.children.some(x=>x.textContent.includes('删除广告：失败')));assert.ok(row.children.some(x=>x.textContent.includes('封禁成员：成功')));assert.ok(row.children.some(x=>x.textContent==='重试未完成步骤'));
+});
+test('应急操作明确反馈，规则回放展示正常误命中而不发布',async()=>{
+ const h=harness({}, {emergency:{until:Date.now()+300000},replay:{total:2,normalHits:1,adHits:1,cases:[{text:'正常讨论',verdict:'normal',matched:true}]}});await flush();await h.document.getElementById('loginForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('loginForm')});
+ h.document.getElementById('chatId').value='-100123';h.document.getElementById('emergencyMinutes').value='5';await h.document.getElementById('emergencyForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('emergencyForm')});assert.match(h.document.getElementById('emergencyStatus').textContent,/已开启/);
+ h.document.getElementById('replayValue').value='香港';h.document.getElementById('replayKind').value='keyword';await h.document.getElementById('replayForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('replayForm')});assert.match(h.document.getElementById('replayResult').children[0].textContent,/正常.*1/);assert.ok(!h.calls.some(x=>x.includes('keywords/add')));
+});
