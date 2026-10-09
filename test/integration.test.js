@@ -385,14 +385,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const buttonGroup=ns.getByName('chat:-502');await buttonGroup.editVerification('button',10,'','kick');
     await send(update(-502,'',{new_chat_members:[{id:92,first_name:'按钮新人'}]}));await tick(-502);
     const ask=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-502&&c.params.text.includes('新成员验证'));
-    const buttons=ask.params.reply_markup.inline_keyboard[0];assert.equal(buttons.length,4);
+    const buttons=ask.params.reply_markup.inline_keyboard.flat();assert.equal(buttons.length,6);assert.equal(ask.params.reply_markup.inline_keyboard.length,2);assert.ok(ask.params.text.includes('最多可选 2 次'));
     const answer=(await buttonGroup.verification(92)).answer,wrong=buttons.find(b=>!b.callback_data.endsWith(':'+answer)).callback_data;
     const click=(id,data,from=92)=>send({update_id:++seq,callback_query:{id,from:{id:from,first_name:'按钮新人'},data,message:{message_id:ask.params.chat_id===-502?777:0,chat:{id:-502,type:'supergroup',title:'测试群'}}}});
     await click('other-1',wrong,93);await tick(-502);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='other-1'&&c.params.text.includes('其他新成员')));
-    for(const n of [1,2]){await click('wrong-'+n,wrong);await tick(-502);}
-    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wrong-2'&&c.params.text.includes('还可以再试 1 次')));
-    await click('wrong-3',wrong);await tick(-502);await tick(-502);
+    await click('wrong-1',wrong);await tick(-502);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wrong-1'&&c.params.text.includes('还可以再试 1 次')));
+    await click('wrong-2',wrong);await tick(-502);await tick(-502);
     assert.equal(await buttonGroup.verification(92),undefined);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-502&&c.params.user_id===92));
     assert.ok(calls.some(c=>c.method==='unbanChatMember'&&c.params.chat_id===-502&&c.params.user_id===92&&c.params.only_if_banned===true));
@@ -406,11 +406,22 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('算术验证通过的提示稍后自动删除', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-503');await g.editVerification('math',10,'');
     await send(update(-503,'',{new_chat_members:[{id:95,first_name:'算术'}]}));await tick(-503);
+    await send(update(-503,'99',{from:{id:95,first_name:'算术'}}));await tick(-503);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-503&&c.params.text.includes('还可以再试 <b>2</b> 次')));
     await send(update(-503,(await g.verification(95)).answer,{from:{id:95,first_name:'算术'}}));
     const {jobs}=await tick(-503);
     assert.ok(jobs.some(x=>x.id==='cleanup:-503:444'&&x.status==='pending'));
     await tick(-503,true);
     assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-503&&c.params.message_id===444));
+  });
+  await t.test('验证前自行退群：撤销验证、删除提示，不会超时封禁', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-505');await g.editVerification('button',10,'','ban');
+    await send(update(-505,'',{new_chat_members:[{id:98,first_name:'走了'}]}));await tick(-505);
+    const prompt=(await g.verification(98)).prompt_message_id;assert.ok(prompt);
+    await send(update(-505,'',{from:{id:98,first_name:'走了'},left_chat_member:{id:98,first_name:'走了'}}));await tick(-505);
+    assert.equal(await g.verification(98),undefined);
+    assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-505&&c.params.message_id===prompt));
+    assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-505&&c.params.user_id===98));
   });
   await t.test('入群申请：私聊验证，通过自动批准，超时自动拒绝', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-504');await g.editVerification('button',10,'');

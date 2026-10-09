@@ -4,7 +4,8 @@ import { telegram } from '../telegram.js';
 import { DAY, ADMIN_STATUS } from './shared.js';
 
 export const VERIFICATION_MODES = ['channel', 'button', 'math'];
-const MAX_ATTEMPTS = 3;
+// A typed answer is hard to guess; a pick from six buttons gets fewer tries.
+export const maxAttempts = (mode, via = 'group') => mode === 'math' && via !== 'request' ? 3 : 2;
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const verificationMinutes = config => Math.max(1, Math.min(60, Number(config.verificationMinutes || 10)));
 
@@ -22,28 +23,33 @@ export class VerificationMethods {
     const name = esc(String(member.first_name || '新朋友').slice(0, 40));
     const who = request ? name : `<a href="tg://user?id=${member.id}">${name}</a>`;
     const channel = String(config.verificationChannel || '').trim();
-    const ending = request ? '超时申请会被自动拒绝，之后可以重新申请。' : this.timeoutAction(config) === 'kick' ? '超时将被移出本群，之后可以重新加入。' : '超时将自动封禁。';
-    const head = request ? `🛡 入群验证：${esc(request.title || '本群')}` : '🛡 新成员验证';
+    const failure = mode === 'channel' ? '超时' : '超时或答错';
+    const ending = request ? `⚠️ ${failure}会拒绝本次申请，之后可以重新申请` : this.timeoutAction(config) === 'kick' ? `⚠️ ${failure}将被移出本群，之后可以重新加入` : `⚠️ ${failure}将被自动封禁`;
+    const head = request ? [`🛡 <b>入群验证：${esc(request.title || '本群')}</b>`, '', `👋 你好 ${who}！通过验证后会自动批准你的入群申请。`] : ['🛡 <b>新成员验证</b>', '', `👋 欢迎 ${who}！为防止广告账号，请先完成验证。`];
+    const limit = tries => `⏰ 限时 <b>${minutes} 分钟</b>${tries ? `，最多可${tries} ${maxAttempts(mode, request ? 'request' : 'group')} 次` : ''}`;
     if (mode === 'channel') {
       const check = request ? `vj:${request.id}:c` : `verify:channel:${member.id}`;
-      const text = `${head}\n欢迎 ${who}！为防止广告账号，请完成以下两步：\n\n① 点击下方第一个按钮，打开 ${esc(channel)}，在频道底部点击“加入 / Join”。\n② 返回这里，点击“已加入，完成验证”${request ? '，即可自动通过入群申请' : '，即可恢复正常发言'}。\n\n已订阅的用户可直接点击第二个按钮。\n请在 ${minutes} 分钟内完成；${ending}`;
-      return { answer: null, text, keyboard: [[{ text: '① 打开频道，点击加入', url: `https://t.me/${channel.slice(1)}` }], [{ text: '② 已加入，完成验证', callback_data: check }]] };
+      const text = [...head, '', `1️⃣ 点击「📢 打开频道」，在频道底部点「加入 / Join」`, `2️⃣ 回到这里，点击「✅ 我已加入」`, '', '💡 已经订阅过的，直接点「✅ 我已加入」即可', limit(), ending].join('\n');
+      return { answer: null, text, keyboard: [[{ text: `📢 打开频道 ${channel}`, url: `https://t.me/${channel.slice(1)}` }], [{ text: '✅ 我已加入，完成验证', callback_data: check }]] };
     }
     const left = 2 + Math.floor(Math.random() * 8), right = 1 + Math.floor(Math.random() * 8), answer = left + right;
+    const question = `🧮 <b>${left} + ${right} = ?</b>`;
     if (mode === 'math' && !request) {
-      return { answer: String(answer), keyboard: null, text: `${head}\n${who}，请在 ${minutes} 分钟内直接发送答案：${left} + ${right} = ?\n最多可以答 ${MAX_ATTEMPTS} 次；验证期间仅可发送文字；${ending}` };
+      return { answer: String(answer), keyboard: null, text: [...head, '', '请直接在群里发送下面这道题的答案：', '', question, '', limit('答'), '💬 验证完成前只能发送答案，其他消息会被删除', ending].join('\n') };
     }
+    // Six choices in two rows: a random click has a much smaller chance of
+    // passing than with four.
     const choices = new Set([answer]);
-    while (choices.size < 4) { const wrong = answer + Math.floor(Math.random() * 9) - 4; if (wrong > 0 && wrong !== answer) choices.add(wrong); }
+    while (choices.size < 6) { const wrong = answer + Math.floor(Math.random() * 11) - 5; if (wrong > 0 && wrong !== answer) choices.add(wrong); }
     const buttons = [...choices].sort(() => Math.random() - 0.5).map(value => ({ text: String(value), callback_data: request ? `vj:${request.id}:p:${value}` : `verify:pick:${member.id}:${value}` }));
-    return { answer: String(answer), keyboard: [buttons], text: `${head}\n${who}，请在 ${minutes} 分钟内点击正确答案：${left} + ${right} = ?\n最多可以点 ${MAX_ATTEMPTS} 次；${ending}` };
+    return { answer: String(answer), keyboard: [buttons.slice(0, 3), buttons.slice(3)], text: [...head, '', '请点击下方按钮，选出正确答案：', '', question, '', limit('选'), ending].join('\n') };
   }
   // Count a wrong answer. Once the attempts are used up the challenge expires
   // now, so the next alarm applies the same timeout handling.
   verificationWrongAnswer(userId) {
     const pending = this.verification(userId);
     if (!pending) return 0;
-    const attempts = Number(pending.attempts || 0) + 1, left = Math.max(0, MAX_ATTEMPTS - attempts);
+    const attempts = Number(pending.attempts || 0) + 1, left = Math.max(0, maxAttempts(pending.mode, pending.via) - attempts);
     this.sql.exec('UPDATE verifications SET attempts=?,expires=? WHERE user_id=?', attempts, left ? pending.expires : Date.now(), String(userId));
     return left;
   }
@@ -168,7 +174,7 @@ export class VerificationMethods {
     if (kind === 'channel') {
       const joined = await this.member(tg, pending.channel, callback.from.id).catch(() => null);
       if (!joined) return { ops: [toast('暂时无法检查订阅状态，请稍后重试；若一直失败，请联系管理员检查频道权限。', true)] };
-      if (['left', 'kicked'].includes(joined.status) || joined.status === 'restricted' && joined.is_member !== true) return { ops: [toast(`还没有检测到订阅。请点击第一个按钮打开 ${pending.channel}，在频道底部点击“加入 / Join”，再点击第二个按钮。`, true)] };
+      if (['left', 'kicked'].includes(joined.status) || joined.status === 'restricted' && joined.is_member !== true) return { ops: [toast(`还没有检测到你加入 ${pending.channel}。请先点「📢 打开频道」并在频道底部点「加入 / Join」，再回来点「✅ 我已加入」。`, true)] };
     } else if (choice !== pending.answer) {
       const left = this.verificationWrongAnswer(callback.from.id);
       return { ops: [toast(left ? `答案不对，还可以再试 ${left} 次。` : (via === 'request' ? '答错次数过多，本次申请将被拒绝，之后可以重新申请。' : '答错次数过多，验证失败。'), true)], entry: { chatId, userId: callback.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left ? `答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
@@ -178,7 +184,7 @@ export class VerificationMethods {
     if (via === 'request') {
       this.write(`verification-pass:${callback.from.id}`, true, DAY);
       const chat = this.read('chat', {});
-      return { ops: [toast('验证通过，已批准入群！'), { method: 'approveChatJoinRequest', params: { chat_id: chatId, user_id: callback.from.id } }, { method: 'editMessageText', params: { chat_id: message.chat.id, message_id: message.message_id, text: `✅ 验证通过，已批准你加入「${chat.title || '本群'}」。` }, optional: true }], entry: { chatId, chatTitle: chat.title || '', userId: callback.from.id, action: 'join-request-approved', outcome: 'pending', reasons: [reason] } };
+      return { ops: [toast('验证通过，已批准入群！'), { method: 'approveChatJoinRequest', params: { chat_id: chatId, user_id: callback.from.id } }, { method: 'editMessageText', params: { chat_id: message.chat.id, message_id: message.message_id, text: `✅ <b>验证通过</b>\n\n已批准你加入「${esc(chat.title || '本群')}」，现在可以去群里打招呼了 👋`, parse_mode: 'HTML' }, optional: true }], entry: { chatId, chatTitle: chat.title || '', userId: callback.from.id, action: 'join-request-approved', outcome: 'pending', reasons: [reason] } };
     }
     const restore = await this.restoreMember(chatId, callback.from.id, tg);
     return { ops: [toast('验证通过，欢迎加入！'), restore, { method: 'deleteMessage', params: { chat_id: chatId, message_id: message.message_id } }], entry: { chatId, chatTitle: message.chat.title || '', userId: callback.from.id, action: 'verification-passed', outcome: 'pending', reasons: [reason] } };

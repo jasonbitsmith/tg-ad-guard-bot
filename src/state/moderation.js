@@ -7,6 +7,8 @@ import { classify, normalize, parseCommand, validateWord } from '../filters.js';
 import { sampleMatches } from '../samples.js';
 import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
 
+const who = user => `<a href="tg://user?id=${user.id}">${String(user.first_name || '新朋友').slice(0, 40).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</a>`;
+
 export class ModerationMethods {
   async plan(update) {
     const empty = { ops: [] };
@@ -20,6 +22,14 @@ export class ModerationMethods {
     this.rememberMember(msg.from);
     for(const user of msg.new_chat_members||[])this.rememberMember(user);
     this.rememberMember(msg.reply_to_message?.from);
+    // Someone who leaves on their own before verifying is not banned for the
+    // timeout; their prompt is removed and they are asked again if they rejoin.
+    const leaving = msg.left_chat_member, unverified = leaving && msg.from?.id === leaving.id && this.verification(leaving.id);
+    if (unverified && (unverified.via || 'group') === 'group') {
+      this.clearVerification(leaving.id);
+      const ops = unverified.prompt_message_id ? [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: unverified.prompt_message_id }, optional: true }] : [];
+      return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: leaving.id, action: 'verification-left', outcome: 'pending', reasons: ['验证完成前自行退群，已撤销验证'] } };
+    }
     if (msg.new_chat_members) {
       for (const member of msg.new_chat_members) this.write(`join:${member.id}`, Date.now(), DAY);
       const config = await this.config();
@@ -85,12 +95,15 @@ export class ModerationMethods {
         const restore = await this.restoreMember(chatId, msg.from.id, tg);
         const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
         if (pendingVerification.prompt_message_id) ops.push({ method: 'deleteMessage', params: { chat_id: chatId, message_id: pendingVerification.prompt_message_id } });
-        ops.push(restore, { method: 'sendMessage', params: { chat_id: chatId, text: '✅ 验证通过，已解除新成员限制。' }, cleanupAfter: 60000 });
+        ops.push(restore, { method: 'sendMessage', params: { chat_id: chatId, text: `✅ <b>验证通过</b>，欢迎 ${who(msg.from)}！现在可以正常发言了。`, parse_mode: 'HTML' }, cleanupAfter: 60000 });
         return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-passed', outcome: 'pending', reasons: ['算术验证'] } };
       }
       // Only numbers count as an attempt; other chatter is just removed.
       const left = /^\d{1,3}$/.test(String(msg.text || '').trim()) ? this.verificationWrongAnswer(msg.from.id) : null;
-      return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left === null ? '验证期间的非答案消息' : left ? `算术答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
+      const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
+      // The answer is deleted at once, so say it was wrong; short-lived to keep the group clean.
+      if (left) ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: `❌ ${who(msg.from)}，答案不对，还可以再试 <b>${left}</b> 次。`, parse_mode: 'HTML' }, cleanupAfter: 20000, optional: true });
+      return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left === null ? '验证期间的非答案消息' : left ? `算术答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
     }
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
