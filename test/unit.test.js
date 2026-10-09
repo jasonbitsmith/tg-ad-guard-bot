@@ -56,6 +56,13 @@ test('洗米招揽、手机拍违停和投资带单广告首条永久封禁', ()
   assert.equal(classify(msg('洗mi 是什么意思，有人知道吗'), DEFAULT_KEYWORDS).permanentBan, false);
   assert.equal(classify(msg('有人知道为什么会爆仓吗？'), DEFAULT_KEYWORDS).permanentBan, false);
 });
+test('账号低价售卖昵称在昵称筛查中封禁，普通买卖讨论不误判', () => {
+  assert.equal(classify(msg('z支书5元QQ(全网首码注册) lh⭐'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('出售微信号 3元一个 实名号'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('出售 VPS 5元一个月 加微信'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('QQ会员5元一个月还挺便宜'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('注册 QQ 要花 5 元吗'), DEFAULT_KEYWORDS).permanentBan, false);
+});
 test('付费拍照广告昵称加短账号会封禁，普通昵称和正文账号不误判', () => {
   const ad = { ...msg('vf3295292528'), from: { id: 1, first_name: '📷拍*违*停 🚘一*百*元/张🧧' } };
   assert.equal(classify(ad, DEFAULT_KEYWORDS).permanentBan, true);
