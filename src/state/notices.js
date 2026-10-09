@@ -17,7 +17,7 @@ const person = (name, userId, username) => {
   const handle = /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(username || '')) ? ` <a href="https://t.me/${username}">@${esc(username)}</a>` : '';
   return `${linked}${handle}（${esc(id)}）`;
 };
-const ACTION_NAMES = [['user-report', '被群友举报'], ['verification-timeout', '验证超时被封'], ['verification-passed', '通过入群验证'], ['welcome', '入群'], ['owner-undo', '被你解封'], ['federation-undo', '联防解封'], ['federation-ban', '联防封禁'], ['permanent-ban', '因广告被封'], ['delete-channel', '频道消息被删'], ['media-quarantine', '新成员媒体被删'], ['content-lock-delete', '违反内容限制被删'], ['review', '可疑消息待复核'], ['knowledge', '触发自动回复']];
+const ACTION_NAMES = [['user-report', '被群友举报'], ['verification-timeout', '验证超时被封'], ['verification-passed', '通过入群验证'], ['verification-left', '验证前自行退群'], ['welcome', '入群'], ['owner-undo', '被你解封'], ['federation-undo', '联防解封'], ['federation-ban', '联防封禁'], ['permanent-ban', '因广告被封'], ['delete-channel', '频道消息被删'], ['media-quarantine', '新成员媒体被删'], ['content-lock-delete', '违反内容限制被删'], ['review', '可疑消息待复核'], ['knowledge', '触发自动回复']];
 const actionName = action => ACTION_NAMES.find(([key]) => String(action).includes(key))?.[1] || String(action);
 const profileLink = profile => /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(profile?.username || '')) ? `https://t.me/${profile.username}` : /^\d{1,16}$/.test(String(profile?.userId || '')) ? `tg://user?id=${profile.userId}` : null;
 const messageLink = (chatId, messageId) => /^-100\d+$/.test(String(chatId)) && Number.isSafeInteger(Number(messageId)) && Number(messageId) > 0 ? `https://t.me/c/${String(chatId).slice(4)}/${messageId}` : null;

@@ -52,15 +52,15 @@ export class SettingsMethods {
     return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage };
   }
   async editVerification(mode, minutes, channel, timeoutAction = 'ban') {
-    if (!['off', 'math', 'button', 'channel'].includes(mode)) throw new Error('无效验证方式');
+    if (!['off', 'math', 'button', 'channel', 'choice'].includes(mode)) throw new Error('无效验证方式');
     if (!['ban', 'kick'].includes(timeoutAction)) throw new Error('无效的超时处理方式');
     const value = Math.max(1, Math.min(60, Number(minutes)));
     if (!Number.isInteger(value)) throw new Error('验证时限须为 1–60 分钟');
     let normalizedChannel = String(channel || '').trim();
     if (normalizedChannel && !normalizedChannel.startsWith('@')) normalizedChannel = '@' + normalizedChannel;
-    if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(normalizedChannel)) throw new Error('频道验证请填写公开频道用户名，例如 @jason_vps_deal');
+    if ((mode === 'channel' || mode === 'choice') && !/^@[a-zA-Z0-9_]{5,}$/.test(normalizedChannel)) throw new Error('频道验证请填写公开频道用户名，例如 @jason_vps_deal');
     const config = await this.config();
-    config.verificationMode = mode; config.verificationMinutes = value; config.verificationChannel = mode === 'channel' ? normalizedChannel : ''; config.verificationTimeoutAction = timeoutAction;
+    config.verificationMode = mode; config.verificationMinutes = value; config.verificationChannel = mode === 'channel' || mode === 'choice' ? normalizedChannel : ''; config.verificationTimeoutAction = timeoutAction;
     this.saveConfig(config, '新成员验证');
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}:${timeoutAction}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel, verificationTimeoutAction: config.verificationTimeoutAction };

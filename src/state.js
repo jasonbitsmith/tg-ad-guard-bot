@@ -9,7 +9,7 @@ import { FederationMethods } from './state/federation.js';
 import { ReportsMethods } from './state/reports.js';
 import { SamplesMethods } from './state/samples.js';
 import { MonitorsMethods } from './state/monitors.js';
-import { VerificationMethods } from './state/verification.js';
+import { VerificationMethods, maxAttempts } from './state/verification.js';
 import { ModerationMethods } from './state/moderation.js';
 import { SettingsMethods } from './state/settings.js';
 import { BackupMethods } from './state/backup.js';
@@ -154,12 +154,12 @@ export class GuardState extends DurableObject {
       if(chat?.id)for(const pending of expired){
         const id=`verification-timeout:${pending.user_id}:${pending.expires}`;
         if(this.sql.exec('SELECT id FROM jobs WHERE id=?',id).toArray().length)continue;
-        const user=Number(pending.user_id),clear={local:'clearVerification',userId:pending.user_id,expires:pending.expires},failed=Number(this.verification(pending.user_id)?.attempts||0)>=3?'答错次数用完':'未在验证时限内完成验证';
+        const user=Number(pending.user_id),clear={local:'clearVerification',userId:pending.user_id,expires:pending.expires},failed=Number(this.verification(pending.user_id)?.attempts||0)>=maxAttempts(pending.mode,pending.via)?'答错次数用完':'未在验证时限内完成验证';
         let plan;
         if(pending.via==='request'){
           // A join request is only declined; the person can apply again.
           const ops=[{method:'declineChatJoinRequest',params:{chat_id:chat.id,user_id:user},optional:true},clear];
-          if(pending.prompt_message_id&&pending.prompt_chat_id)ops.push({method:'editMessageText',params:{chat_id:pending.prompt_chat_id,message_id:pending.prompt_message_id,text:`⌛ ${failed}，入群申请已拒绝。你可以重新申请加入。`},optional:true});
+          if(pending.prompt_message_id&&pending.prompt_chat_id)ops.push({method:'editMessageText',params:{chat_id:pending.prompt_chat_id,message_id:pending.prompt_message_id,text:`⌛ <b>验证未通过</b>\n\n${failed}，本次入群申请已拒绝。\n你可以随时重新申请加入。`,parse_mode:'HTML'},optional:true});
           plan={ops,entry:{chatId:chat.id,chatTitle:chat.title||'',userId:pending.user_id,action:'join-request-declined',reasons:[failed]}};
         } else {
           const ops=[{method:'banChatMember',params:{chat_id:chat.id,user_id:user,until_date:0}}];

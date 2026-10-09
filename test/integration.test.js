@@ -59,7 +59,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
       if(method==='sendMessage'&&JSON.stringify(params.reply_markup||{}).includes('tg://user?id=670'))return MFResponse.json({ok:false,error_code:400,description:'Bad Request: BUTTON_USER_PRIVACY_RESTRICTED'},{status:400});
-      const configured=failures.get(key),failure=Array.isArray(configured)?configured.shift():configured;
+      // `onlyText` limits a failure to messages containing that text, so background alerts to the same chat cannot use it up.
+      const pending=failures.get(key),matches=!pending?.onlyText||String(params.text||'').includes(pending.onlyText);
+      const configured=matches?pending:undefined,failure=Array.isArray(configured)?configured.shift():configured;
       if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
@@ -385,14 +387,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const buttonGroup=ns.getByName('chat:-502');await buttonGroup.editVerification('button',10,'','kick');
     await send(update(-502,'',{new_chat_members:[{id:92,first_name:'按钮新人'}]}));await tick(-502);
     const ask=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-502&&c.params.text.includes('新成员验证'));
-    const buttons=ask.params.reply_markup.inline_keyboard[0];assert.equal(buttons.length,4);
+    const buttons=ask.params.reply_markup.inline_keyboard.flat();assert.equal(buttons.length,6);assert.equal(ask.params.reply_markup.inline_keyboard.length,2);assert.ok(ask.params.text.includes('最多可选 2 次'));
     const answer=(await buttonGroup.verification(92)).answer,wrong=buttons.find(b=>!b.callback_data.endsWith(':'+answer)).callback_data;
     const click=(id,data,from=92)=>send({update_id:++seq,callback_query:{id,from:{id:from,first_name:'按钮新人'},data,message:{message_id:ask.params.chat_id===-502?777:0,chat:{id:-502,type:'supergroup',title:'测试群'}}}});
     await click('other-1',wrong,93);await tick(-502);
     assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='other-1'&&c.params.text.includes('其他新成员')));
-    for(const n of [1,2]){await click('wrong-'+n,wrong);await tick(-502);}
-    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wrong-2'&&c.params.text.includes('还可以再试 1 次')));
-    await click('wrong-3',wrong);await tick(-502);await tick(-502);
+    await click('wrong-1',wrong);await tick(-502);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wrong-1'&&c.params.text.includes('还可以再试 1 次')));
+    await click('wrong-2',wrong);await tick(-502);await tick(-502);
     assert.equal(await buttonGroup.verification(92),undefined);
     assert.ok(calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-502&&c.params.user_id===92));
     assert.ok(calls.some(c=>c.method==='unbanChatMember'&&c.params.chat_id===-502&&c.params.user_id===92&&c.params.only_if_banned===true));
@@ -406,11 +408,43 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('算术验证通过的提示稍后自动删除', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-503');await g.editVerification('math',10,'');
     await send(update(-503,'',{new_chat_members:[{id:95,first_name:'算术'}]}));await tick(-503);
+    await send(update(-503,'99',{from:{id:95,first_name:'算术'}}));await tick(-503);
+    assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-503&&c.params.text.includes('还可以再试 <b>2</b> 次')));
     await send(update(-503,(await g.verification(95)).answer,{from:{id:95,first_name:'算术'}}));
     const {jobs}=await tick(-503);
     assert.ok(jobs.some(x=>x.id==='cleanup:-503:444'&&x.status==='pending'));
     await tick(-503,true);
     assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-503&&c.params.message_id===444));
+  });
+  await t.test('二选一验证：关注频道或答题都能通过，答题仍限次数', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-506');await g.editVerification('choice',10,'jason_vps_deal','ban');
+    await send(update(-506,'',{new_chat_members:[{id:81,first_name:'选频道'},{id:82,first_name:'选答题'}]}));await tick(-506);
+    const prompt=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-506&&c.params.text.includes('任选一种'));
+    assert.ok(prompt);const rows=prompt.params.reply_markup.inline_keyboard;assert.equal(rows.length,4);assert.ok(rows[0][0].url.endsWith('/jason_vps_deal'));assert.equal(rows.slice(2).flat().length,6);
+    assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-506&&c.params.user_id===81&&c.params.permissions.can_send_messages===false));
+    const click=(id,from,data)=>send({update_id:++seq,callback_query:{id,from:{id:from,first_name:'x'},data,message:{message_id:700+from,chat:{id:-506,type:'supergroup',title:'测试群'}}}});
+    await click('c81',81,'verify:channel:81');await tick(-506);
+    assert.equal(await g.verification(81),undefined);
+    const answer=(await g.verification(82)).answer;
+    await click('p82',82,`verify:pick:82:${answer}`);await tick(-506);
+    assert.equal(await g.verification(82),undefined);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='p82'&&c.params.text.includes('验证通过')));
+    await assert.rejects(g.editVerification('choice',10,'','ban'));
+  });
+  await t.test('验证前自行退群：撤销验证、删除提示，不会超时封禁', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-505');await g.editVerification('button',10,'','ban');
+    await send(update(-505,'',{new_chat_members:[{id:98,first_name:'走了'}]}));await tick(-505);
+    const prompt=(await g.verification(98)).prompt_message_id;assert.ok(prompt);
+    await send(update(-505,'',{from:{id:98,first_name:'走了'},left_chat_member:{id:98,first_name:'走了'}}));await tick(-505);
+    assert.equal(await g.verification(98),undefined);
+    assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-505&&c.params.message_id===prompt));
+    assert.ok(!calls.some(c=>c.method==='banChatMember'&&c.params.chat_id===-505&&c.params.user_id===98));
+  });
+  await t.test('入群申请：未开启验证的群筛查后直接批准', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-507');await g.editVerification('off',10,'');
+    await send({update_id:++seq,chat_join_request:{chat:{id:-507,type:'supergroup',title:'无验证群'},from:{id:83,first_name:'普通人'},user_chat_id:83,date:Math.floor(Date.now()/1000)}});await tick(-507);
+    assert.ok(calls.some(c=>c.method==='approveChatJoinRequest'&&c.params.chat_id===-507&&c.params.user_id===83));
+    assert.equal(await g.verification(83),undefined);
   });
   await t.test('入群申请：私聊验证，通过自动批准，超时自动拒绝', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-504');await g.editVerification('button',10,'');
@@ -570,7 +604,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('日报部分接收人失败，仅重试未送达者，成功后停止重发',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');await global.seedRecordTest('test:owners',['99','100']);
     const now=Date.parse('2026-09-28T01:00:00Z'),start=calls.length;
-    failures.set('sendMessage:100',{error_code:500,description:'recipient temporarily unavailable'});
+    failures.set('sendMessage:100',{error_code:500,description:'recipient temporarily unavailable',onlyText:'群防日报'});
     assert.deepEqual(await Promise.all([global.sendDailyReport(now),global.sendDailyReport(now)]),[false,false]);assert.equal(await global.sendDailyReport(now+3600000),true);assert.equal(await global.sendDailyReport(now+3600000),false);
     const sent=calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text.includes('群防日报'));
     assert.equal(sent.filter(x=>x.params.chat_id===99).length,1);assert.equal(sent.filter(x=>x.params.chat_id===100).length,2);
