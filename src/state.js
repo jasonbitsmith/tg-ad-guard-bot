@@ -18,6 +18,7 @@ import { ScreeningMethods } from './state/screening.js';
 import { NoticesMethods } from './state/notices.js';
 import { CommunityMethods } from './state/community.js';
 import { AppealMethods } from './state/appeals.js';
+import { ProfileMethods } from './state/profile.js';
 import { OperationsMethods, operationSteps } from './state/operations.js';
 
 export class GuardState extends DurableObject {
@@ -354,7 +355,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, OperationsMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);
