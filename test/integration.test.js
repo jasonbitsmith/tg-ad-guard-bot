@@ -59,7 +59,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
       if(method==='sendMessage'&&JSON.stringify(params.reply_markup||{}).includes('tg://user?id=670'))return MFResponse.json({ok:false,error_code:400,description:'Bad Request: BUTTON_USER_PRIVACY_RESTRICTED'},{status:400});
-      const configured=failures.get(key),failure=Array.isArray(configured)?configured.shift():configured;
+      // `onlyText` limits a failure to messages containing that text, so background alerts to the same chat cannot use it up.
+      const pending=failures.get(key),matches=!pending?.onlyText||String(params.text||'').includes(pending.onlyText);
+      const configured=matches?pending:undefined,failure=Array.isArray(configured)?configured.shift():configured;
       if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
@@ -596,7 +598,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('日报部分接收人失败，仅重试未送达者，成功后停止重发',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');await global.seedRecordTest('test:owners',['99','100']);
     const now=Date.parse('2026-09-28T01:00:00Z'),start=calls.length;
-    failures.set('sendMessage:100',{error_code:500,description:'recipient temporarily unavailable'});
+    failures.set('sendMessage:100',{error_code:500,description:'recipient temporarily unavailable',onlyText:'群防日报'});
     assert.deepEqual(await Promise.all([global.sendDailyReport(now),global.sendDailyReport(now)]),[false,false]);assert.equal(await global.sendDailyReport(now+3600000),true);assert.equal(await global.sendDailyReport(now+3600000),false);
     const sent=calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text.includes('群防日报'));
     assert.equal(sent.filter(x=>x.params.chat_id===99).length,1);assert.equal(sent.filter(x=>x.params.chat_id===100).length,2);
