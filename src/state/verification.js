@@ -3,7 +3,9 @@
 import { telegram } from '../telegram.js';
 import { DAY, ADMIN_STATUS } from './shared.js';
 
-export const VERIFICATION_MODES = ['channel', 'button', 'math'];
+// 'choice' lets the member either join the channel or pick the answer.
+export const VERIFICATION_MODES = ['channel', 'button', 'math', 'choice'];
+export const usesChannel = mode => mode === 'channel' || mode === 'choice';
 // A typed answer is hard to guess; a pick from six buttons gets fewer tries.
 export const maxAttempts = (mode, via = 'group') => mode === 'math' && via !== 'request' ? 3 : 2;
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -23,7 +25,7 @@ export class VerificationMethods {
     const name = esc(String(member.first_name || '新朋友').slice(0, 40));
     const who = request ? name : `<a href="tg://user?id=${member.id}">${name}</a>`;
     const channel = String(config.verificationChannel || '').trim();
-    const failure = mode === 'channel' ? '超时' : '超时或答错';
+    const failure = mode === 'button' || mode === 'math' ? '超时或答错' : '超时';
     const ending = request ? `⚠️ ${failure}会拒绝本次申请，之后可以重新申请` : this.timeoutAction(config) === 'kick' ? `⚠️ ${failure}将被移出本群，之后可以重新加入` : `⚠️ ${failure}将被自动封禁`;
     const head = request ? [`🛡 <b>入群验证：${esc(request.title || '本群')}</b>`, '', `👋 你好 ${who}！通过验证后会自动批准你的入群申请。`] : ['🛡 <b>新成员验证</b>', '', `👋 欢迎 ${who}！为防止广告账号，请先完成验证。`];
     const limit = tries => `⏰ 限时 <b>${minutes} 分钟</b>${tries ? `，最多可${tries} ${maxAttempts(mode, request ? 'request' : 'group')} 次` : ''}`;
@@ -42,6 +44,11 @@ export class VerificationMethods {
     const choices = new Set([answer]);
     while (choices.size < 6) { const wrong = answer + Math.floor(Math.random() * 11) - 5; if (wrong > 0 && wrong !== answer) choices.add(wrong); }
     const buttons = [...choices].sort(() => Math.random() - 0.5).map(value => ({ text: String(value), callback_data: request ? `vj:${request.id}:p:${value}` : `verify:pick:${member.id}:${value}` }));
+    if (mode === 'choice') {
+      const check = request ? `vj:${request.id}:c` : `verify:channel:${member.id}`;
+      const text = [...head, '', '以下两种方式<b>任选一种</b>即可：', '', '📢 <b>方式一：关注频道</b>', '点「📢 打开频道」并加入，再回来点「✅ 我已加入」', '', `🧮 <b>方式二：答题</b>　${left} + ${right} = ?`, `点下方数字选出答案，最多可选 ${maxAttempts(mode)} 次`, '', limit(), `⚠️ 超时或答错${request ? '会拒绝本次申请，之后可以重新申请' : this.timeoutAction(config) === 'kick' ? '将被移出本群，之后可以重新加入' : '将被自动封禁'}`].join('\n');
+      return { answer: String(answer), text, keyboard: [[{ text: `📢 打开频道 ${channel}`, url: `https://t.me/${channel.slice(1)}` }], [{ text: '✅ 我已加入，完成验证', callback_data: check }], buttons.slice(0, 3), buttons.slice(3)] };
+    }
     return { answer: String(answer), keyboard: [buttons.slice(0, 3), buttons.slice(3)], text: [...head, '', '请点击下方按钮，选出正确答案：', '', question, '', limit('选'), ending].join('\n') };
   }
   // Count a wrong answer. Once the attempts are used up the challenge expires
@@ -128,12 +135,12 @@ export class VerificationMethods {
     if(pass){this.remove(`verification-pass:${member.id}`);return null;}
     const mode = forceMode || this.verificationMode(config);
     if (mode === 'off' || member.is_bot) return null;
-    if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim())) return null;
+    if (usesChannel(mode) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim())) return null;
     const status = await this.member(tg, msg.chat.id, member.id);
     if (ADMIN_STATUS.includes(status.status) || this.owners().includes(String(member.id))) return null;
     const minutes = verificationMinutes(config), expires = Date.now() + minutes * 60000;
     const challenge = this.verificationChallenge(member, mode, minutes, config);
-    this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel,attempts,via,prompt_chat_id) VALUES (?,?,?,?,?,?,0,?,?)', String(member.id), challenge.answer, null, expires, mode, mode === 'channel' ? config.verificationChannel.trim() : null, 'group', msg.chat.id);
+    this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel,attempts,via,prompt_chat_id) VALUES (?,?,?,?,?,?,0,?,?)', String(member.id), challenge.answer, null, expires, mode, usesChannel(mode) ? config.verificationChannel.trim() : null, 'group', msg.chat.id);
     return { member, mode, expires, ...challenge };
   }
   // A join request (group set to "approve new members"): verify privately
@@ -153,10 +160,10 @@ export class VerificationMethods {
     if (this.read(`verification-pass:${user.id}`) || this.read(`allow:${user.id}`) || this.owners().includes(String(user.id))) {
       return { ops: [approve], entry: { ...entry, action: 'join-request-approved', outcome: 'pending', reasons: ['已信任成员，免验证'] } };
     }
-    if (mode === 'channel' && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim())) return empty;
+    if (usesChannel(mode) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim())) return empty;
     const minutes = verificationMinutes(config), expires = Date.now() + minutes * 60000, dm = request.user_chat_id || user.id;
     const challenge = this.verificationChallenge(user, mode, minutes, config, { id: chat.id, title: chat.title });
-    this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel,attempts,via,prompt_chat_id) VALUES (?,?,?,?,?,?,0,?,?)', String(user.id), challenge.answer, null, expires, mode, mode === 'channel' ? config.verificationChannel.trim() : null, 'request', dm);
+    this.sql.exec('INSERT OR REPLACE INTO verifications(user_id,answer,prompt_message_id,expires,mode,channel,attempts,via,prompt_chat_id) VALUES (?,?,?,?,?,?,0,?,?)', String(user.id), challenge.answer, null, expires, mode, usesChannel(mode) ? config.verificationChannel.trim() : null, 'request', dm);
     return { ops: [{ method: 'sendMessage', params: { chat_id: dm, text: challenge.text, parse_mode: 'HTML', reply_markup: { inline_keyboard: challenge.keyboard } }, verificationPromptFor: user.id, optional: true }], entry: { ...entry, action: 'join-request-verification-started', outcome: 'pending', reasons: [`${mode} 私聊验证`] } };
   }
   // Buttons on a challenge, in the group or in the private chat.
@@ -169,18 +176,18 @@ export class VerificationMethods {
     const kind = inGroup ? (inGroup[1] === 'channel' ? 'channel' : 'pick') : (inPrivate[2] === 'c' ? 'channel' : 'pick');
     const choice = (inGroup || inPrivate)[3], via = inGroup ? 'group' : 'request';
     const pending = this.verification(callback.from.id);
-    if (!pending || pending.expires <= Date.now() || (pending.via || 'group') !== via || (kind === 'channel') !== (pending.mode === 'channel')) return { ops: [toast(via === 'request' ? '该验证已失效，请重新申请加入。' : '该验证已失效，请联系管理员。', true)] };
+    if (!pending || pending.expires <= Date.now() || (pending.via || 'group') !== via || (pending.mode !== 'choice' && (kind === 'channel') !== (pending.mode === 'channel'))) return { ops: [toast(via === 'request' ? '该验证已失效，请重新申请加入。' : '该验证已失效，请联系管理员。', true)] };
     const tg = telegram(this.env.BOT_TOKEN), chatId = via === 'group' ? message.chat.id : Number(inPrivate[1]);
     if (kind === 'channel') {
       const joined = await this.member(tg, pending.channel, callback.from.id).catch(() => null);
       if (!joined) return { ops: [toast('暂时无法检查订阅状态，请稍后重试；若一直失败，请联系管理员检查频道权限。', true)] };
-      if (['left', 'kicked'].includes(joined.status) || joined.status === 'restricted' && joined.is_member !== true) return { ops: [toast(`还没有检测到你加入 ${pending.channel}。请先点「📢 打开频道」并在频道底部点「加入 / Join」，再回来点「✅ 我已加入」。`, true)] };
+      if (['left', 'kicked'].includes(joined.status) || joined.status === 'restricted' && joined.is_member !== true) return { ops: [toast(`还没有检测到你加入 ${pending.channel}。请先点「📢 打开频道」并在频道底部点「加入 / Join」，再回来点「✅ 我已加入」${pending.mode === 'choice' ? '；也可以直接点数字答题' : ''}。`, true)] };
     } else if (choice !== pending.answer) {
       const left = this.verificationWrongAnswer(callback.from.id);
       return { ops: [toast(left ? `答案不对，还可以再试 ${left} 次。` : (via === 'request' ? '答错次数过多，本次申请将被拒绝，之后可以重新申请。' : '答错次数过多，验证失败。'), true)], entry: { chatId, userId: callback.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left ? `答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
     }
     this.clearVerification(callback.from.id);
-    const reason = pending.mode === 'channel' ? `频道验证：${pending.channel}` : '按钮答题验证';
+    const reason = kind === 'channel' ? `频道验证：${pending.channel}` : '按钮答题验证';
     if (via === 'request') {
       this.write(`verification-pass:${callback.from.id}`, true, DAY);
       const chat = this.read('chat', {});

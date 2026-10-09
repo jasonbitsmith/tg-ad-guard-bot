@@ -414,6 +414,21 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await tick(-503,true);
     assert.ok(calls.some(c=>c.method==='deleteMessage'&&c.params.chat_id===-503&&c.params.message_id===444));
   });
+  await t.test('二选一验证：关注频道或答题都能通过，答题仍限次数', async () => {
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-506');await g.editVerification('choice',10,'jason_vps_deal','ban');
+    await send(update(-506,'',{new_chat_members:[{id:81,first_name:'选频道'},{id:82,first_name:'选答题'}]}));await tick(-506);
+    const prompt=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-506&&c.params.text.includes('任选一种'));
+    assert.ok(prompt);const rows=prompt.params.reply_markup.inline_keyboard;assert.equal(rows.length,4);assert.ok(rows[0][0].url.endsWith('/jason_vps_deal'));assert.equal(rows.slice(2).flat().length,6);
+    assert.ok(calls.some(c=>c.method==='restrictChatMember'&&c.params.chat_id===-506&&c.params.user_id===81&&c.params.permissions.can_send_messages===false));
+    const click=(id,from,data)=>send({update_id:++seq,callback_query:{id,from:{id:from,first_name:'x'},data,message:{message_id:700+from,chat:{id:-506,type:'supergroup',title:'测试群'}}}});
+    await click('c81',81,'verify:channel:81');await tick(-506);
+    assert.equal(await g.verification(81),undefined);
+    const answer=(await g.verification(82)).answer;
+    await click('p82',82,`verify:pick:82:${answer}`);await tick(-506);
+    assert.equal(await g.verification(82),undefined);
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='p82'&&c.params.text.includes('验证通过')));
+    await assert.rejects(g.editVerification('choice',10,'','ban'));
+  });
   await t.test('验证前自行退群：撤销验证、删除提示，不会超时封禁', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-505');await g.editVerification('button',10,'','ban');
     await send(update(-505,'',{new_chat_members:[{id:98,first_name:'走了'}]}));await tick(-505);
