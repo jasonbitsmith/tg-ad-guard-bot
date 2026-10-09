@@ -70,6 +70,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true};
       if (method === 'getChat') result = params.chat_id===667 ? { id: 667, type: 'private', bio: '兼职日结 私聊我 @abc12345' } : { permissions: { can_send_messages: true, can_send_photos: false } };
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
+      if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };
+      if (method === 'getMyShortDescription') result = { short_description: '' };
       if (method === 'sendMessage') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
     },
@@ -475,6 +477,17 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(await g.announceTick(Date.parse('2026-10-10T01:00:00Z')),1);
     assert.ok(calls.slice(before).some(c=>c.method==='deleteMessage'&&c.params.chat_id===-511&&c.params.message_id===444));
     assert.equal((await g.editAnnouncement('remove',{id:announcements[0].id})).announcements.length,0);
+    await assert.rejects(g.editAnnouncement('upsert',{time:'10:00',text:'周会',days:[]}));
+    const weekly=(await g.editAnnouncement('upsert',{time:'10:00',text:'周一例会提醒',days:[1]})).announcements[0];assert.deepEqual([...weekly.days],[1]);
+    assert.equal(await g.announceTick(Date.parse('2026-10-13T02:01:00Z')),0);
+    assert.equal(await g.announceTick(Date.parse('2026-10-12T02:01:00Z')),1);
+  });
+  await t.test('机器人简介追加申诉提示，保留原有内容且只做一次', async () => {
+    const admin=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin'),before=calls.length;
+    assert.equal(await admin.ensureAppealHint(),true);
+    const set=calls.slice(before).find(c=>c.method==='setMyDescription');assert.ok(set.params.description.startsWith('Jason 的群管家'));assert.ok(set.params.description.includes('/start'));
+    assert.ok(calls.slice(before).some(c=>c.method==='setMyShortDescription'&&c.params.short_description.length<=120));
+    assert.equal(await admin.ensureAppealHint(),false);
   });
   await t.test('误封申诉：私聊机器人提交，所有者一键解封并通知本人', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE');

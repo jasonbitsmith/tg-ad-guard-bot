@@ -8,6 +8,7 @@ const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<'
 // Beijing calendar day, e.g. 2026-10-09.
 export const beijingDay = (time = Date.now()) => new Date(time + 8 * 3600000).toISOString().slice(0, 10);
 const beijingMinutes = (time = Date.now()) => { const date = new Date(time + 8 * 3600000); return date.getUTCHours() * 60 + date.getUTCMinutes(); };
+const beijingWeekday = (time = Date.now()) => new Date(time + 8 * 3600000).getUTCDay();
 const minutesOf = value => { const [hour, minute] = String(value).split(':').map(Number); return hour * 60 + minute; };
 
 export function normalizeAnnouncement(item) {
@@ -15,7 +16,10 @@ export function normalizeAnnouncement(item) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('请填写有效的发送时间，例如 09:00');
   if (!text || text.length > 2000) throw new Error('公告内容不能为空，且不超过 2000 个字');
   const id = /^[a-f0-9-]{8,40}$/.test(String(item?.id || '')) ? String(item.id) : crypto.randomUUID();
-  return { id, time, text, enabled: item?.enabled !== false, replacePrevious: item?.replacePrevious !== false, pin: item?.pin === true };
+  // Weekdays as getUTCDay numbers (0 = Sunday); missing means every day.
+  const days = item?.days === undefined ? [0, 1, 2, 3, 4, 5, 6] : [...new Set(Array.isArray(item.days) ? item.days.map(Number) : [])].filter(day => Number.isInteger(day) && day >= 0 && day <= 6).sort();
+  if (!days.length) throw new Error('请至少选择一天');
+  return { id, time, days, text, enabled: item?.enabled !== false, replacePrevious: item?.replacePrevious !== false, pin: item?.pin === true };
 }
 
 export class CommunityMethods {
@@ -101,11 +105,11 @@ export class CommunityMethods {
     const config = await this.config(), chat = this.read('chat');
     const list = (config.announcements || []).filter(item => item.enabled);
     if (!list.length || !chat?.id) return 0;
-    const today = beijingDay(now), minutes = beijingMinutes(now), tg = telegram(this.env.BOT_TOKEN);
+    const today = beijingDay(now), weekday = beijingWeekday(now), minutes = beijingMinutes(now), tg = telegram(this.env.BOT_TOKEN);
     let sent = 0;
     for (const item of list) {
       const late = minutes - minutesOf(item.time), key = `announce:${item.id}`, last = this.read(key, {});
-      if (late < 0 || late > 15 || last.day === today) continue;
+      if (late < 0 || late > 15 || last.day === today || !(item.days || [0, 1, 2, 3, 4, 5, 6]).includes(weekday)) continue;
       // Mark first so a slow send never posts twice.
       this.write(key, { ...last, day: today }, 30 * DAY);
       try {

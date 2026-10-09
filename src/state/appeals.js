@@ -10,7 +10,32 @@ const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<'
 const REASONS = [['cas', '全网广告号黑名单'], ['profile', '昵称或简介含广告'], ['verification-timeout', '入群验证超时'], ['content-lock', '违反内容限制'], ['federation', '其他群联防同步'], ['spam', '管理员确认广告'], ['review', '管理员确认广告'], ['ban', '管理员手动封禁']];
 const reasonLabel = action => REASONS.find(([key]) => String(action).includes(key))?.[1] || '发布广告';
 
+const HINT = '被误封了？私聊我发送 /start，可以查看封禁原因并提交申诉。';
+const SHORT_HINT = '被误封？私聊发 /start 申诉';
+
 export class AppealMethods {
+  // Banned members only find the appeal if they know to message the bot, so
+  // add a line to the bot's description and profile "about" text. Text the
+  // owner already wrote is kept; the hint is appended when it fits.
+  async ensureAppealHint() {
+    if (this.read('appeal-hint:done') || this.read('appeal-hint:checked')) return false;
+    this.write('appeal-hint:checked', true, 3600000);
+    const tg = telegram(this.env.BOT_TOKEN);
+    const description = String((await tg('getMyDescription'))?.description || '');
+    if (!description.includes('/start')) {
+      const next = description ? `${description}\n\n${HINT}` : `🛡 群管理机器人\n\n${HINT}`;
+      if (next.length <= 512) await tg('setMyDescription', { description: next });
+    }
+    const about = String((await tg('getMyShortDescription'))?.short_description || '');
+    if (!about.includes('/start')) {
+      const next = about ? `${about} · ${SHORT_HINT}` : `群管理机器人 · ${SHORT_HINT}`;
+      if (next.length <= 120) await tg('setMyShortDescription', { short_description: next });
+    }
+    this.write('appeal-hint:done', true);
+    this.log({ action: 'appeal-hint', outcome: 'success' });
+    return true;
+  }
+
   // Group object: is this person banned here, and why.
   appealBanInfo(userId) {
     const ban = this.memberBan(userId), chat = this.read('chat');
