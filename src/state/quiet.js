@@ -104,6 +104,8 @@ export class QuietMethods {
   async runQuietMaintenance() {
     const chats = this.listChats();
     const attempts = await Promise.allSettled(chats.map(chat => this.env.GUARD_STATE.getByName(`chat:${chat.id}`).quietTick()));
+    // Same safety net for scheduled announcements, should a group's alarm stop.
+    await Promise.allSettled(chats.map(chat => this.env.GUARD_STATE.getByName(`chat:${chat.id}`).announceTick()));
     const switched = attempts.filter(item => item.status === 'fulfilled' && item.value === true).length;
     const failed = attempts.filter(item => item.status === 'rejected').length;
     if (failed) this.log({ action: 'quiet-maintenance', outcome: 'failed', errors: failed });

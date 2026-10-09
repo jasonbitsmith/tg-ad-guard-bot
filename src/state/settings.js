@@ -65,6 +65,14 @@ export class SettingsMethods {
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}:${timeoutAction}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel, verificationTimeoutAction: config.verificationTimeoutAction };
   }
+  async editScreening(casEnabled, profileCheckEnabled, deleteServiceMessages) {
+    if (![casEnabled, profileCheckEnabled, deleteServiceMessages].every(value => typeof value === 'boolean')) throw new Error('筛查设置无效');
+    const config = await this.config();
+    config.casEnabled = casEnabled; config.profileCheckEnabled = profileCheckEnabled; config.deleteServiceMessages = deleteServiceMessages;
+    this.saveConfig(config, '入群筛查与系统提示');
+    this.log({ action: 'screening-update', actorId: 'web-admin', outcome: 'success', text: `${casEnabled}:${profileCheckEnabled}:${deleteServiceMessages}` });
+    return { casEnabled, profileCheckEnabled, deleteServiceMessages };
+  }
   async editRaid(enabled, limit, minutes) {
     const joins = Number(limit), duration = Number(minutes);
     if (typeof enabled !== 'boolean' || !Number.isInteger(joins) || joins < 2 || joins > 30 || !Number.isInteger(duration) || duration < 5 || duration > 120) throw new Error('入群阈值须为 2–30 人，防护时长须为 5–120 分钟');

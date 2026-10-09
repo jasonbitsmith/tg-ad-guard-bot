@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.12.0';
+export const VERSION = '2.13.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -83,6 +83,7 @@ async function admin(request, env, url) {
     if (path === 'federation') return json({ chats: await state.federation() });
     if (path === 'logs') return json(await group(env, url.searchParams.get('chatId')).adminData(Number(url.searchParams.get('before')) || 0));
     if (path === 'keyword-stats') return json(await group(env, url.searchParams.get('chatId')).keywordStats());
+    if (path === 'activity') { const days = Math.max(1, Math.min(30, Number(url.searchParams.get('days')) || 7)), day = time => new Date(time + 8 * 3600000).toISOString().slice(0, 10); return json(await group(env, url.searchParams.get('chatId')).activityStats(day(Date.now() - (days - 1) * 86400000), day(Date.now()))); }
     if (path === 'legacy') {
       const page = await env.BOT_KV.list({ prefix: 'log:', limit: 50, ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor') } : {}) });
       const values = await Promise.all(page.keys.map(k => env.BOT_KV.get(k.name, 'json')));
@@ -174,6 +175,14 @@ async function mutateAdmin(request,env,url,state,path){
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel, body.timeoutAction));
   }
+  if (request.method === 'POST' && path === 'screening') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).editScreening(body.casEnabled, body.profileCheckEnabled, body.deleteServiceMessages));
+  }
+  if (request.method === 'POST' && ['announcements/upsert', 'announcements/remove'].includes(path)) {
+    const body = await readJson(request, 16384);
+    return json(await group(env, body.chatId).editAnnouncement(path.split('/')[1], body.item));
+  }
   if (request.method === 'POST' && path === 'raid') {
     const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editRaid(body.enabled, body.limit, body.minutes));
@@ -254,6 +263,10 @@ export default {
     // privately; Telegram supplies the original chat metadata server-side.
     // Buttons on owner notices (report / ban log) can live in a private chat
     // or a log channel, so they are handled before the group-only routing.
+    if (String(update.callback_query?.data || '') === 'ap:go') {
+      try { await globalState(env).appealSubmit(update.callback_query); } catch { console.error(JSON.stringify({ event: 'appeal_failed', updateId: update.update_id })); }
+      return new Response('OK');
+    }
     if (/^n:/.test(String(update.callback_query?.data || ''))) {
       try { await globalState(env).noticeAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'notice_action_failed', updateId: update.update_id })); }
       return new Response('OK');
@@ -268,6 +281,11 @@ export default {
     }
     const privateMessage = update.message;
     if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
+    // Anyone else who opens the bot (or asks to appeal) sees their bans and an appeal button.
+    if (privateMessage?.chat?.type === 'private' && Number.isSafeInteger(privateMessage.from?.id) && !owners(env).has(String(privateMessage.from.id)) && /^(\/start|\/appeal|申诉)(?:@\w+)?(?:\s|$)/i.test(String(privateMessage.text || '').trim())) {
+      try { await globalState(env).appealStart(privateMessage.from, privateMessage.chat.id); } catch { console.error(JSON.stringify({ event: 'appeal_start_failed', updateId: update.update_id })); }
+      return new Response('OK');
+    }
     if (privateMessage?.chat?.type === 'private' && owners(env).has(String(privateMessage.from?.id))) {
       const text=String(privateMessage.text||'').trim(),tg=telegram(env.BOT_TOKEN);
       const release=/^\/release\s+(\d{1,16})\s+(-\d+)$/i.exec(text);
@@ -322,6 +340,7 @@ export default {
       // every group every 15 minutes instead of every minute.
       if (new Date(controller.scheduledTime || Date.now()).getUTCMinutes() % 15 === 0) ctx.waitUntil(globalState(env).runQuietMaintenance());
       ctx.waitUntil(globalState(env).sendDailyReport());
+      ctx.waitUntil(globalState(env).sendWeeklyReport().catch(() => null));
       ctx.waitUntil(globalState(env).monitorOperations());
       ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
     }
