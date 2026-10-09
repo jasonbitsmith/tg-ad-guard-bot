@@ -492,7 +492,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(calls.slice(before).some(c=>c.method==='setMyShortDescription'&&c.params.short_description.length<=120));
     assert.equal(await admin.ensureAppealHint(),false);
   });
-  await t.test('机器人自己改名为 Jason Guard Bot 并换头像，只做一次', async () => {
+  await t.test('机器人自己改名为 Jason Guard Bot、换头像和简介，只做一次', async () => {
     const admin=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin'),before=calls.length;
     assert.equal(await admin.ensureBotProfile(),true);
     const made=calls.slice(before);
@@ -500,6 +500,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const photo=made.find(c=>c.method==='setMyProfilePhoto');assert.ok(photo);
     assert.deepEqual(JSON.parse(photo.params.photo),{type:'static',photo:'attach://avatar'});
     assert.equal(photo.params.avatar.type,'image/jpeg');assert.ok(photo.params.avatar.size>10000);
+    assert.ok(made.some(c=>c.method==='setMyShortDescription'&&c.params.short_description.startsWith('自动群管理机器人')&&c.params.short_description.length<=120));
+    const desc=made.find(c=>c.method==='setMyDescription');assert.ok(desc.params.description.startsWith('自动群管理机器人'));assert.ok(desc.params.description.includes('/start'));
     assert.equal(await admin.ensureBotProfile(),false);
   });
   await t.test('误封申诉：私聊机器人提交，所有者一键解封并通知本人', async () => {
