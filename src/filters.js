@@ -69,9 +69,14 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   // These variants recruit people to photograph vehicles or alleged parking
   // violations, often omitting the word “兼职” entirely.
   const phonePhotoGigPitch = /(?:手机.{0,8}拍(?:违停|违章|车辆|照).{0,24}(?:日\s*结|当天结|一百|100|赚|收入)|拍(?:违停|违章).{0,24}(?:日\s*结|当天结|一百|100|赚|收入))/.test(body);
-  // “洗米” is an obfuscated money-laundering recruitment phrase. An earning
-  // claim is required so food-related conversation is never matched.
-  const moneyLaunderingPitch = /(?:做|招|带|收).{0,8}洗米.{0,16}(?:赚|收益|日(?:赚|入)|\d)|洗米.{0,16}(?:赚|收益|日(?:赚|入)).{0,10}\d/.test(body);
+  // “洗米” is an obfuscated money-laundering recruitment phrase, also spelled
+  // 洗mi / 洗咪 / 洗🍚. An earning claim is required so food-related
+  // conversation is never matched.
+  const xiMi = '洗\\s*(?:米|mi|咪|眯|🍚)';
+  const moneyLaunderingPitch = new RegExp(`(?:做|招|带|收|来).{0,8}${xiMi}.{0,16}(?:赚|收益|日(?:赚|入)|\\d)|${xiMi}.{0,16}(?:赚|收益|日(?:赚|入)).{0,10}\\d`, 'u').test(body);
+  // A short message that is only a payout claim plus an @handle, e.g.
+  // “来xx 赚8K @abcde”. Longer chat that happens to mention earnings is left alone.
+  const earnHandlePitch = contact && body.length <= 60 && /赚\s*\d+(?:\.\d+)?\s*(?:k|w|q|千|万)/i.test(body);
   // Investment lead scams pair a claimed win/loss with an @handle. Two pitch
   // signals are required to avoid blocking ordinary market discussion.
   const investmentSignals = [/(?:又)?赚(?:钱|了)|盈利|收益/.test(body), /(?:跟对(?:人|他)|带单|老师带|爆仓|翻仓)/.test(body)];
@@ -123,6 +128,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (phonePhotoGigPitch) add(4, '包含手机拍违停日结招揽');
   if (profileContactPitch) add(7, '付费拍照广告昵称附短账号引流');
   if (moneyLaunderingPitch) add(4, '包含“洗米”收益招揽');
+  if (earnHandlePitch && !moneyLaunderingPitch) add(4, '包含高收益承诺加账号引流');
   if (investmentLeadPitch) add(4, '包含投资带单收益引流');
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
   if (resalePitch) add(4, '包含拆词商品分销和收益招揽');
@@ -133,7 +139,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 

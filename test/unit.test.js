@@ -49,6 +49,11 @@ test('洗米招揽、手机拍违停和投资带单广告首条永久封禁', ()
   assert.equal(classify(msg('手机拍违停 一百一张，日结七百左右'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.equal(classify(msg('又赚钱了，跟对他很重要，别等爆仓才后悔 @Aaswed52'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.equal(classify(msg('今天洗米做饭，花了 100 元'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('来洗mi 赚8K @afosd'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('带人洗咪，日赚3千'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('躺着赚5w 私聊 @abcdef'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('我上个月赚了8k，@friend1 你呢'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('洗mi 是什么意思，有人知道吗'), DEFAULT_KEYWORDS).permanentBan, false);
   assert.equal(classify(msg('有人知道为什么会爆仓吗？'), DEFAULT_KEYWORDS).permanentBan, false);
 });
 test('付费拍照广告昵称加短账号会封禁，普通昵称和正文账号不误判', () => {
