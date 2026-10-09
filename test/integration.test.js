@@ -56,7 +56,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if(url.hostname==='api.cas.chat')return MFResponse.json(url.searchParams.get('user_id')==='666'?{ok:true,result:{offenses:3}}:{ok:false,description:'Record not found.'});
       assert.equal(url.hostname, 'api.telegram.org');
       if (url.pathname.includes('/file/botfake/')) return new MFResponse(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpeg' } });
-      const method = url.pathname.split('/').at(-1), params = await request.json();
+      const method = url.pathname.split('/').at(-1), multipart = String(request.headers.get('content-type')).includes('multipart');
+      const params = multipart ? Object.fromEntries([...(await request.formData())].map(([k, v]) => [k, typeof v === 'string' ? v : { name: v.name, size: v.size, type: v.type }])) : await request.json();
       calls.push({ method, params });
       const key = `${method}:${params.chat_id}`;
       if(method==='sendMessage'&&JSON.stringify(params.reply_markup||{}).includes('tg://user?id=670'))return MFResponse.json({ok:false,error_code:400,description:'Bad Request: BUTTON_USER_PRIVACY_RESTRICTED'},{status:400});
@@ -73,6 +74,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };
       if (method === 'getMyShortDescription') result = { short_description: '' };
+      if (method === 'getMyName') result = { name: 'JASON_BOT' };
       if (method === 'sendMessage') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
     },
@@ -489,6 +491,16 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const set=calls.slice(before).find(c=>c.method==='setMyDescription');assert.ok(set.params.description.startsWith('Jason 的群管家'));assert.ok(set.params.description.includes('/start'));
     assert.ok(calls.slice(before).some(c=>c.method==='setMyShortDescription'&&c.params.short_description.length<=120));
     assert.equal(await admin.ensureAppealHint(),false);
+  });
+  await t.test('机器人自己改名为 Jason Guard Bot 并换头像，只做一次', async () => {
+    const admin=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin'),before=calls.length;
+    assert.equal(await admin.ensureBotProfile(),true);
+    const made=calls.slice(before);
+    assert.ok(made.some(c=>c.method==='setMyName'&&c.params.name==='Jason Guard Bot'));
+    const photo=made.find(c=>c.method==='setMyProfilePhoto');assert.ok(photo);
+    assert.deepEqual(JSON.parse(photo.params.photo),{type:'static',photo:'attach://avatar'});
+    assert.equal(photo.params.avatar.type,'image/jpeg');assert.ok(photo.params.avatar.size>10000);
+    assert.equal(await admin.ensureBotProfile(),false);
   });
   await t.test('误封申诉：私聊机器人提交，所有者一键解封并通知本人', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE');

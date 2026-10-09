@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.15.0';
+export const VERSION = '2.16.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -353,6 +353,7 @@ export default {
       ctx.waitUntil(globalState(env).monitorOperations());
       ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
       ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
+      ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
     }
   },
 };
