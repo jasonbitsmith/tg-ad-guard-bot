@@ -4,7 +4,7 @@ import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.14.2';
+export const VERSION = '2.15.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -77,6 +77,11 @@ async function admin(request, env, url) {
     return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0` });
   }
   if (request.method === 'GET') {
+    if(path==='operations/overview')return json(await state.operationsOverview());
+    if(path==='operations/jobs')return json({jobs:await group(env,url.searchParams.get('chatId')).operationList()});
+    if(path==='operations/missed')return json({reports:await group(env,url.searchParams.get('chatId')).missedRecords()});
+    if(path==='invites')return json(await group(env,url.searchParams.get('chatId')).inviteStats());
+    if(path==='members/recovery')return json(await state.memberRecovery(url.searchParams.get('query')));
     if(path==='verification/members')return json(await state.findVerificationMembers(url.searchParams.get('query')||''));
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'samples') return json({ samples: await state.listSamples() });
@@ -134,6 +139,9 @@ async function admin(request, env, url) {
   }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
 }
 async function mutateAdmin(request,env,url,state,path){
+  if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
+  if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
+  if(path==='members/recover'){const body=await readJson(request,4096);if(body.scope==='group')group(env,body.chatId);return json(await state.recoverMember(body));}
   if(path==='ai-review'){const body=await readJson(request,4096);return json(await group(env,body.chatId).editAiReview(body.enabled));}
   if(path==='verification/release'){const body=await readJson(request,4096);return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));}
   if(path==='backup/preview'){const body=await readJson(request,600000);return json(await state.previewBackup(body.backup));}
@@ -273,6 +281,7 @@ export default {
     }
     // Join requests and the buttons of private join-request challenges belong
     // to the group being joined.
+    if(update.chat_member?.chat && ['group','supergroup'].includes(update.chat_member.chat.type)){try{await group(env,update.chat_member.chat.id).enqueue(update);return new Response('OK');}catch{return new Response('Retry later',{status:503});}}
     const joinRequest = update.chat_join_request;
     const requestCallback = /^vj:(-\d{1,16}):/.exec(String(update.callback_query?.data || ''));
     if ((joinRequest?.chat && ['group','supergroup'].includes(joinRequest.chat.type)) || requestCallback) {

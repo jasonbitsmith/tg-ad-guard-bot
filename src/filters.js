@@ -2,8 +2,9 @@ export const DEFAULT_KEYWORDS = ['日结','急招','兼职','看我简介','看�
 export const CONTENT_LOCK_TYPES = Object.freeze(['link', 'invite', 'forward', 'inline', 'photo', 'video', 'gif', 'file', 'audio', 'sticker']);
 export const DEFAULT_POLICY = Object.freeze({ aiReviewEnabled: true, casEnabled: true, profileCheckEnabled: true, deleteServiceMessages: true, announcements: [], warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, newMemberLinkGuard: true, newMemberLinkMinutes: 30, newMemberMediaGuard: true, newMemberMediaMinutes: 30, contentLocks: {}, knowledgeBase: [], welcomeMessage: '', rulesMessage: '', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', verificationTimeoutAction: 'ban', raidEnabled: true, raidJoinLimit: 4, raidMinutes: 30, quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true, quietEndNoticeMinutes: 30 });
 
+const AD_TRADITIONAL={廣:'广',機:'机',號:'号',錢:'钱',帳:'账',戶:'户',純:'纯',風:'风',險:'险',錄:'录',應:'应',貨:'货',結:'结',賺:'赚',萬:'万',張:'张',來:'来',購:'购',營:'营',銷:'销',聯:'联',繫:'系',穩:'稳',無:'无',經:'经',驗:'验',註:'注',冊:'册',務:'务',售:'售',單:'单',轉:'转',碼:'码',領:'领'};
 export function normalize(text) {
-  return String(text || '').normalize('NFKC').replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(text || '').normalize('NFKC').replace(/[廣機號錢帳戶純風險錄應貨結賺萬張來購營銷聯繫穩無經驗註冊務單轉碼領]/g,c=>AD_TRADITIONAL[c]).replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 export function normalizeDomain(value) {
@@ -157,7 +158,7 @@ export function validateWord(word) {
 }
 
 export function parseCommand(text, botUsername) {
-  const match = /^\/([a-z]+)(?:@([a-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec((text || '').trim());
+  const match = /^\/([a-z]+|漏拦)(?:@([a-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec((text || '').trim());
   if (!match || (match[2] && match[2].toLowerCase() !== botUsername.toLowerCase())) return null;
-  return { command: match[1].toLowerCase(), arg: (match[3] || '').trim() };
+  return { command: match[1]==='漏拦'?'missed':match[1].toLowerCase(), arg: (match[3] || '').trim() };
 }

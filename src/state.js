@@ -18,6 +18,7 @@ import { ScreeningMethods } from './state/screening.js';
 import { NoticesMethods } from './state/notices.js';
 import { CommunityMethods } from './state/community.js';
 import { AppealMethods } from './state/appeals.js';
+import { OperationsMethods, operationSteps } from './state/operations.js';
 
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
@@ -122,7 +123,7 @@ export class GuardState extends DurableObject {
     // Register with the global admin object only when the title changes (and
     // at least daily), instead of on every message, so group traffic does not
     // all funnel through that single object.
-    const source = update.chat_join_request?.chat || (update.message || update.edited_message || update.callback_query?.message)?.chat;
+    const source = update.chat_member?.chat || update.chat_join_request?.chat || (update.message || update.edited_message || update.callback_query?.message)?.chat;
     // Callbacks from a private verification chat are routed here too; never
     // register that private chat as a group.
     const chat = ['group', 'supergroup'].includes(source?.type) ? source : null;
@@ -134,6 +135,7 @@ export class GuardState extends DurableObject {
     // Schedule before acknowledging durable receipt; an alarm survives request termination.
     await this.schedule(Date.now() + 200);
     const id = `u:${update.update_id}`;
+    this.write('health:last-received',new Date().toISOString());
     this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,due,created) VALUES (?,?,?,?)', id, JSON.stringify(update), Date.now(), Date.now());
     return { accepted: true };
   }
@@ -193,6 +195,7 @@ export class GuardState extends DurableObject {
   }
   async runJob(job) {
     let plan = job.plan ? JSON.parse(job.plan) : null;
+    let activeOp;
     if(job.id.startsWith('verification-timeout:') && !plan?.ops?.[0]?.done){
       const clear=plan?.ops?.find(x=>x.local==='clearVerification');
       if(!clear || this.verification(clear.userId)?.expires!==clear.expires){
@@ -216,12 +219,14 @@ export class GuardState extends DurableObject {
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);
       }
       const tg = telegram(this.env.BOT_TOKEN);
+      let deferredDeleteError;
       if(job.id.startsWith('federation:') && await this.env.GUARD_STATE.getByName('admin').caseReversed(plan.entry.caseId)){
         this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
         await this.env.GUARD_STATE.getByName('admin').caseStatus(plan.entry.caseId,plan.entry.chatId,{status:'cancelled'});return;
       }
       for (const op of plan.ops) {
         if (op.done) continue;
+        activeOp=op;
         if(plan.recovery && JSON.stringify(this.memberBan(plan.recovery.userId))!==JSON.stringify(plan.recovery.ban)){throw Object.assign(Error('成员已有新的处罚，验证解封已停止，请重新核对'),{retryable:false});}
         if(['banChatMember','unbanChatMember','declineChatJoinRequest'].includes(op.method)&&job.id.startsWith('verification-timeout:')&&!this.verification(op.params.user_id)){op.skipped='验证已由管理员通过';op.done=true;continue;}
         if(op.verificationPromptFor&&!this.verification(op.verificationPromptFor)){op.skipped='验证已完成，不发送旧验证提示';op.done=true;continue;}
@@ -230,8 +235,9 @@ export class GuardState extends DurableObject {
         } else if(op.local==='case-register'){await this.env.GUARD_STATE.getByName('admin').ensureCase(op.body);
         } else if(op.local==='federation-dispatch'){await this.env.GUARD_STATE.getByName('admin').dispatchFederation(op.caseId);
         } else if(op.local==='case-unban'){
-          if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});op.undoOutcome='success';}
+          if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
+        } else if(op.local==='missed-record'){this.saveMissedRecord(op.body);
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
         } else if(op.local==='notice-progress'){await this.env.GUARD_STATE.getByName('admin').noticeProgress(op.noticeId,op.line,true);
@@ -252,6 +258,7 @@ export class GuardState extends DurableObject {
           } else {
             try {
               if(op.trackCase){
+                if(job.id.startsWith('federation:')&&this.read('allow:'+op.params.user_id))op.skipped='管理员已信任该成员，不再次联防封禁';
                 if(op.previouslyBanned===undefined){const member=await this.member(tg,op.params.chat_id,op.params.user_id);if(ADMIN_STATUS.includes(member.status)||this.owners().includes(String(op.params.user_id))) {op.skipped='目标是管理员或所有者';}op.previouslyBanned=member.status==='kicked';this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);}
                 if(await this.env.GUARD_STATE.getByName('admin').caseReversed(op.trackCase))op.skipped='联防记录已撤销';
               }
@@ -269,24 +276,28 @@ export class GuardState extends DurableObject {
               // Best-effort steps (a private prompt, a join request someone
               // else already handled) must not block or retry the whole plan.
               else if (op.optional && [400, 403].includes(error.code)) { op.skipped = String(error.message || '').slice(0, 120) || '未完成'; }
+              else if(op.method==='deleteMessage' && plan.ops.some(x=>x.method==='banChatMember')){op.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);deferredDeleteError=error;continue;}
               else throw error;
             }
           }
         }
-        op.done = true;op.doneAt=Date.now();
+        op.done = true;op.doneAt=Date.now();delete op.error;
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?', JSON.stringify(plan), job.id);
         if(op.trackCase)await this.env.GUARD_STATE.getByName('admin').caseStatus(op.trackCase,op.params.chat_id,{status:op.skipped?'skipped':'success',error:null,owned:this.read(`ban-owner:${op.params.user_id}`)===op.trackCase});
       }
+      if(deferredDeleteError)throw deferredDeleteError;
       for(const op of plan.ops.filter(x=>x.trackCase))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.trackCase,op.params.chat_id,{status:op.skipped?'skipped':'success',error:null,owned:this.read(`ban-owner:${op.params.user_id}`)===op.trackCase});
       for(const op of plan.ops.filter(x=>x.local==='case-unban'))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.caseId,op.chatId,{undoStatus:op.undoOutcome});
+      if(plan.entry)this.recordInviteOutcome(plan.entry,plan.ops);
       this.write('health:last-completion',{at:new Date().toISOString(),latencyMs:Date.now()-job.created});
-      if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.serviceCleanup ? 'deleteServiceMessage' : x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
+      if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, operationSteps:operationSteps(plan.ops,'done'), outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.serviceCleanup ? 'deleteServiceMessage' : x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
       this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?", job.id);
       // Owner notice with an undo button. Manual admin bans and per-group
       // federation copies are left out; the source group's ban covers the case.
       if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban','verification-timeout-kick'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
         await this.env.GUARD_STATE.getByName('admin').noticeBan(this.withProfile(plan.entry)).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
     } catch (error) {
+      if(plan){if(plan.entry)this.recordInviteOutcome(plan.entry,plan.ops);const failedOp=activeOp&&!activeOp.done&&!activeOp.skipped?activeOp:plan.ops.find(x=>!x.done&&!x.skipped&&!x.error);if(failedOp)failedOp.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);}
       if(job.id.startsWith('verification-timeout:') && error.code===403){error.retryable=true;error.retryAfter=1800;}
       const attempts = job.attempts + 1;
       const retry = error.retryable !== false && attempts < 6 && Date.now() - job.created < DAY;
@@ -295,7 +306,7 @@ export class GuardState extends DurableObject {
       const delay = Math.max(Number(error.retryAfter || 0) * 1000, Math.min(300000, 2000 * 2 ** attempts));
       this.sql.exec('UPDATE jobs SET attempts=?,status=?,due=? WHERE id=?', attempts, retry ? 'pending' : 'failed', Date.now() + delay, job.id);
       const failedUpdate = JSON.parse(job.payload); const msg = failedUpdate.message || failedUpdate.edited_message || failedUpdate.callback_query?.message;
-      this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
+      this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, operationSteps:operationSteps(plan?.ops,retry?'pending':'failed'), steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
@@ -343,7 +354,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, OperationsMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);

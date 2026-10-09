@@ -210,3 +210,8 @@ test('账号供应广告需产品、供应、生产及售后信号；正常求�
   const candidate='新批次纯手工 Nextdoor，有需要的来';
   assert.equal(aiReviewCandidate(candidate,classify(msg(candidate),[])),true);
 });
+
+
+test('中文漏拦指令只接受本机器人目标',()=>{assert.deepEqual(parseCommand('/漏拦@GuardBot','GuardBot'),{command:'missed',arg:''});assert.equal(parseCommand('/漏拦@OtherBot','GuardBot'),null);});
+
+test('繁体及拆词广告归一化与普通聊天保持区别',()=>{assert.equal(classify(msg('替我收錢 一天7k'),[],false).permanentBan,true);assert.equal(classify(msg('手機拍照怎麼匯出？'),[],false).permanentBan,false);assert.equal(normalize('無需經驗'),normalize('无需经验'));});

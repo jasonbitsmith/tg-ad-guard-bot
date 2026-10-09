@@ -9,6 +9,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     export class GuardState extends Base {
       constructor(ctx,env) { super(ctx,env); }
       owners(){return this.read('test:owners') || super.owners();}
+      async isolateOperationsTest(){this.sql.exec('DELETE FROM samples');await this.broadcastSamplesChanged();}
       seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
       seedLogTest(data){this.log(data);}
       readRecordTest(key){return this.read(key);}
@@ -141,14 +142,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     failures.set('deleteMessage:-115',{error_code:429,description:'rate limit',parameters:{retry_after:90}});
     await send(update(-115,'兼职招聘 私聊我 A'));await tick(-115);
     await send(update(-115,'兼职招聘 私聊我 B'));const before=await tick(-115);
-    assert.equal(before.data.pending,2);assert.equal(actions(-115).length,1);
+    assert.equal(before.data.pending,2);assert.equal(actions(-115).length,2);
     const after=await tick(-115,true);assert.equal(after.data.pending,0);
     assert.ok(after.data.logs.filter(x=>x.outcome==='success').every(x=>x.action==='delete-and-permanent-ban' && x.warnings===undefined));
   });
-  await t.test('403 删消息失败不继续禁言、不虚报成功', async () => {
+  await t.test('403 删消息失败仍封禁明确广告，逐步报告失败', async () => {
     failures.set('deleteMessage:-106',{error_code:403,description:'not enough rights'});
     await send(update(-106,'兼职招聘 私聊我 稳赚 https://ad.example'));const a=await tick(-106);
-    assert.equal(a.data.failed,1);assert.equal(a.data.logs[0].outcome,'failed');assert.equal(actions(-106).length,1);
+    assert.equal(a.data.failed,1);assert.equal(a.data.logs[0].outcome,'failed');assert.equal(actions(-106).length,2);assert.ok(a.data.logs[0].operationSteps.some(x=>x.method==='deleteMessage'&&x.status==='failed'));assert.ok(a.data.logs[0].operationSteps.some(x=>x.method==='banChatMember'&&x.status==='success'));
   });
   await t.test('管理员身份查询失败不会按普通用户处罚', async () => {
     failures.set('getChatMember:-107',{error_code:503,description:'unavailable'});
@@ -891,7 +892,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
     webhookState={...webhookState,allowed_updates:['message','edited_message','my_chat_member']};
     const result=await global.ensureWebhookUpdates();
-    assert.deepEqual(result.fixed,['callback_query','chat_join_request']);
+    assert.deepEqual(result.fixed,['callback_query','chat_join_request','chat_member']);
     const set=calls.findLast(c=>c.method==='setWebhook');
     assert.equal(set.params.url,'https://bot.test/webhook/path');assert.equal(set.params.secret_token,'verify');
     assert.ok(set.params.allowed_updates.includes('callback_query')&&set.params.allowed_updates.includes('message'));
@@ -988,6 +989,70 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const before=actions(-411).length;
     await send(update(-411,'GV 被停用了有解决办法吗？',{from:{id:7102},message_thread_id:123}));await tick(-411);
     assert.equal(actions(-411).length,before);
+  });
+
+  await t.test('管理员中文漏拦指令保存正文图片与话题、处罚并准备联防，成员不能滥用', async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-9001'),global=ns.getByName('admin');
+    await g.editScreening(false,false,true);await global.setFederation('-9001',true);await global.setFederation('-9002',true);
+    await global.isolateOperationsTest();
+    const target={message_id:987,from:{id:7501,first_name:'广告者'},photo:[{file_unique_id:'missed-photo',file_id:'photo'}],caption:'全新手工账号 登录包保 支持一手测试',message_thread_id:77};
+    const u=update(-9001,'/漏拦',{from:{id:99},reply_to_message:target,message_thread_id:77});
+    await send(u);await send(u);await tick(-9001);
+    assert.equal(actions(-9001).filter(x=>x.method==='banChatMember').length,1);
+    const records=await g.missedRecords();assert.equal(records.length,1);assert.equal(records[0].photoId,'missed-photo');assert.equal(records[0].topicId,77);assert.equal(records[0].text,target.caption);
+    const samples=await global.listSamples();assert.ok(samples.some(x=>x.kind==='photo'&&x.value==='missed-photo'&&x.status==='pending'));
+    assert.ok(samples.some(x=>x.kind==='text'&&x.label==='漏拦广告正文（待审核）'));
+    assert.ok((await global.searchCases({userId:'7501'})).cases.length);
+    await send(update(-9001,'/missed',{from:{id:7502},reply_to_message:target}));await tick(-9001);assert.equal(actions(-9001).filter(x=>x.method==='banChatMember').length,1);
+    assert.ok((await g.operationList()).some(x=>x.action==='missed-ad-confirmed'&&x.steps.some(y=>y.method==='banChatMember'&&y.status==='success')));
+  });
+  await t.test('不同成员正常重复讨论不会因群级指纹被封禁',async()=>{
+    const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9003');await g.seedRecordTest('config',{keywords:[],aiReviewEnabled:false,casEnabled:false,profileCheckEnabled:false});
+    for(const id of [7511,7512,7513]){await send(update(-9003,'香港节点今天的网络速度怎么样？',{from:{id}}));await tick(-9003);}
+    assert.equal(actions(-9003).length,0);
+  });
+  await t.test('应急模式临时限制新人媒体，到期/手动关闭恢复，私聊申请加强验证',async()=>{
+    const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9004');await g.seedRecordTest('config',{keywords:[],aiReviewEnabled:false,casEnabled:false,profileCheckEnabled:false});await g.editNewMemberMediaGuard(false,30);
+    await g.seedRecordTest('join:7521',Date.now());await g.setEmergency(true,5);
+    const photo={from:{id:7521},sticker:{file_unique_id:'normal-sticker'}};
+    await send(update(-9004,'',photo));const initialEmergency=await tick(-9004);assert.equal(actions(-9004).filter(x=>x.method==='deleteMessage').length,1,JSON.stringify(initialEmergency.data.logs));assert.equal(actions(-9004).filter(x=>x.method==='banChatMember').length,0);
+    const request={chat:{id:-9004,type:'supergroup'},from:{id:7522},user_chat_id:7522};await send({update_id:++seq,chat_join_request:request});await tick(-9004);assert.equal((await g.verification('7522')).mode,'button');
+    await g.setEmergency(false,5);await send(update(-9004,'',photo));await tick(-9004);assert.equal(actions(-9004).filter(x=>x.method==='deleteMessage').length,1);
+    assert.equal((await g.config()).newMemberMediaGuard,false);await g.seedRecordTest('raid:until',Date.now()-1);assert.equal((await g.raidState()).active,false);
+  });
+  await t.test('明确广告爆发自动开启防护、停止后抑制自动重开',async()=>{
+    const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9005');await g.editScreening(false,false,true);await g.editRaid(true,2,5);
+    for(const id of [7531,7532]){await send(update(-9005,'替我收钱 一天7k',{from:{id}}));await tick(-9005);}
+    assert.equal((await g.raidState()).active,true);await g.setEmergency(false,5);
+    for(const id of [7533,7534]){await send(update(-9005,'替我收钱 一天7k',{from:{id}}));await tick(-9005);}
+    assert.equal((await g.raidState()).active,false);
+  });
+  await t.test('邀请来源只保存哈希、来源名称，去重入群并关联广告账号',async()=>{
+    const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9006');await g.editScreening(false,false,true);
+    const link={invite_link:'https://t.me/+private-invite-token',name:'网站入口'},chat={id:-9006,type:'supergroup',title:'来源测试'};
+    const u={update_id:++seq,chat_member:{chat,old_chat_member:{status:'left'},new_chat_member:{status:'member',user:{id:7541}},invite_link:link}};
+    await send(u);await send(u);await tick(-9006);let stats=await g.inviteStats();assert.equal(stats.sources.length,1);assert.equal(stats.sources[0].joins,1);assert.ok(!JSON.stringify(stats).includes('private-invite-token'));
+    await send(update(-9006,'替我收钱 一天7k',{from:{id:7541}}));await tick(-9006);stats=await g.inviteStats();assert.equal(stats.sources[0].advertisements,1);
+    await send({update_id:++seq,chat_member:{...u.chat_member,old_chat_member:{status:'member'},new_chat_member:{status:'administrator',user:{id:7541}}}});await tick(-9006);assert.equal((await g.inviteStats()).sources[0].joins,1);
+  });
+  await t.test('规则回放使用人工确认的正常和广告案例，无处罚与规则写入',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),g=ns.getByName('chat:-9007');
+    await global.editReviewExample('add',{text:'香港服务器网络讨论是正常消息',verdict:'normal',confirmed:true});await global.editReviewExample('add',{text:'兼职招聘 一天赚八千 联系我',verdict:'advertisement',confirmed:true});
+    const before=(await g.adminData()).config;const preview=await g.ruleReplay({kind:'keyword',value:'兼职'});assert.ok(preview.adHits>=1);assert.equal(preview.normalHits,0);assert.deepEqual((await g.adminData()).config,before);assert.equal(actions(-9007).length,0);
+    assert.ok((await g.ruleReplay({kind:'keyword',value:'香港'})).normalHits>=1);
+  });
+  await t.test('成员恢复取消联防，保留后续封禁，单群信任后联防不再封回',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),g=ns.getByName('chat:-9008');
+    await g.seedRecordTest('chat',{id:-9008,type:'supergroup',title:'恢复测试'});await global.register({id:-9008,title:'恢复测试'});await global.setFederation('-9008',true);
+    await g.seedRecordTest('member-ban:7551',{action:'delete-and-permanent-ban',jobId:'older'});await g.seedRecordTest('ban-owner:7551','older-case');
+    await global.ensureCase({id:'older-case',userId:7551,chatId:-9008,federationTargets:[]});
+    assert.equal((await global.memberRecovery('7551')).groups.some(x=>x.id==='-9008'),true);
+    await global.recoverMember({userId:'7551',scope:'federation'});await tick(-9008);assert.equal(await g.memberBan('7551'),null);assert.equal(await global.caseReversed('older-case'),true);
+    await g.seedRecordTest('member-ban:7552',{action:'newer-ban',jobId:'newer'});await g.seedRecordTest('ban-owner:7552','newer-case');await global.ensureCase({id:'older-case-2',userId:7552,chatId:-9008,federationTargets:[]});await global.recoverMember({userId:'7552',scope:'federation'});await tick(-9008);assert.equal((await g.memberBan('7552')).action,'newer-ban');
+    await global.ensureCase({id:'new-case-3',userId:7551,chatId:-9009,federationTargets:['-9008']});const before=actions(-9008).length;await g.queueFederation('new-case-3','-9008',7551,'-9009');await tick(-9008);assert.equal(actions(-9008).length,before);
+  });
+  await t.test('全群状态总览显示权限、队列、接收时间和应急状态',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');const result=await global.operationsOverview();const group=result.groups.find(x=>x.id==='-9005');assert.ok(group);assert.ok(group.health);assert.ok(group.lastReceived);assert.equal(typeof group.permissions.deleteMessages,'boolean');assert.equal(typeof group.attention,'boolean');
   });
 
 });

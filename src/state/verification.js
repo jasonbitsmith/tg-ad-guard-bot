@@ -153,7 +153,8 @@ export class VerificationMethods {
     const config = await this.config();
     // Without a usable challenge the request is still screened, then approved,
     // so applicants are never left waiting with nobody to let them in.
-    const mode = usesChannel(this.verificationMode(config)) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim()) ? 'off' : this.verificationMode(config);
+    const selectedMode=this.raidState().active&&this.verificationMode(config)==='off'?'button':this.verificationMode(config);
+    const mode = usesChannel(selectedMode) && !/^@[a-zA-Z0-9_]{5,}$/.test(String(config.verificationChannel || '').trim()) ? 'off' : selectedMode;
     const tg = telegram(this.env.BOT_TOKEN), entry = { chatId: chat.id, chatTitle: chat.title || '', userId: String(user.id), userName: [user.first_name, user.last_name].filter(Boolean).join(' ') };
     const decline = { method: 'declineChatJoinRequest', params: { chat_id: chat.id, user_id: user.id }, optional: true };
     const screen = await this.screenMember(user, config, tg);

@@ -12,6 +12,8 @@ const who = user => `<a href="tg://user?id=${user.id}">${String(user.first_name 
 export class ModerationMethods {
   async plan(update) {
     const empty = { ops: [] };
+    await this.rememberInvite(update);
+    if(update.chat_member){this.write('chat',update.chat_member.chat);return empty;}
     if (update.chat_join_request) return this.joinRequestPlan(update.chat_join_request);
     const msg = moderationMessage(update.message || update.edited_message);
     if (!msg || !['group','supergroup'].includes(msg.chat?.type)) return empty;
@@ -45,7 +47,7 @@ export class ModerationMethods {
       const recentJoins = this.read('raid:joins', []).filter(at => at > Date.now() - 5 * 60000);
       for (const member of msg.new_chat_members) if (!member.is_bot) recentJoins.push(Date.now());
       this.write('raid:joins', recentJoins.slice(-100), 5 * 60000);
-      const raidStarted = config.raidEnabled && recentJoins.length >= config.raidJoinLimit;
+      const raidStarted = !this.read('raid:suppressed') && config.raidEnabled && recentJoins.length >= config.raidJoinLimit;
       if (raidStarted) this.write('raid:until', Date.now() + config.raidMinutes * 60000, config.raidMinutes * 60000);
       const raidActive = this.read('raid:until', 0) > Date.now();
       const blocked = new Map();
@@ -81,6 +83,7 @@ export class ModerationMethods {
         // Editing an old command must not re-run a destructive operation.
         if (update.edited_message) return empty;
         if (command.command === 'spam' && await this.privileged(tg, chatId, msg.from.id)) return this.spamPlan(msg,tg);
+        if (command.command === 'missed' && await this.privileged(tg,chatId,msg.from.id)) return this.missedPlan(msg,tg);
         if (command.command === 'report') return this.reportPlan(msg, tg, command.arg);
         if (['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','ban','kick'].includes(command.command) && await this.privileged(tg, chatId, msg.from.id)) return this.commandPlan(command, msg, tg);
         const note = this.findKnowledgeCommand(command.command, await this.config());
@@ -154,7 +157,9 @@ export class ModerationMethods {
     }
     const linkQuarantine = policy.newMemberLinkGuard && joined > Date.now() - policy.newMemberLinkMinutes * 60000 && verdict.hasLink;
     const hasMedia = !!(msg.photo?.length || msg.video || msg.animation || msg.document || msg.audio || msg.voice || msg.video_note || msg.sticker);
-    const mediaQuarantine = policy.newMemberMediaGuard && joined > Date.now() - policy.newMemberMediaMinutes * 60000 && hasMedia;
+    const emergencyNewcomer=this.raidState().active && joined>Date.now()-120*60000;
+    const mediaQuarantine = ((policy.newMemberMediaGuard && joined>Date.now()-policy.newMemberMediaMinutes*60000)||emergencyNewcomer) && hasMedia;
+    if(emergencyNewcomer && verdict.hasLink && !linkQuarantine && !verdict.permanentBan && !verdict.deleteOnKeyword)return {ops:[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}],entry:{chatId,userId:senderId,messageId:msg.message_id,action:'emergency-link-quarantine',reasons:['应急模式：暂时限制新成员链接，不仅凭链接封号']}};
     if (linkQuarantine) { verdict.score = Math.max(4, verdict.score); verdict.reasons.push(`新成员链接隔离（入群 ${policy.newMemberLinkMinutes} 分钟内）`); }
     const sampleRules = await this.cachedSamples();
     const sampleHits = sampleMatches(msg, sampleRules);
@@ -184,18 +189,7 @@ export class ModerationMethods {
       verdict.score = Math.max(4, verdict.score);
       verdict.reasons.push(repeat >= policy.repeatThreshold ? `60 秒内相同内容 ${repeat} 次（含交替刷屏）` : `60 秒内消息 ${samples.length} 条`);
     }
-    // Coordinated spam often rotates accounts to evade per-sender flood limits.
-    // Keep a short group-scoped fingerprint window only for substantial text.
-    if (fingerprint.length >= 6) {
-      const key = `groupflood:${fingerprint.slice(0, 160)}`;
-      let groupSamples = this.read(key, []).filter(x => x.at > Date.now() - 10 * 60000 && x.id !== msg.message_id);
-      groupSamples.push({ id: msg.message_id, at: Date.now(), senderId });
-      groupSamples = groupSamples.slice(-50); this.write(key, groupSamples, 15 * 60000);
-      if (new Set(groupSamples.map(x => x.senderId)).size >= 2) {
-        verdict.score = Math.max(4, verdict.score);
-        verdict.reasons.push('10 分钟内多个账号重复相同内容');
-      }
-    }
+    this.observeCampaign(text,senderId,msg.message_id,verdict);
     let aiReview;
     if(policy.aiReviewEnabled&&aiReviewCandidate(reviewText,verdict)){
       aiReview=await this.reviewWithAi(msg,reviewText);
@@ -213,13 +207,14 @@ export class ModerationMethods {
     }
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine) return empty;
     const entry = { aiReview, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
-    if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, `新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
+    if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, emergencyNewcomer?'应急模式：近两小时加入成员的媒体暂时隔离':`新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
     if (msg.sender_chat) {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     }
+    if(verdict.permanentBan || verdict.deleteOnKeyword)await this.observeAdBurst(msg,policy);
     ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
     const federationTargets = guest ? [] : await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
     // Linked groups are dispatched to independent durable jobs by runJob.
