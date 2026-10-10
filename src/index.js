@@ -3,11 +3,12 @@ import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 import { isAutomatedClient } from './state/links.js';
+import { BANNER_BASE64 } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.19.2';
+export const VERSION = '2.20.0';
 const COOKIE = '__Host-guard_session';
-const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
+const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
 async function bookscapeState(state, path, body) {
@@ -181,7 +182,7 @@ async function mutateAdmin(request,env,url,state,path){
   }
   if (request.method === 'POST' && path === 'welcome-rules') {
     const body = await readJson(request, 8192);
-    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest, showCount: body.showCount }));
+    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest, showCount: body.showCount, banner: body.banner }));
   }
   if (request.method === 'POST' && path === 'welcome-preview') {
     const body = await readJson(request, 4096);
@@ -270,6 +271,8 @@ export default {
       return new Response(null, { status: 302, headers: { 'Location': target, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' } });
     }
     if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true, version: VERSION });
+    // Default banner on welcome cards; Telegram fetches it by URL.
+    if (url.pathname === '/welcome-banner.jpg' && ['GET', 'HEAD'].includes(request.method)) return new Response(request.method === 'HEAD' ? null : Uint8Array.from(atob(BANNER_BASE64), c => c.charCodeAt(0)), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' } });
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
       try { return await admin(request, env, url); }
       catch (error) { return json({ error: error.retryable ? '上游暂时不可用，请稍后重试' : String(error.message).slice(0, 300) }, error.retryable ? 503 : 400); }
