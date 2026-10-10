@@ -43,14 +43,6 @@ export class SettingsMethods {
     this.log({ action: `domain-${list}-${action}`, actorId: 'web-admin', text: domain, outcome: 'success' });
     return { allowlist: config.domainAllowlist, denylist: config.domainDenylist };
   }
-  async editWelcome(welcomeMessage, rulesMessage) {
-    if (typeof welcomeMessage !== 'string' || typeof rulesMessage !== 'string' || welcomeMessage.length > 2500 || rulesMessage.length > 2500) throw new Error('欢迎语和群规均不能超过 2500 个字符');
-    const config = await this.config();
-    config.welcomeMessage = welcomeMessage.trim(); config.rulesMessage = rulesMessage.trim();
-    this.saveConfig(config, '欢迎语与群规');
-    this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
-    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage };
-  }
   async editVerification(mode, minutes, channel, timeoutAction = 'ban') {
     if (!['off', 'math', 'button', 'channel', 'choice'].includes(mode)) throw new Error('无效验证方式');
     if (!['ban', 'kick'].includes(timeoutAction)) throw new Error('无效的超时处理方式');

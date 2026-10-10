@@ -5,7 +5,7 @@ import { channelStatus, editPostCaption } from './bookscape.js';
 import { isAutomatedClient } from './state/links.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.18.0';
+export const VERSION = '2.19.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -181,7 +181,11 @@ async function mutateAdmin(request,env,url,state,path){
   }
   if (request.method === 'POST' && path === 'welcome-rules') {
     const body = await readJson(request, 8192);
-    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage));
+    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest, showCount: body.showCount }));
+  }
+  if (request.method === 'POST' && path === 'welcome-preview') {
+    const body = await readJson(request, 4096);
+    return json(await group(env, body.chatId).welcomePreview(String(body.chatId)));
   }
   if (request.method === 'POST' && path === 'verification') {
     const body = await readJson(request, 4096);
@@ -303,13 +307,19 @@ export default {
     // to the group being joined.
     if(update.chat_member?.chat && ['group','supergroup'].includes(update.chat_member.chat.type)){try{await group(env,update.chat_member.chat.id).enqueue(update);return new Response('OK');}catch{return new Response('Retry later',{status:503});}}
     const joinRequest = update.chat_join_request;
-    const requestCallback = /^vj:(-\d{1,16}):/.exec(String(update.callback_query?.data || ''));
+    const requestCallback = /^(?:vj:(-\d{1,16}):|wr:(-\d{1,16})$)/.exec(String(update.callback_query?.data || ''));
     if ((joinRequest?.chat && ['group','supergroup'].includes(joinRequest.chat.type)) || requestCallback) {
-      try { await group(env, joinRequest ? joinRequest.chat.id : requestCallback[1]).enqueue(update); return new Response('OK'); }
+      try { await group(env, joinRequest ? joinRequest.chat.id : requestCallback[1] || requestCallback[2]).enqueue(update); return new Response('OK'); }
       catch { console.error(JSON.stringify({ event: 'enqueue_failed', updateId: update.update_id })); return new Response('Retry later', { status: 503 }); }
     }
     const privateMessage = update.message;
     if(privateMessage?.chat?.type==='private'&&privateMessage.text?.trim()==='/myid'){await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text:'你的 Telegram 用户 ID：'+privateMessage.from.id+'。请把这个数字发给群管理员，以便查找验证记录。'});return new Response('OK');}
+    // The 📜 button on a welcome card opens the bot with /start rules<group id digits>.
+    const rulesLink=privateMessage?.chat?.type==='private'?/^\/start\s+rules(\d{1,16})$/.exec(String(privateMessage.text||'').trim()):null;
+    if(rulesLink){
+      let text;try{text=await group(env,'-'+rulesLink[1]).rulesForPrivate();}catch{text='暂时无法读取群规，请稍后再试。';}
+      await telegram(env.BOT_TOKEN)('sendMessage',{chat_id:privateMessage.chat.id,text,parse_mode:'HTML',disable_web_page_preview:true}).catch(()=>{});return new Response('OK');
+    }
     // Anyone else who opens the bot (or asks to appeal) sees their bans and an appeal button.
     if (privateMessage?.chat?.type === 'private' && Number.isSafeInteger(privateMessage.from?.id) && !owners(env).has(String(privateMessage.from.id)) && /^(\/start|\/appeal|申诉)(?:@\w+)?(?:\s|$)/i.test(String(privateMessage.text || '').trim())) {
       try { await globalState(env).appealStart(privateMessage.from, privateMessage.chat.id); } catch { console.error(JSON.stringify({ event: 'appeal_start_failed', updateId: update.update_id })); }

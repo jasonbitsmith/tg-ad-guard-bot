@@ -21,6 +21,7 @@ import { AppealMethods } from './state/appeals.js';
 import { ProfileMethods } from './state/profile.js';
 import { OperationsMethods, operationSteps } from './state/operations.js';
 import { LinksMethods } from './state/links.js';
+import { WelcomeMethods } from './state/welcome.js';
 
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
@@ -273,6 +274,7 @@ export class GuardState extends DurableObject {
                 if(op.method==='banChatMember'){this.write(`member-ban:${op.params.user_id}`,{action:plan.entry?.action||'ban',jobId:job.id});if(op.trackCase && !op.previouslyBanned)this.write(`ban-owner:${op.params.user_id}`,op.trackCase);else this.remove(`ban-owner:${op.params.user_id}`);}
                 if(op.method==='unbanChatMember'){this.remove(`ban-owner:${op.params.user_id}`);if(!plan.recovery)this.write(`member-ban:${op.params.user_id}`,{action:'unbanned',jobId:job.id});}
               }
+              if (op.remember && Number.isSafeInteger(op.result?.message_id)) this.write(op.remember, op.result.message_id, 2 * DAY);
               if (op.verificationPromptFor && Number.isSafeInteger(op.result?.message_id)) this.sql.exec('UPDATE verifications SET prompt_message_id=? WHERE user_id=?', op.result.message_id, String(op.verificationPromptFor));
               // Short-lived bot replies are removed later by a delayed job.
               if (op.cleanupAfter && Number.isSafeInteger(op.result?.message_id)) this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', `cleanup:${op.params.chat_id}:${op.result.message_id}`, '{}', JSON.stringify({ ops: [{ method: 'deleteMessage', params: { chat_id: op.params.chat_id, message_id: op.result.message_id } }] }), Date.now() + op.cleanupAfter, Date.now());
@@ -366,7 +368,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);

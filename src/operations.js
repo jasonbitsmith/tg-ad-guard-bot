@@ -1,6 +1,7 @@
 import { DEFAULT_POLICY, CONTENT_LOCK_TYPES, validateWord, normalizeDomain } from './filters.js';
 import { validateSample } from './samples.js';
 import { normalizeAnnouncement } from './state/community.js';
+import { normalizeWelcomeButtons } from './state/welcome.js';
 
 export function validateBackup(input) {
   if(new TextEncoder().encode(JSON.stringify(input)).length>512000)throw Error('备份不能超过 500 KB');
@@ -23,12 +24,13 @@ export function validateConfig(raw){
   if(Object.keys(raw).some(key=>!Object.hasOwn(DEFAULT_POLICY,key) && key!=='keywords'))throw Error('群配置含未知字段');
   const config={...DEFAULT_POLICY,...raw};
   for(const [key,value] of Object.entries(DEFAULT_POLICY)){
-    if(['contentLocks','knowledgeBase','domainAllowlist','domainDenylist','announcements'].includes(key))continue;
+    if(['contentLocks','knowledgeBase','domainAllowlist','domainDenylist','announcements','welcomeButtons'].includes(key))continue;
     if(typeof config[key]!==typeof value)throw Error('配置类型无效：'+key);
-    if(typeof value==='number' && (!Number.isInteger(config[key]) || config[key]<(key==='quietEndNoticeMinutes'?0:1) || config[key]>1440))throw Error('配置数值无效：'+key);
+    if(typeof value==='number' && (!Number.isInteger(config[key]) || config[key]<(['quietEndNoticeMinutes','welcomeDeleteMinutes'].includes(key)?0:1) || config[key]>1440))throw Error('配置数值无效：'+key);
   }
   for(const key of ['newMemberLinkMinutes','newMemberMediaMinutes'])if(config[key]>1440)throw Error('新人隔离时限无效');
   for(const key of ['welcomeMessage','rulesMessage'])if(config[key].length>2500)throw Error('欢迎语或群规过长');
+  config.welcomeButtons=normalizeWelcomeButtons(config.welcomeButtons);
   if(!Array.isArray(raw.keywords) || raw.keywords.length>500)throw Error('关键词数量无效');config.keywords=[...new Set(raw.keywords.map(validateWord))];
   for(const key of ['domainAllowlist','domainDenylist']){if(!Array.isArray(config[key]) || config[key].length>300)throw Error('域名名单无效');config[key]=[...new Set(config[key].map(normalizeDomain))];}
   if(!['off','math','button','channel','choice'].includes(config.verificationMode) || !['ban','kick'].includes(config.verificationTimeoutAction) || config.verificationMinutes>60 || (['channel','choice'].includes(config.verificationMode) && !/^@[a-zA-Z0-9_]{5,}$/.test(config.verificationChannel)))throw Error('验证配置无效');
