@@ -3,7 +3,7 @@ import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 import { isAutomatedClient } from './state/links.js';
-import { BANNER_BASE64 } from './assets/welcome-banner.js';
+import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
 export const VERSION = '2.20.0';
@@ -271,8 +271,9 @@ export default {
       return new Response(null, { status: 302, headers: { 'Location': target, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' } });
     }
     if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true, version: VERSION });
-    // Default banner on welcome cards; Telegram fetches it by URL.
-    if (url.pathname === '/welcome-banner.jpg' && ['GET', 'HEAD'].includes(request.method)) return new Response(request.method === 'HEAD' ? null : Uint8Array.from(atob(BANNER_BASE64), c => c.charCodeAt(0)), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' } });
+    // Built-in welcome-card banners; Telegram fetches them by URL. /welcome-banner.jpg is the blue one.
+    const bannerMatch = url.pathname.match(/^\/welcome-banner(?:-([a-z]+))?\.jpg$/);
+    if (bannerMatch && Object.hasOwn(BANNERS, bannerMatch[1] || 'blue') && ['GET', 'HEAD'].includes(request.method)) return new Response(request.method === 'HEAD' ? null : Uint8Array.from(atob(BANNERS[bannerMatch[1] || 'blue']), c => c.charCodeAt(0)), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' } });
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
       try { return await admin(request, env, url); }
       catch (error) { return json({ error: error.retryable ? '上游暂时不可用，请稍后重试' : String(error.message).slice(0, 300) }, error.retryable ? 503 : 400); }

@@ -258,10 +258,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await request('domains/deny/add',{chatId:-130,domain:'spam.example'});
     const join=update(-130,'',{new_chat_members:[{id:33,first_name:'小明'}]});await send(join);await tick(-130);
     const card=calls.find(c=>c.method==='sendPhoto'&&c.params.chat_id===-130&&c.params.caption.includes('欢迎 <a href="tg://user?id=33">小明</a> 加入 测试群'));
-    assert.ok(card);assert.equal(card.params.parse_mode,'HTML');assert.equal(card.params.disable_notification,true);assert.match(card.params.photo,/\/welcome-banner\.jpg\?v=/);
+    assert.ok(card);assert.equal(card.params.parse_mode,'HTML');assert.equal(card.params.disable_notification,true);assert.match(card.params.photo,/\/welcome-banner-blue\.jpg\?v=/);
     assert.deepEqual(card.params.reply_markup.inline_keyboard,[[{text:'📜 群规',style:'primary',callback_data:'wr:-130'}]]);
     assert.match(card.params.caption,/<blockquote>🎉 你是本群第 <b>1,285<\/b> 位成员\n📜 发言前请先看一眼「群规」<\/blockquote>\n<i>⏳ 10 分钟后自动消失<\/i>$/);
-    const banner=await mf.dispatchFetch('https://bot.test/welcome-banner.jpg');assert.equal(banner.headers.get('content-type'),'image/jpeg');assert.ok((await banner.arrayBuffer()).byteLength>10000);
+    const banner=await mf.dispatchFetch('https://bot.test/welcome-banner.jpg');assert.equal(banner.headers.get('content-type'),'image/jpeg');assert.ok((await banner.arrayBuffer()).byteLength>10000);for(const theme of ['blue','purple','gold','green']){const res=await mf.dispatchFetch('https://bot.test/welcome-banner-'+theme+'.jpg');assert.equal(res.status,200);assert.ok((await res.arrayBuffer()).byteLength>10000);}assert.equal((await mf.dispatchFetch('https://bot.test/welcome-banner-pink.jpg')).status,404);
     await send(update(-130,'本群测试词 https://sub.spam.example/ad'));const result=await tick(-130);
     assert.ok(actions(-130).some(x=>x.method==='deleteMessage'));
     const stats=await (await request('keyword-stats?chatId=-130')).json();assert.ok(stats.keywords.some(x=>x.word==='本群测试词'&&x.count===1));
@@ -286,6 +286,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-131,'/rules'));await tick(-131);
     assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-131&&c.params.text.includes('· 群规</b>')&&c.params.text.includes('<b>禁止广告</b>')));
     assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}',rulesMessage:'很长的群规'.repeat(60),banner:'ftp://x'})).status,400);
+    assert.equal((await (await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}',rulesMessage:'1. 禁止广告',banner:'gold'})).json()).welcomeBanner,'gold');
     assert.equal((await (await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}\n第二行说明',rulesMessage:'很长的群规'.repeat(60),banner:'off'})).json()).welcomeBanner,'off');
     await send(update(-131,'',{new_chat_members:[{id:35,first_name:'小刚'}]}));await tick(-131);
     const long=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===-131);

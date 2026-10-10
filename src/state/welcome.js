@@ -3,7 +3,7 @@
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
 import { linkBase } from './links.js';
-import { BANNER_ID } from '../assets/welcome-banner.js';
+import { BANNER_ID, BANNERS } from '../assets/welcome-banner.js';
 
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 export const DEFAULT_WELCOME = '👋 欢迎 {name} 加入 **{group}**！';
@@ -54,15 +54,20 @@ export function normalizeWelcomeButtons(items) {
 }
 export const welcomeButtonsText = buttons => (buttons || []).map(item => `${item.text} | ${item.url}${item.style ? ` | ${STYLE_NAMES[item.style]}` : ''}`).join('\n');
 
-// Banner above the card: 'default' (built-in picture), 'off', or an https image link.
+// Banner above the card: a built-in colour ('default' = blue, or purple/gold/green), 'off', or an https image link.
 export function normalizeWelcomeBanner(value) {
   const banner = String(value ?? 'default').trim();
-  if (!banner || banner === 'default') return 'default';
-  if (banner === 'off') return 'off';
+  if (!banner || banner === 'default' || banner === 'blue') return 'default';
+  if (banner === 'off' || Object.hasOwn(BANNERS, banner)) return banner;
   if (!/^https:\/\/[^\s]+$/i.test(banner) || banner.length > 512) throw new Error('横幅图片链接无效，需以 https:// 开头');
   return banner;
 }
-export const bannerUrl = (config, env) => config.welcomeBanner === 'off' ? '' : config.welcomeBanner && config.welcomeBanner !== 'default' ? config.welcomeBanner : `${linkBase(env)}/welcome-banner.jpg?v=${BANNER_ID}`;
+export const bannerUrl = (config, env) => {
+  const banner = config.welcomeBanner || 'default';
+  if (banner === 'off') return '';
+  if (/^https:/i.test(banner)) return banner;
+  return `${linkBase(env)}/welcome-banner-${banner === 'default' ? 'blue' : banner}.jpg?v=${BANNER_ID}`;
+};
 // Photo captions hold 1024 characters of visible text.
 const visibleLength = html => html.replace(/<[^>]+>/g, '').replace(/&(amp|lt|gt);/g, '_').length;
 
