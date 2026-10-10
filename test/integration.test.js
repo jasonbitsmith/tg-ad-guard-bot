@@ -270,7 +270,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
     const cookie=login.headers.get('set-cookie').split(';')[0];
     const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
-    assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'禁止广告',buttons:'频道 https://t.me/x'})).status,400);
+    assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'禁止广告',buttons:'频道 没有链接'})).status,400);
     const saved=await (await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'1. **禁止广告**',buttons:'📣 频道 | https://t.me/x | 绿\n❓ 常见问题 ｜ https://t.me/x/2',deleteMinutes:0,keepLatest:true,enabled:true})).json();
     assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'',buttons:'频道 | https://t.me/x | 紫'})).status,400);
     assert.deepEqual(saved.welcomeButtons,[{text:'📣 频道',url:'https://t.me/x',style:'success'},{text:'❓ 常见问题',url:'https://t.me/x/2'}]);
