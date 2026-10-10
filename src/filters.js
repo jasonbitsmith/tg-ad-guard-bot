@@ -117,6 +117,12 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const commerceCardPitch = /(?:新\s*卡头|卡头|(?:电商|跨境)\s*(?:ai\s*)?专用卡|(?:电商|跨境).{0,12}(?:收款卡|支付卡|专用卡))/.test(body);
   const commercePlatforms = [...new Set((body.match(/(?:希音|shein|亚马逊|amazon|速卖通|aliexpress|ebay|temu|tiktok\s*shop|shopify)/g) || []).map(normalize))];
   const caution = /(?:警惕|谨防|骗局|诈骗|不要转账|别转账|风险|反诈)/.test(body);
+  // Regional sex-group lures such as “有没有人进上海4T群”: a join verb, a city
+  // name, then a short digit+letter code (4T, 3P) and 群. Requiring the code
+  // keeps normal questions like “有没有人进上海VPS群/搬瓦工群” out.
+  const lureCities = '(?:上海|北京|深圳|广州|杭州|成都|重庆|武汉|南京|苏州|天津|西安|长沙|郑州|东莞|佛山|厦门|福州|青岛|济南|宁波|合肥|昆明|沈阳|大连|哈尔滨|长春|南宁|南昌|贵阳|太原|石家庄|无锡|温州|珠海|海口|三亚|香港|澳门|台北|同城|本地)';
+  const cityGroupLure = new RegExp(`(?:进|加|入|拉).{0,2}${lureCities}.{0,2}(?!(?:4g|5g)群)\\d+[a-z]{1,2}群`, 'u').test(compact)
+    && !caution;
   let score = 0;
   const reasons = [];
   const add = (points, reason) => { score += points; reasons.push(reason); };
@@ -137,6 +143,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (phonePhotoGigPitch) add(4, '包含手机拍违停日结招揽');
   if (profileContactPitch) add(7, '付费拍照广告昵称附短账号引流');
   if (moneyLaunderingPitch) add(4, '包含“洗米”收益招揽');
+  if (cityGroupLure) add(4, '包含同城色情群引流话术（如“进上海4T群”）');
   if (earnHandlePitch && !moneyLaunderingPitch) add(4, '包含高收益承诺加账号引流');
   if (investmentLeadPitch) add(4, '包含投资带单收益引流');
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
@@ -148,7 +155,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 

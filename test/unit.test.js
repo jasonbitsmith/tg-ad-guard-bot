@@ -56,6 +56,17 @@ test('洗米招揽、手机拍违停和投资带单广告首条永久封禁', ()
   assert.equal(classify(msg('洗mi 是什么意思，有人知道吗'), DEFAULT_KEYWORDS).permanentBan, false);
   assert.equal(classify(msg('有人知道为什么会爆仓吗？'), DEFAULT_KEYWORDS).permanentBan, false);
 });
+test('同城色情群引流（进上海4T群）首条永久封禁，普通进群讨论不误判', () => {
+  assert.equal(classify(msg('有没有人进上海4T群'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.ok(classify(msg('有没有人进上海4T群'), DEFAULT_KEYWORDS).score >= 4);
+  assert.equal(classify(msg('谁要进 北京 3P 群，私我'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('拉你加入深圳4t群'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('有没有人进上海VPS群'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('有没有人进搬瓦工交流群'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('上海4T流量的机器怎么样'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('有人进上海5G群吗'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('警惕：有人拉你进上海4T群都是骗局'), DEFAULT_KEYWORDS).permanentBan, false);
+});
 test('账号低价售卖昵称在昵称筛查中封禁，普通买卖讨论不误判', () => {
   assert.equal(classify(msg('z支书5元QQ(全网首码注册) lh⭐'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.equal(classify(msg('出售微信号 3元一个 实名号'), DEFAULT_KEYWORDS).permanentBan, true);
