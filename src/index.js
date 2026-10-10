@@ -146,6 +146,7 @@ async function mutateAdmin(request,env,url,state,path){
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
   if(path==='members/recover'){const body=await readJson(request,4096);if(body.scope==='group')group(env,body.chatId);return json(await state.recoverMember(body));}
   if(path==='ai-review'){const body=await readJson(request,4096);return json(await group(env,body.chatId).editAiReview(body.enabled));}
+  if(path==='groups/remove'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.leaveGroup(body.chatId));}
   if(path==='verification/release'){const body=await readJson(request,4096);return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));}
   if(path==='backup/preview'){const body=await readJson(request,600000);return json(await state.previewBackup(body.backup));}
   if(path==='backup/restore'){const body=await readJson(request,4096);return json(await state.restoreBackup(body.token));}
@@ -276,7 +277,12 @@ export default {
     try { update = await readJson(request); } catch { return new Response('Bad Request', { status: 400 }); }
     if (!Number.isSafeInteger(update?.update_id)) return new Response('Bad Request', { status: 400 });
     const membership = update.my_chat_member;
-    if (membership?.chat && ['group','supergroup'].includes(membership.chat.type) && membership.new_chat_member?.status !== 'kicked') {
+    if (membership?.chat && ['group','supergroup'].includes(membership.chat.type) && ['left','kicked'].includes(membership.new_chat_member?.status)) {
+      // The bot was removed or left: drop the group from the admin list.
+      try { await globalState(env).unregister(membership.chat.id); return new Response('OK'); }
+      catch { return new Response('Retry later', { status: 503 }); }
+    }
+    if (membership?.chat && ['group','supergroup'].includes(membership.chat.type)) {
       try { await globalState(env).register(membership.chat); return new Response('OK'); }
       catch { return new Response('Retry later', { status: 503 }); }
     }
