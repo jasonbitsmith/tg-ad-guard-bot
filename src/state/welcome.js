@@ -19,19 +19,24 @@ const STYLES = { 蓝: 'primary', 蓝色: 'primary', blue: 'primary', 绿: 'succe
 const STYLE_NAMES = { primary: '蓝', success: '绿', danger: '红' };
 // Merge newcomers who join within this window into one card.
 const MERGE_MS = 5 * 60000;
-// One button per line: "按钮文字 | https://链接", optionally "| 蓝/绿/红".
+// A link in a button line: a web or tg:// address, t.me/… or an @username.
+const LINK = /(?:https?:\/\/|tg:\/\/)[^\s|｜]+|t\.me\/[^\s|｜]+|@[A-Za-z][A-Za-z0-9_]{3,31}(?![A-Za-z0-9_])/i;
+const toUrl = link => link.startsWith('@') ? `https://t.me/${link.slice(1)}` : /^t\.me\//i.test(link) ? `https://${link}` : link;
+// One button per line: "按钮文字 | 链接 | 颜色". The separator can also be a
+// colon or a space ("DMIT选购：https://…"), and @频道 becomes a t.me link.
 export function parseWelcomeButtons(value) {
   if (Array.isArray(value)) return value;
   const buttons = [];
   for (const [index, raw] of String(value || '').split('\n').entries()) {
     const line = raw.trim();
     if (!line) continue;
-    const at = line.search(/[|｜]/);
-    if (at < 0) throw new Error(`按钮第 ${index + 1} 行缺少「|」，格式：按钮文字 | 链接`);
-    const [url, color = ''] = line.slice(at + 1).split(/[|｜]/).map(part => part.trim());
+    const match = LINK.exec(line);
+    if (!match) throw new Error(`按钮第 ${index + 1} 行没有找到链接，格式：按钮文字 | 链接（链接以 https:// 开头，或写 @频道名）`);
+    const text = line.slice(0, match.index).replace(/[\s|｜:：\-—]+$/, '').trim();
+    const color = line.slice(match.index + match[0].length).replace(/^[\s|｜:：,，]+/, '').trim();
     const style = color ? STYLES[color.toLowerCase()] : undefined;
     if (color && !style) throw new Error(`按钮第 ${index + 1} 行的颜色只能填 蓝、绿 或 红`);
-    buttons.push({ text: line.slice(0, at).trim(), url, ...(style ? { style } : {}) });
+    buttons.push({ text, url: toUrl(match[0]), ...(style ? { style } : {}) });
   }
   return buttons;
 }

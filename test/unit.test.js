@@ -215,3 +215,15 @@ test('账号供应广告需产品、供应、生产及售后信号；正常求�
 test('中文漏拦指令只接受本机器人目标',()=>{assert.deepEqual(parseCommand('/漏拦@GuardBot','GuardBot'),{command:'missed',arg:''});assert.equal(parseCommand('/漏拦@OtherBot','GuardBot'),null);});
 
 test('繁体及拆词广告归一化与普通聊天保持区别',()=>{assert.equal(classify(msg('替我收錢 一天7k'),[],false).permanentBan,true);assert.equal(classify(msg('手機拍照怎麼匯出？'),[],false).permanentBan,false);assert.equal(normalize('無需經驗'),normalize('无需经验'));});
+
+test('欢迎按钮：支持 | 和中文冒号分隔、@频道名、颜色', async () => {
+  const { parseWelcomeButtons, normalizeWelcomeButtons } = await import('../src/state/welcome.js');
+  assert.deepEqual(normalizeWelcomeButtons(parseWelcomeButtons('DMIT选购：https://www.dmit.io/aff.php?aff=16962\nVPS选购工具: https://vps.jasonselect.com/\nDMIT补货雷达：@jason_vps_deal 绿\n频道 | t.me/x/2 | 红')), [
+    { text: 'DMIT选购', url: 'https://www.dmit.io/aff.php?aff=16962' },
+    { text: 'VPS选购工具', url: 'https://vps.jasonselect.com/' },
+    { text: 'DMIT补货雷达', url: 'https://t.me/jason_vps_deal', style: 'success' },
+    { text: '频道', url: 'https://t.me/x/2', style: 'danger' },
+  ]);
+  assert.throws(() => parseWelcomeButtons('只有文字'), /没有找到链接/);
+  assert.throws(() => parseWelcomeButtons('频道 https://t.me/x 紫'), /颜色/);
+});
