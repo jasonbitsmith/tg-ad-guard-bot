@@ -75,6 +75,7 @@ export class CommunityMethods {
         const top = stats.top.slice(0, 5).map((item, index) => `${['🥇', '🥈', '🥉', '4.', '5.'][index]} ${esc(item.name || (item.username ? '@' + item.username : item.userId))}：${item.messages} 条`);
         if (top.length) lines.push(...top);
       }
+      lines.push(...this.linkReportLines(from, to));
       const text = lines.join('\n').slice(0, 4000);
       const tg = telegram(this.env.BOT_TOKEN), recipients = this.ownerChats();
       const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true })));
