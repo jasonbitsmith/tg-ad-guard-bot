@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
 import { DEFAULT_KEYWORDS, DEFAULT_POLICY } from './filters.js';
 import { draftPost, inspectPost, previewPost, publishPost } from './bookscape.js';
-import { DAY, ADMIN_STATUS, LEGACY_CHATS } from './state/shared.js';
+import { DAY, ADMIN_STATUS, LEGACY_CHATS, REMOVED_CHATS } from './state/shared.js';
 import { QuietMethods } from './state/quiet.js';
 import { RegistryMethods } from './state/registry.js';
 import { FederationMethods } from './state/federation.js';
@@ -45,6 +45,10 @@ export class GuardState extends DurableObject {
     if (!columns.includes('prompt_chat_id')) this.sql.exec('ALTER TABLE verifications ADD COLUMN prompt_chat_id INTEGER');
     for (const chat of LEGACY_CHATS) {
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
+    }
+    for (const id of REMOVED_CHATS) {
+      this.sql.exec('DELETE FROM chats WHERE id=?', id);
+      this.sql.exec('DELETE FROM federation WHERE chat_id=?', id);
     }
   }
   read(key, fallback = null) {
