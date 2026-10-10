@@ -85,7 +85,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('旧版已知群在没有新消息时也会出现在后台列表', async () => {
     const state = await mf.getDurableObjectNamespace('GUARD_STATE');
     const chats = await state.getByName('admin').listChats();
-    assert.equal(chats.length, 6);
+    assert.equal(chats.length, 5);
+    assert.ok(!chats.some(chat => chat.id === '-100999888777'), '模拟群占位记录应被清除');
     assert.ok(chats.some(chat => chat.id === '-1003590410271' && chat.title === 'Jason - VPS 交流互助交流'));
   });
   await t.test('每日群防日报在北京时间九点向所有者发送', async () => {
