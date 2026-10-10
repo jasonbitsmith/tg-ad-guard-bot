@@ -181,7 +181,7 @@ async function mutateAdmin(request,env,url,state,path){
   }
   if (request.method === 'POST' && path === 'welcome-rules') {
     const body = await readJson(request, 8192);
-    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest }));
+    return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest, showCount: body.showCount }));
   }
   if (request.method === 'POST' && path === 'welcome-preview') {
     const body = await readJson(request, 4096);

@@ -14,7 +14,12 @@ const format = text => esc(text).replace(/\*\*([^*\n][^\n]*?)\*\*/g, '<b>$1</b>'
 const plain = text => String(text || '').replace(/\*\*([^*\n][^\n]*?)\*\*/g, '$1');
 const mention = member => `<a href="tg://user?id=${Number(member.id)}">${esc(member.name || '新成员')}</a>`;
 
-// One button per line: "按钮文字 | https://链接".
+// Telegram button colours; buttons without one use the app's default look.
+const STYLES = { 蓝: 'primary', 蓝色: 'primary', blue: 'primary', 绿: 'success', 绿色: 'success', green: 'success', 红: 'danger', 红色: 'danger', red: 'danger' };
+const STYLE_NAMES = { primary: '蓝', success: '绿', danger: '红' };
+// Merge newcomers who join within this window into one card.
+const MERGE_MS = 5 * 60000;
+// One button per line: "按钮文字 | https://链接", optionally "| 蓝/绿/红".
 export function parseWelcomeButtons(value) {
   if (Array.isArray(value)) return value;
   const buttons = [];
@@ -23,7 +28,10 @@ export function parseWelcomeButtons(value) {
     if (!line) continue;
     const at = line.search(/[|｜]/);
     if (at < 0) throw new Error(`按钮第 ${index + 1} 行缺少「|」，格式：按钮文字 | 链接`);
-    buttons.push({ text: line.slice(0, at).trim(), url: line.slice(at + 1).trim() });
+    const [url, color = ''] = line.slice(at + 1).split(/[|｜]/).map(part => part.trim());
+    const style = color ? STYLES[color.toLowerCase()] : undefined;
+    if (color && !style) throw new Error(`按钮第 ${index + 1} 行的颜色只能填 蓝、绿 或 红`);
+    buttons.push({ text: line.slice(0, at).trim(), url, ...(style ? { style } : {}) });
   }
   return buttons;
 }
@@ -33,17 +41,19 @@ export function normalizeWelcomeButtons(items) {
     const text = String(item?.text || '').trim(), url = String(item?.url || '').trim();
     if (!text || text.length > 32) throw new Error(`第 ${index + 1} 个按钮的文字需为 1–32 个字`);
     if (!/^(https?:\/\/[^\s]+|tg:\/\/[^\s]+)$/i.test(url) || url.length > 512) throw new Error(`第 ${index + 1} 个按钮的链接无效，需以 https:// 开头`);
-    return { text, url };
+    if (item?.style !== undefined && !Object.hasOwn(STYLE_NAMES, item.style)) throw new Error(`第 ${index + 1} 个按钮的颜色无效`);
+    return { text, url, ...(item?.style ? { style: item.style } : {}) };
   });
 }
-export const welcomeButtonsText = buttons => (buttons || []).map(item => `${item.text} | ${item.url}`).join('\n');
+export const welcomeButtonsText = buttons => (buttons || []).map(item => `${item.text} | ${item.url}${item.style ? ` | ${STYLE_NAMES[item.style]}` : ''}`).join('\n');
 
-export function welcomeText(config, members, chatTitle) {
+export function welcomeText(config, members, chatTitle, memberCount) {
   const names = members.slice(0, 10).map(mention).join('、') + (members.length > 10 ? ` 等 ${members.length} 人` : '');
   const greeting = format(config.welcomeMessage || DEFAULT_WELCOME).replaceAll('{group}', esc(chatTitle || '本群')).replaceAll('{name}', names);
   const keep = config.welcomeDeleteMinutes;
   return [
     greeting,
+    ...(config.welcomeShowCount !== false && memberCount > 0 ? [members.length === 1 ? `🎉 你是本群第 <b>${memberCount.toLocaleString('en-US')}</b> 位成员` : `🎉 群里现在共有 <b>${memberCount.toLocaleString('en-US')}</b> 位成员`] : []),
     ...(config.rulesMessage ? ['📌 发言前请先点下面的「📜 群规」看一眼'] : []),
     ...(keep > 0 ? [`<i>本消息 ${keep >= 60 && keep % 60 === 0 ? `${keep / 60} 小时` : `${keep} 分钟`}后自动删除</i>`] : []),
   ].join('\n\n');
@@ -59,9 +69,9 @@ export function welcomeKeyboard(config, chatId, botUsername) {
   const buttons = [];
   if (config.rulesMessage) {
     const short = plain(config.rulesMessage).length <= POPUP_LIMIT - 8;
-    buttons.push(short || !botUsername ? { text: '📜 群规', callback_data: `wr:${chatId}` } : { text: '📜 群规', url: `https://t.me/${botUsername}?start=rules${String(chatId).replace('-', '')}` });
+    buttons.push({ text: '📜 群规', style: 'primary', ...(short || !botUsername ? { callback_data: `wr:${chatId}` } : { url: `https://t.me/${botUsername}?start=rules${String(chatId).replace('-', '')}` }) });
   }
-  for (const item of config.welcomeButtons || []) buttons.push({ text: item.text, url: item.url });
+  for (const item of config.welcomeButtons || []) buttons.push({ text: item.text, url: item.url, ...(item.style ? { style: item.style } : {}) });
   const rows = [];
   for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
   return rows;
@@ -77,11 +87,18 @@ export class WelcomeMethods {
     const me = config.rulesMessage ? await this.me(tg).catch(() => ({})) : {};
     const keyboard = welcomeKeyboard(config, chat.id, me.username);
     const ops = [];
-    const previous = config.welcomeKeepLatest !== false && this.read('welcome:last');
+    const keepLatest = config.welcomeKeepLatest !== false;
+    const previous = keepLatest && this.read('welcome:last');
     if (Number.isSafeInteger(previous)) ops.push({ method: 'deleteMessage', params: { chat_id: chat.id, message_id: previous }, optional: true });
+    // The card being replaced keeps its people: newcomers within a few minutes share one card.
+    const recent = keepLatest && this.read('welcome:recent');
+    const fresh = new Set(members.map(member => String(member.id)));
+    if (recent && recent.at > Date.now() - MERGE_MS) members = [...recent.members.filter(member => !fresh.has(String(member.id))), ...members];
+    this.write('welcome:recent', { at: Date.now(), members: members.slice(-20) }, MERGE_MS);
+    const count = config.welcomeShowCount !== false ? await tg('getChatMemberCount', { chat_id: chat.id }).catch(() => 0) : 0;
     ops.push({
       method: 'sendMessage',
-      params: { chat_id: chat.id, text: welcomeText(config, members, chat.title), parse_mode: 'HTML', disable_web_page_preview: true, disable_notification: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) },
+      params: { chat_id: chat.id, text: welcomeText(config, members, chat.title, Number(count) || 0), parse_mode: 'HTML', disable_web_page_preview: true, disable_notification: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) },
       remember: 'welcome:last',
       ...(config.welcomeDeleteMinutes > 0 ? { cleanupAfter: config.welcomeDeleteMinutes * 60000 } : {}),
     });
@@ -121,10 +138,11 @@ export class WelcomeMethods {
     }
     if (typeof options.enabled === 'boolean') config.welcomeEnabled = options.enabled;
     if (typeof options.keepLatest === 'boolean') config.welcomeKeepLatest = options.keepLatest;
+    if (typeof options.showCount === 'boolean') config.welcomeShowCount = options.showCount;
     config.welcomeMessage = welcomeMessage.trim(); config.rulesMessage = rulesMessage.trim();
     this.saveConfig(config, '欢迎语与群规');
     this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
-    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage, welcomeEnabled: config.welcomeEnabled, welcomeButtons: config.welcomeButtons, welcomeDeleteMinutes: config.welcomeDeleteMinutes, welcomeKeepLatest: config.welcomeKeepLatest };
+    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage, welcomeEnabled: config.welcomeEnabled, welcomeButtons: config.welcomeButtons, welcomeDeleteMinutes: config.welcomeDeleteMinutes, welcomeKeepLatest: config.welcomeKeepLatest, welcomeShowCount: config.welcomeShowCount };
   }
   // Sends the saved welcome card to the owners' private chats, as if they had just joined.
   async welcomePreview(chatId) {
@@ -136,7 +154,8 @@ export class WelcomeMethods {
     const recipients = this.owners().filter(id => /^\d{1,16}$/.test(id));
     if (!recipients.length) throw new Error('未设置机器人所有者，无法发送预览');
     const keyboard = welcomeKeyboard(config, chatId, me.username);
-    const results = await Promise.allSettled(recipients.map(id => tg('sendMessage', { chat_id: Number(id), text: `👀 <i>预览：新成员进群后群里会看到下面这样</i>\n\n${welcomeText(config, [{ id, name: '新成员' }], title)}`, parse_mode: 'HTML', disable_web_page_preview: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) })));
+    const count = Number(await tg('getChatMemberCount', { chat_id: Number(chatId) }).catch(() => 0)) || 0;
+    const results = await Promise.allSettled(recipients.map(id => tg('sendMessage', { chat_id: Number(id), text: `👀 <i>预览：新成员进群后群里会看到下面这样</i>\n\n${welcomeText(config, [{ id, name: '新成员' }], title, count)}`, parse_mode: 'HTML', disable_web_page_preview: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) })));
     if (!results.some(item => item.status === 'fulfilled')) throw new Error('预览发送失败，请先私聊机器人发送一次 /start');
     return { sent: results.filter(item => item.status === 'fulfilled').length };
   }
