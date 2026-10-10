@@ -126,3 +126,11 @@ test('应急操作明确反馈，规则回放展示正常误命中而不发布',
  h.document.getElementById('chatId').value='-100123';h.document.getElementById('emergencyMinutes').value='5';await h.document.getElementById('emergencyForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('emergencyForm')});assert.match(h.document.getElementById('emergencyStatus').textContent,/已开启/);
  h.document.getElementById('replayValue').value='香港';h.document.getElementById('replayKind').value='keyword';await h.document.getElementById('replayForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('replayForm')});assert.match(h.document.getElementById('replayResult').children[0].textContent,/正常.*1/);assert.ok(!h.calls.some(x=>x.includes('keywords/add')));
 });
+
+test('开启入群欢迎但欢迎语留空时，保存会填入默认欢迎语，和预览一致',async()=>{
+  const h=harness();await flush();
+  await h.document.getElementById('loginForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('loginForm')});
+  h.document.getElementById('chatId').value='-100123';h.document.getElementById('welcomeEnabled').checked=true;
+  await h.document.getElementById('welcomeForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('welcomeForm')});
+  assert.equal(h.document.getElementById('welcomeMessage').value,'👋 欢迎 {name} 加入 **{group}**！');
+});
