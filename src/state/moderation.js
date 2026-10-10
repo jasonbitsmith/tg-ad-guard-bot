@@ -57,9 +57,8 @@ export class ModerationMethods {
         const [first, ...rest] = msg.new_chat_members.filter(member => blocked.has(member.id));
         return this.screenBanPlan(msg.chat, first, blocked.get(first.id), [msg.message_id], { ops: rest.map(member => ({ method: 'banChatMember', params: { chat_id: chatId, user_id: member.id, until_date: 0 } })) });
       }
-      const names = joining.filter(member => !member.is_bot).map(member => [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员');
-      const message = [config.welcomeMessage && config.welcomeMessage.replaceAll('{name}', names.join('、')).replaceAll('{group}', msg.chat.title || ''), config.rulesMessage && `群规：${config.rulesMessage}`].filter(Boolean).join('\n\n').slice(0, 4000);
-      const ops = [...service, ...(message ? [{ method: 'sendMessage', params: { chat_id: chatId, text: message } }] : [])];
+      const members = joining.filter(member => !member.is_bot).map(member => ({ id: member.id, name: [member.first_name, member.last_name].filter(Boolean).join(' ') || '新成员' }));
+      const ops = [...service, ...await this.welcomeOps(config, msg.chat, members, tg)];
       for (const [userId, screen] of blocked) ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: userId, until_date: 0 }, screenReasons: screen.reasons });
       const started = [];
       for (const member of joining) {
@@ -87,6 +86,7 @@ export class ModerationMethods {
         if (command.command === 'report') return this.reportPlan(msg, tg, command.arg);
         if (['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','ban','kick'].includes(command.command) && await this.privileged(tg, chatId, msg.from.id)) return this.commandPlan(command, msg, tg);
         const note = this.findKnowledgeCommand(command.command, await this.config());
+        if (!note && command.command === 'rules') { const rules = await this.rulesCommandPlan(msg); if (rules) return rules; }
         if (note) return { ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: note.response, reply_to_message_id: msg.message_id, allow_sending_without_reply: true, disable_web_page_preview: true } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'knowledge-command', outcome: 'pending', text: note.title, reasons: [`/${note.command}`] } };
         // Non-admin slash commands still pass through spam detection.
       }
@@ -250,6 +250,7 @@ export class ModerationMethods {
   }
 
   async callbackPlan(callback) {
+    if (/^wr:-\d{1,16}$/.test(String(callback?.data || ''))) return this.rulesCallbackPlan(callback);
     return this.verificationCallbackPlan(callback);
   }
 
