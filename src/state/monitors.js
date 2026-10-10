@@ -85,6 +85,12 @@ export class MonitorsMethods {
       return {decision:'unavailable',reason:'AI 判断未完成，待人工核对'};
     }finally{clearTimeout(timer);}
   }
+  // Restock buttons go through a counted short link (see links.js); if that
+  // fails for any reason the button keeps the direct affiliate URL.
+  dmitShortLink(name, target, note) {
+    try { return this.autoLink(String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40), target, note); }
+    catch { return target; }
+  }
   async monitorDmit() {
     const source = this.env.DMIT_PRICING_URL || 'https://www.dmit.io/pages/pricing';
     const channel = this.env.DMIT_NOTIFY_CHAT || '@jason_vps_deal';
@@ -106,7 +112,7 @@ export class MonitorsMethods {
             await telegram(this.env.BOT_TOKEN)('sendMessage', {
               chat_id: channel,
               text: dmitNotification(product, channel),
-              reply_markup: product.orderUrl ? { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: withDmitAffiliate(product.orderUrl, affiliateId) }]] } : undefined,
+              reply_markup: product.orderUrl ? { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: this.dmitShortLink('dmit-' + product.product, withDmitAffiliate(product.orderUrl, affiliateId), `DMIT ${product.product}`) }]] } : undefined,
               disable_web_page_preview: true,
             });
             notifications++;
@@ -141,7 +147,7 @@ export class MonitorsMethods {
           await telegram(this.env.BOT_TOKEN)('sendMessage', {
             chat_id: channel,
             text: dmitOfficialNotification(item, channel),
-            reply_markup: { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: withDmitAffiliate('https://www.dmit.io/aff.php',affiliateId) }],[{text:'🔍 查看官方补货公告',url:item.url}]] },
+            reply_markup: { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: this.dmitShortLink('dmit', withDmitAffiliate('https://www.dmit.io/aff.php',affiliateId), 'DMIT 官网') }],[{text:'🔍 查看官方补货公告',url:item.url}]] },
             disable_web_page_preview: true,
           });
           this.write(key, true, 180 * DAY);

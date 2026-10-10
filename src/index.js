@@ -2,9 +2,10 @@ import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
+import { isAutomatedClient } from './state/links.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.17.0';
+export const VERSION = '2.18.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -83,6 +84,7 @@ async function admin(request, env, url) {
     if(path==='invites')return json(await group(env,url.searchParams.get('chatId')).inviteStats());
     if(path==='members/recovery')return json(await state.memberRecovery(url.searchParams.get('query')));
     if(path==='verification/members')return json(await state.findVerificationMembers(url.searchParams.get('query')||''));
+    if (path === 'links') return json(await state.listLinks());
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'samples') return json({ samples: await state.listSamples() });
     if (path === 'federation') return json({ chats: await state.federation() });
@@ -139,6 +141,7 @@ async function admin(request, env, url) {
   }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
 }
 async function mutateAdmin(request,env,url,state,path){
+  if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
   if(path==='members/recover'){const body=await readJson(request,4096);if(body.scope==='group')group(env,body.chatId);return json(await state.recoverMember(body));}
@@ -250,6 +253,17 @@ export default {
         if (path === 'edit') return json(await editPostCaption(env, body));
         return json({ error: 'Not found' }, 404);
       } catch (error) { return json({ error: String(error.message).slice(0, 300) }, 400); }
+    }
+    // Affiliate short links: count the click, then send the visitor on.
+    const shortLink = /^\/go\/([A-Za-z0-9-]{1,40})\/?$/.exec(url.pathname);
+    if (shortLink && ['GET', 'HEAD'].includes(request.method) && env.GUARD_STATE) {
+      const agent = request.headers.get('User-Agent') || '';
+      const count = request.method === 'GET' && !isAutomatedClient(agent);
+      const visitor = count ? (await digest([request.headers.get('CF-Connecting-IP') || '', agent, new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)].join('|'))).slice(0, 32) : '';
+      let target = null;
+      try { target = await globalState(env).openLink(shortLink[1], visitor, count); } catch { return new Response('Temporarily unavailable', { status: 503, headers }); }
+      if (!target) return new Response('链接不存在', { status: 404, headers: { ...headers, 'Content-Type': 'text/plain; charset=utf-8' } });
+      return new Response(null, { status: 302, headers: { 'Location': target, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' } });
     }
     if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true, version: VERSION });
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {

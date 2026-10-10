@@ -626,10 +626,36 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     officialPostId=9877;await global.monitorDmit();
     const pushed=calls.find(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal');assert.ok(pushed);
     const buttons=pushed.params.reply_markup.inline_keyboard.flat();
-    assert.equal(new URL(buttons[0].url).searchParams.get('aff'),'16962');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
+    assert.equal(buttons[0].url,'https://bot.jasonselect.com/go/dmit');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
+    const buy=await mf.dispatchFetch('https://bot.test/go/dmit',{redirect:'manual',headers:{'User-Agent':'Mozilla/5.0 (iPhone)'}});assert.equal(buy.status,302);assert.equal(new URL(buy.headers.get('location')).searchParams.get('aff'),'16962');
     const count=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length;await global.monitorDmit();officialPostId=9875;await global.monitorDmit();assert.equal(calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length,count);assert.equal((await global.dmitStatus()).sourceType,'official-announcement');
   });
 
+  await t.test('推广短链接：跳转、计数、排除预览程序、周报排行和后台管理',async()=>{
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('set-cookie').split(';')[0];
+    const request=(path,body)=>mf.dispatchFetch('https://bot.test/admin/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+    for(const item of [{slug:'坏名字',target:'https://example.com'},{slug:'ok',target:'javascript:alert(1)'},{slug:'ok',target:'http://example.com'}])assert.equal((await request('links/upsert',{item})).status,400);
+    const saved=await request('links/upsert',{item:{slug:'BWG',target:'https://bandwagonhost.com/aff.php?aff=1',note:'搬瓦工 <CN2>'}});assert.equal(saved.status,200);
+    const data=await saved.json();const bwg=data.links.find(x=>x.slug==='bwg');assert.equal(bwg.url,'https://bot.jasonselect.com/go/bwg');assert.equal(bwg.week,0);
+    await request('links/upsert',{item:{slug:'rn',target:'https://racknerd.com/aff.php?aff=2',note:'RackNerd'}});
+    const open=(slug,agent,ip)=>mf.dispatchFetch('https://bot.test/go/'+slug,{redirect:'manual',headers:{'User-Agent':agent,'CF-Connecting-IP':ip}});
+    const first=await open('bwg','Mozilla/5.0 (iPhone)','1.1.1.1');assert.equal(first.status,302);assert.equal(first.headers.get('location'),'https://bandwagonhost.com/aff.php?aff=1');
+    await open('bwg','Mozilla/5.0 (iPhone)','1.1.1.1');await open('BWG','Mozilla/5.0 (Android)','2.2.2.2');await open('rn','Mozilla/5.0 (Mac)','3.3.3.3');
+    const preview=await open('bwg','TelegramBot (like TwitterBot)','4.4.4.4');assert.equal(preview.status,302);
+    assert.equal((await open('nothing','Mozilla/5.0','1.1.1.1')).status,404);
+    const listed=(await (await request('links')).json()).links;const counted=listed.find(x=>x.slug==='bwg');
+    assert.equal(counted.today,3);assert.equal(counted.week,3);assert.equal(counted.weekVisitors,2);assert.equal(listed[0].slug,'bwg');assert.equal(listed.find(x=>x.slug==='rn').week,1);
+    const admin=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    const today=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+    const lines=await admin.linkReportLines(today,today);assert.ok(lines[1].includes('推广链接点击'));assert.equal(lines[2],'🥇 搬瓦工 &lt;CN2&gt;：3 次 · 2 人');
+    // A link the owner edited by hand is not overwritten by the DMIT monitor.
+    await request('links/upsert',{item:{slug:'dmit',target:'https://www.dmit.io/aff.php?aff=777',note:'我的 DMIT'}});
+    assert.equal(await admin.autoLink('dmit','https://www.dmit.io/aff.php?aff=16962','DMIT 官网'),'https://bot.jasonselect.com/go/dmit');
+    assert.equal((await open('dmit','Mozilla/5.0','5.5.5.5')).headers.get('location'),'https://www.dmit.io/aff.php?aff=777');
+    const removed=await request('links/remove',{item:{slug:'rn'}});assert.equal(removed.status,200);assert.ok(!(await removed.json()).links.some(x=>x.slug==='rn'));
+    assert.equal((await open('rn','Mozilla/5.0','1.1.1.1')).status,404);
+  });
   await t.test('样本默认待审核，启用须预览；短样本和错误票据不能启用',async()=>{
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});const cookie=login.headers.get('set-cookie').split(';')[0];
