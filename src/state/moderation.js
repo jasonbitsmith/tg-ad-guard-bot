@@ -159,7 +159,8 @@ export class ModerationMethods {
     const hasMedia = !!(msg.photo?.length || msg.video || msg.animation || msg.document || msg.audio || msg.voice || msg.video_note || msg.sticker);
     const emergencyNewcomer=this.raidState().active && joined>Date.now()-120*60000;
     const mediaQuarantine = ((policy.newMemberMediaGuard && joined>Date.now()-policy.newMemberMediaMinutes*60000)||emergencyNewcomer) && hasMedia;
-    if(emergencyNewcomer && verdict.hasLink && !linkQuarantine && !verdict.permanentBan && !verdict.deleteOnKeyword)return {ops:[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}],entry:{chatId,userId:senderId,messageId:msg.message_id,action:'emergency-link-quarantine',reasons:['应急模式：暂时限制新成员链接，不仅凭链接封号']}};
+    // Decided after samples, OCR and AI review, so a clear ad is still banned.
+    const emergencyLink=emergencyNewcomer && verdict.hasLink && !linkQuarantine;
     if (linkQuarantine) { verdict.score = Math.max(4, verdict.score); verdict.reasons.push(`新成员链接隔离（入群 ${policy.newMemberLinkMinutes} 分钟内）`); }
     const sampleRules = await this.cachedSamples();
     const sampleHits = sampleMatches(msg, sampleRules);
@@ -195,19 +196,20 @@ export class ModerationMethods {
       aiReview=await this.reviewWithAi(msg,reviewText);
       if(aiReview.decision==='ad'){verdict.permanentBan=true;verdict.score=Math.max(7,verdict.score);verdict.reasons.push('AI 确认广告：'+aiReview.reason);}
       else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];}
-      else {return {ops:mediaQuarantine?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
+      else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
     }
     const knowledge = guest ? null : this.findKnowledgeTrigger(text, policy);
-    if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && knowledge) {
+    if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && !emergencyLink && knowledge) {
       const cooldown = `knowledge:${senderId}:${knowledge.id}`;
       if (!this.read(cooldown)) {
         this.write(cooldown, true, 60000);
         return { ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: knowledge.response, reply_to_message_id: msg.message_id, allow_sending_without_reply: true, disable_web_page_preview: true } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: senderId, messageId: msg.message_id, action: 'knowledge-auto-reply', reasons: [knowledge.title], text: knowledge.response.slice(0, 120) } };
       }
     }
-    if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine) return empty;
+    if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && !emergencyLink) return empty;
     const entry = { aiReview, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, emergencyNewcomer?'应急模式：近两小时加入成员的媒体暂时隔离':`新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
+    if (emergencyLink && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'emergency-link-quarantine', reasons: [...entry.reasons, '应急模式：暂时限制新成员链接，不仅凭链接封号'] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
     if (msg.sender_chat) {

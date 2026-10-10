@@ -290,17 +290,23 @@ export class GuardState extends DurableObject {
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?', JSON.stringify(plan), job.id);
         if(op.trackCase)await this.env.GUARD_STATE.getByName('admin').caseStatus(op.trackCase,op.params.chat_id,{status:op.skipped?'skipped':'success',error:null,owned:this.read(`ban-owner:${op.params.user_id}`)===op.trackCase});
       }
-      if(deferredDeleteError)throw deferredDeleteError;
+      // Owner notice with an undo button. Manual admin bans and per-group
+      // federation copies are left out; the source group's ban covers the case.
+      // A ban that worked still gets its notice when only deleting the message
+      // failed, so a wrong ban can be undone while the delete is retried.
+      const banNotice=async()=>{
+        if(plan.noticeSent || !plan.entry || job.id.startsWith('federation:') || ['ban','kick','review-resolve-ban','verification-timeout-kick'].includes(plan.entry.action) || !plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))return;
+        plan.noticeSent=true;this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);
+        await this.env.GUARD_STATE.getByName('admin').noticeBan(this.withProfile(plan.entry)).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
+      };
+      if(deferredDeleteError){await banNotice();throw deferredDeleteError;}
       for(const op of plan.ops.filter(x=>x.trackCase))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.trackCase,op.params.chat_id,{status:op.skipped?'skipped':'success',error:null,owned:this.read(`ban-owner:${op.params.user_id}`)===op.trackCase});
       for(const op of plan.ops.filter(x=>x.local==='case-unban'))await this.env.GUARD_STATE.getByName('admin').caseStatus(op.caseId,op.chatId,{undoStatus:op.undoOutcome});
       if(plan.entry)this.recordInviteOutcome(plan.entry,plan.ops);
       this.write('health:last-completion',{at:new Date().toISOString(),latencyMs:Date.now()-job.created});
       if (plan.entry) this.log({ ...plan.entry, updateId:job.id, latencyMs:Date.now()-job.created, operationSteps:operationSteps(plan.ops,'done'), outcome: plan.ops.some(x => x.skipped) ? 'partial' : 'success', steps: plan.ops.map(x => ({ method: x.serviceCleanup ? 'deleteServiceMessage' : x.method || x.local, done: x.done, skipped: x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) });
       this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?", job.id);
-      // Owner notice with an undo button. Manual admin bans and per-group
-      // federation copies are left out; the source group's ban covers the case.
-      if(plan.entry && !job.id.startsWith('federation:') && !['ban','kick','review-resolve-ban','verification-timeout-kick'].includes(plan.entry.action) && plan.ops.some(x=>x.method==='banChatMember'&&x.done&&!x.skipped))
-        await this.env.GUARD_STATE.getByName('admin').noticeBan(this.withProfile(plan.entry)).catch(error=>this.log({action:'owner-notice',outcome:'failed',error:String(error.message||'').slice(0,200)}));
+      await banNotice();
     } catch (error) {
       if(plan){if(plan.entry)this.recordInviteOutcome(plan.entry,plan.ops);const failedOp=activeOp&&!activeOp.done&&!activeOp.skipped?activeOp:plan.ops.find(x=>!x.done&&!x.skipped&&!x.error);if(failedOp)failedOp.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);}
       if(job.id.startsWith('verification-timeout:') && error.code===403){error.retryable=true;error.retryAfter=1800;}

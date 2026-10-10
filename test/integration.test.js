@@ -1035,6 +1035,25 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await g.setEmergency(false,5);await send(update(-9004,'',photo));await tick(-9004);assert.equal(actions(-9004).filter(x=>x.method==='deleteMessage').length,1);
     assert.equal((await g.config()).newMemberMediaGuard,false);await g.seedRecordTest('raid:until',Date.now()-1);assert.equal((await g.raidState()).active,false);
   });
+  await t.test('应急模式下新人发的明确广告链接仍然封禁，普通链接只删除',async()=>{
+    const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9010');await g.seedRecordTest('config',{keywords:[],aiReviewEnabled:false,casEnabled:false,profileCheckEnabled:false});await g.editNewMemberLinkGuard(false,30);
+    await g.seedRecordTest('join:7561',Date.now());await g.seedRecordTest('join:7562',Date.now());await g.setEmergency(true,5);
+    await send(update(-9010,'兼职招聘 私聊我 稳赚 https://ad.example',{from:{id:7561}}));await tick(-9010);
+    assert.ok(actions(-9010).some(x=>x.method==='banChatMember'&&x.params.user_id===7561));
+    await send(update(-9010,'教程在这里 https://docs.example/guide',{from:{id:7562}}));const {data}=await tick(-9010);
+    assert.equal(actions(-9010).filter(x=>x.method==='banChatMember'&&x.params.user_id===7562).length,0);
+    assert.ok(data.logs.some(x=>x.action==='emergency-link-quarantine'&&x.userId==='7562'));
+    assert.equal(actions(-9010).filter(x=>x.method==='deleteMessage').length,2);
+  });
+  await t.test('删消息失败但已封禁时，所有者仍收到带撤销按钮的通知且不重复',async()=>{
+    failures.set('deleteMessage:-9011',{error_code:400,description:"Bad Request: message can't be deleted"});
+    const before=calls.length;
+    await send(update(-9011,'兼职招聘 私聊我 稳赚 https://ad.example',{from:{id:7571,first_name:'广告号'}}));await tick(-9011);await tick(-9011,true);
+    assert.ok(actions(-9011).some(x=>x.method==='banChatMember'&&x.params.user_id===7571));
+    const notices=calls.slice(before).filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('已封禁')&&c.params.text.includes('7571'));
+    assert.equal(notices.length,1);assert.ok(JSON.stringify(notices[0].params.reply_markup).includes(':undo'));
+    failures.delete('deleteMessage:-9011');
+  });
   await t.test('明确广告爆发自动开启防护、停止后抑制自动重开',async()=>{
     const g=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-9005');await g.editScreening(false,false,true);await g.editRaid(true,2,5);
     for(const id of [7531,7532]){await send(update(-9005,'替我收钱 一天7k',{from:{id}}));await tick(-9005);}
