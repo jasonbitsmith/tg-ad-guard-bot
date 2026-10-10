@@ -76,7 +76,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };
       if (method === 'getMyShortDescription') result = { short_description: '' };
       if (method === 'getMyName') result = { name: 'JASON_BOT' };
-      if (method === 'sendMessage') result = { message_id: 444 };
+      if (method === 'sendMessage' || method === 'sendPhoto') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
     },
   }));
@@ -257,10 +257,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await request('keywords/add',{chatId:-130,word:'本群测试词'});
     await request('domains/deny/add',{chatId:-130,domain:'spam.example'});
     const join=update(-130,'',{new_chat_members:[{id:33,first_name:'小明'}]});await send(join);await tick(-130);
-    const card=calls.find(c=>c.method==='sendMessage'&&c.params.chat_id===-130&&c.params.text.includes('欢迎 <a href="tg://user?id=33">小明</a> 加入 测试群'));
-    assert.ok(card);assert.equal(card.params.parse_mode,'HTML');assert.equal(card.params.disable_notification,true);
-    assert.deepEqual(card.params.reply_markup.inline_keyboard,[[{text:'📜 群规',style:'primary',callback_data:'wr:-130'}]]);assert.match(card.params.text,/你是本群第 <b>1,285<\/b> 位成员/);
-    assert.match(card.params.text,/10 分钟后自动删除/);
+    const card=calls.find(c=>c.method==='sendPhoto'&&c.params.chat_id===-130&&c.params.caption.includes('欢迎 <a href="tg://user?id=33">小明</a> 加入 测试群'));
+    assert.ok(card);assert.equal(card.params.parse_mode,'HTML');assert.equal(card.params.disable_notification,true);assert.match(card.params.photo,/\/welcome-banner-blue\.jpg\?v=/);
+    assert.deepEqual(card.params.reply_markup.inline_keyboard,[[{text:'📜 群规',style:'primary',callback_data:'wr:-130'}]]);
+    assert.match(card.params.caption,/^<b>欢迎 <a href="tg:\/\/user\?id=33">小明<\/a> 加入 测试群<\/b>\n\n<blockquote>🎉 你是本群第 <b>1,285<\/b> 位成员\n📜 发言前请先点下方「群规」看一眼\n🛡 广告和骗子会被机器人自动清理<\/blockquote>\n\n<i>⏳ 10 分钟后自动消失<\/i>$/);
+    const banner=await mf.dispatchFetch('https://bot.test/welcome-banner.jpg');assert.equal(banner.headers.get('content-type'),'image/jpeg');assert.ok((await banner.arrayBuffer()).byteLength>10000);for(const theme of ['blue','purple','gold','green']){const res=await mf.dispatchFetch('https://bot.test/welcome-banner-'+theme+'.jpg');assert.equal(res.status,200);assert.ok((await res.arrayBuffer()).byteLength>10000);}assert.equal((await mf.dispatchFetch('https://bot.test/welcome-banner-pink.jpg')).status,404);
     await send(update(-130,'本群测试词 https://sub.spam.example/ad'));const result=await tick(-130);
     assert.ok(actions(-130).some(x=>x.method==='deleteMessage'));
     const stats=await (await request('keyword-stats?chatId=-130')).json();assert.ok(stats.keywords.some(x=>x.word==='本群测试词'&&x.count===1));
@@ -275,21 +276,24 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'',buttons:'频道 | https://t.me/x | 紫'})).status,400);
     assert.deepEqual(saved.welcomeButtons,[{text:'📣 频道',url:'https://t.me/x',style:'success'},{text:'❓ 常见问题',url:'https://t.me/x/2'}]);
     await send(update(-131,'',{new_chat_members:[{id:34,first_name:'<小红>'}]}));await tick(-131);
-    const card=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===-131);
-    assert.match(card.params.text,/👋 欢迎 <a href="tg:\/\/user\?id=34">&lt;小红&gt;<\/a> 加入 <b>测试群<\/b>！/);
-    assert.doesNotMatch(card.params.text,/自动删除/);
+    const card=calls.findLast(c=>c.method==='sendPhoto'&&c.params.chat_id===-131);
+    assert.match(card.params.caption,/^<b>👋 欢迎 <a href="tg:\/\/user\?id=34">&lt;小红&gt;<\/a> 加入 测试群！<\/b>\n/);
+    assert.doesNotMatch(card.params.caption,/自动消失/);assert.match(card.params.caption,/<i>👇 常用入口<\/i>$/);
     assert.deepEqual(card.params.reply_markup.inline_keyboard,[[{text:'📜 群规',style:'primary',callback_data:'wr:-131'},{text:'📣 频道',url:'https://t.me/x',style:'success'}],[{text:'❓ 常见问题',url:'https://t.me/x/2'}]]);
     await send({update_id:++seq,callback_query:{id:'wr-1',from:{id:34,first_name:'小红'},data:'wr:-131',message:{message_id:5,chat:{id:-131,type:'supergroup',title:'测试群'}}}});await tick(-131);
     const popup=calls.find(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='wr-1');
     assert.equal(popup.params.show_alert,true);assert.equal(popup.params.text,'📜 群规\n\n1. 禁止广告');
     await send(update(-131,'/rules'));await tick(-131);
     assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===-131&&c.params.text.includes('· 群规</b>')&&c.params.text.includes('<b>禁止广告</b>')));
-    await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}',rulesMessage:'很长的群规'.repeat(60)});
+    assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}',rulesMessage:'很长的群规'.repeat(60),banner:'ftp://x'})).status,400);
+    assert.equal((await (await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}',rulesMessage:'1. 禁止广告',banner:'gold'})).json()).welcomeBanner,'gold');
+    assert.equal((await (await request('welcome-rules',{chatId:-131,welcomeMessage:'嗨 {name}\n第二行说明',rulesMessage:'很长的群规'.repeat(60),banner:'off'})).json()).welcomeBanner,'off');
     await send(update(-131,'',{new_chat_members:[{id:35,first_name:'小刚'}]}));await tick(-131);
     const long=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===-131);
     // Every sendMessage in this mock returns message_id 444: the earlier card is removed first.
     assert.ok(calls.slice(0,calls.indexOf(long)).some(c=>c.method==='deleteMessage'&&c.params.chat_id===-131&&c.params.message_id===444),'新欢迎发出前删掉上一条');
     assert.deepEqual(long.params.reply_markup.inline_keyboard[0][0],{text:'📜 群规',style:'primary',url:'https://t.me/GuardBot?start=rules131'});
+    assert.match(long.params.text,/<\/b>\n第二行说明\n\n<blockquote>/);
     assert.match(long.params.text,/嗨 <a href="tg:\/\/user\?id=34">&lt;小红&gt;<\/a>、<a href="tg:\/\/user\?id=35">小刚<\/a>/,'5 分钟内进群的人合并到同一条');assert.match(long.params.text,/群里现在共有 <b>1,285<\/b> 位成员/);
     await send({update_id:++seq,message:{message_id:1,date:Math.floor(Date.now()/1000),chat:{id:7302,type:'private'},from:{id:7302,first_name:'新人'},text:'/start rules131'}});
     assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===7302&&c.params.text.includes('很长的群规')));
@@ -297,7 +301,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===7302&&c.params.text.includes('还没有设置群规')));
     assert.equal((await request('welcome-rules',{chatId:-131,welcomeMessage:'',rulesMessage:'',enabled:false})).status,200);
     const before=calls.length;await send(update(-131,'',{new_chat_members:[{id:36,first_name:'小李'}]}));await tick(-131);
-    assert.ok(!calls.slice(before).some(c=>c.method==='sendMessage'&&c.params.chat_id===-131));
+    assert.ok(!calls.slice(before).some(c=>['sendMessage','sendPhoto'].includes(c.method)&&c.params.chat_id===-131));
   });
   await t.test('联防同步广告封禁，算术验证通过后解除限制', async () => {
     const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});

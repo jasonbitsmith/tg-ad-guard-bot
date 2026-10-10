@@ -227,3 +227,16 @@ test('欢迎按钮：支持 | 和中文冒号分隔、@频道名、颜色', asyn
   assert.throws(() => parseWelcomeButtons('只有文字'), /没有找到链接/);
   assert.throws(() => parseWelcomeButtons('频道 https://t.me/x 紫'), /颜色/);
 });
+
+test('欢迎横幅：四种内置配色、自定义链接、关闭', async () => {
+  const { normalizeWelcomeBanner, bannerUrl } = await import('../src/state/welcome.js');
+  const env = {};
+  assert.equal(normalizeWelcomeBanner(''), 'default');
+  assert.equal(normalizeWelcomeBanner('blue'), 'default');
+  for (const theme of ['purple', 'gold', 'green', 'off']) assert.equal(normalizeWelcomeBanner(theme), theme);
+  assert.throws(() => normalizeWelcomeBanner('pink'), /横幅/);
+  assert.match(bannerUrl({ welcomeBanner: 'default' }, env), /\/welcome-banner-blue\.jpg\?v=/);
+  assert.match(bannerUrl({ welcomeBanner: 'gold' }, env), /\/welcome-banner-gold\.jpg\?v=/);
+  assert.equal(bannerUrl({ welcomeBanner: 'https://x.test/a.jpg' }, env), 'https://x.test/a.jpg');
+  assert.equal(bannerUrl({ welcomeBanner: 'off' }, env), '');
+});

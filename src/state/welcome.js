@@ -2,6 +2,8 @@
 // button (popup or private chat), /rules, and the admin preview.
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
+import { linkBase } from './links.js';
+import { BANNER_ID, BANNERS } from '../assets/welcome-banner.js';
 
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 export const DEFAULT_WELCOME = '👋 欢迎 {name} 加入 **{group}**！';
@@ -52,16 +54,51 @@ export function normalizeWelcomeButtons(items) {
 }
 export const welcomeButtonsText = buttons => (buttons || []).map(item => `${item.text} | ${item.url}${item.style ? ` | ${STYLE_NAMES[item.style]}` : ''}`).join('\n');
 
+// Banner above the card: a built-in colour ('default' = blue, or purple/gold/green), 'off', or an https image link.
+export function normalizeWelcomeBanner(value) {
+  const banner = String(value ?? 'default').trim();
+  if (!banner || banner === 'default' || banner === 'blue') return 'default';
+  if (banner === 'off' || Object.hasOwn(BANNERS, banner)) return banner;
+  if (!/^https:\/\/[^\s]+$/i.test(banner) || banner.length > 512) throw new Error('横幅图片链接无效，需以 https:// 开头');
+  return banner;
+}
+export const bannerUrl = (config, env) => {
+  const banner = config.welcomeBanner || 'default';
+  if (banner === 'off') return '';
+  if (/^https:/i.test(banner)) return banner;
+  return `${linkBase(env)}/welcome-banner-${banner === 'default' ? 'blue' : banner}.jpg?v=${BANNER_ID}`;
+};
+// Photo captions hold 1024 characters of visible text.
+const visibleLength = html => html.replace(/<[^>]+>/g, '').replace(/&(amp|lt|gt);/g, '_').length;
+
 export function welcomeText(config, members, chatTitle, memberCount) {
   const names = members.slice(0, 10).map(mention).join('、') + (members.length > 10 ? ` 等 ${members.length} 人` : '');
   const greeting = format(config.welcomeMessage || DEFAULT_WELCOME).replaceAll('{group}', esc(chatTitle || '本群')).replaceAll('{name}', names);
   const keep = config.welcomeDeleteMinutes;
-  return [
-    greeting,
+  // Bold headline, then the owner's own extra lines, then a quote block of tips, then a small footer.
+  const [title, ...rest] = greeting.split('\n');
+  const intro = rest.filter(line => line.trim());
+  const tips = [
     ...(config.welcomeShowCount !== false && memberCount > 0 ? [members.length === 1 ? `🎉 你是本群第 <b>${memberCount.toLocaleString('en-US')}</b> 位成员` : `🎉 群里现在共有 <b>${memberCount.toLocaleString('en-US')}</b> 位成员`] : []),
-    ...(config.rulesMessage ? ['📌 发言前请先点下面的「📜 群规」看一眼'] : []),
-    ...(keep > 0 ? [`<i>本消息 ${keep >= 60 && keep % 60 === 0 ? `${keep / 60} 小时` : `${keep} 分钟`}后自动删除</i>`] : []),
+    ...(config.rulesMessage ? ['📜 发言前请先点下方「群规」看一眼'] : []),
+    '🛡 广告和骗子会被机器人自动清理',
+  ];
+  const footer = [
+    ...(keep > 0 ? [`⏳ ${keep >= 60 && keep % 60 === 0 ? `${keep / 60} 小时` : `${keep} 分钟`}后自动消失`] : []),
+    ...(config.welcomeButtons?.length ? ['👇 常用入口'] : []),
+  ];
+  return [
+    [`<b>${title.replace(/<\/?b>/g, '')}</b>`, ...intro].join('\n'),
+    `<blockquote>${tips.join('\n')}</blockquote>`,
+    ...(footer.length ? [`<i>${footer.join(' · ')}</i>`] : []),
   ].join('\n\n');
+}
+// The Bot API call that posts a card: a photo with caption when a banner is set and the text fits.
+export function welcomeSend(config, env, chatId, text, keyboard, extra = {}) {
+  const banner = bannerUrl(config, env);
+  const markup = keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {};
+  if (banner && visibleLength(text) <= 1024) return { method: 'sendPhoto', params: { chat_id: chatId, photo: banner, caption: text, parse_mode: 'HTML', ...markup, ...extra } };
+  return { method: 'sendMessage', params: { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...markup, ...extra } };
 }
 export function rulesText(config, chatTitle) {
   return [
@@ -102,8 +139,7 @@ export class WelcomeMethods {
     this.write('welcome:recent', { at: Date.now(), members: members.slice(-20) }, MERGE_MS);
     const count = config.welcomeShowCount !== false ? await tg('getChatMemberCount', { chat_id: chat.id }).catch(() => 0) : 0;
     ops.push({
-      method: 'sendMessage',
-      params: { chat_id: chat.id, text: welcomeText(config, members, chat.title, Number(count) || 0), parse_mode: 'HTML', disable_web_page_preview: true, disable_notification: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) },
+      ...welcomeSend(config, this.env, chat.id, welcomeText(config, members, chat.title, Number(count) || 0), keyboard, { disable_notification: true }),
       remember: 'welcome:last',
       ...(config.welcomeDeleteMinutes > 0 ? { cleanupAfter: config.welcomeDeleteMinutes * 60000 } : {}),
     });
@@ -144,10 +180,11 @@ export class WelcomeMethods {
     if (typeof options.enabled === 'boolean') config.welcomeEnabled = options.enabled;
     if (typeof options.keepLatest === 'boolean') config.welcomeKeepLatest = options.keepLatest;
     if (typeof options.showCount === 'boolean') config.welcomeShowCount = options.showCount;
+    if (options.banner !== undefined) config.welcomeBanner = normalizeWelcomeBanner(options.banner);
     config.welcomeMessage = welcomeMessage.trim(); config.rulesMessage = rulesMessage.trim();
     this.saveConfig(config, '欢迎语与群规');
     this.log({ action: 'welcome-rules-update', actorId: 'web-admin', outcome: 'success' });
-    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage, welcomeEnabled: config.welcomeEnabled, welcomeButtons: config.welcomeButtons, welcomeDeleteMinutes: config.welcomeDeleteMinutes, welcomeKeepLatest: config.welcomeKeepLatest, welcomeShowCount: config.welcomeShowCount };
+    return { welcomeMessage: config.welcomeMessage, rulesMessage: config.rulesMessage, welcomeEnabled: config.welcomeEnabled, welcomeButtons: config.welcomeButtons, welcomeDeleteMinutes: config.welcomeDeleteMinutes, welcomeKeepLatest: config.welcomeKeepLatest, welcomeShowCount: config.welcomeShowCount, welcomeBanner: config.welcomeBanner };
   }
   // Sends the saved welcome card to the owners' private chats, as if they had just joined.
   async welcomePreview(chatId) {
@@ -160,7 +197,7 @@ export class WelcomeMethods {
     if (!recipients.length) throw new Error('未设置机器人所有者，无法发送预览');
     const keyboard = welcomeKeyboard(config, chatId, me.username);
     const count = Number(await tg('getChatMemberCount', { chat_id: Number(chatId) }).catch(() => 0)) || 0;
-    const results = await Promise.allSettled(recipients.map(id => tg('sendMessage', { chat_id: Number(id), text: `👀 <i>预览：新成员进群后群里会看到下面这样</i>\n\n${welcomeText(config, [{ id, name: '新成员' }], title, count)}`, parse_mode: 'HTML', disable_web_page_preview: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) })));
+    const results = await Promise.allSettled(recipients.map(id => { const card = welcomeSend(config, this.env, Number(id), welcomeText(config, [{ id, name: '新成员' }], title, count), keyboard); return tg(card.method, card.params); }));
     if (!results.some(item => item.status === 'fulfilled')) throw new Error('预览发送失败，请先私聊机器人发送一次 /start');
     return { sent: results.filter(item => item.status === 'fulfilled').length };
   }
