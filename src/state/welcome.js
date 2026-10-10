@@ -75,18 +75,23 @@ export function welcomeText(config, members, chatTitle, memberCount) {
   const names = members.slice(0, 10).map(mention).join('、') + (members.length > 10 ? ` 等 ${members.length} 人` : '');
   const greeting = format(config.welcomeMessage || DEFAULT_WELCOME).replaceAll('{group}', esc(chatTitle || '本群')).replaceAll('{name}', names);
   const keep = config.welcomeDeleteMinutes;
-  // First line is the headline; everything else sits in one quote block.
+  // Bold headline, then the owner's own extra lines, then a quote block of tips, then a small footer.
   const [title, ...rest] = greeting.split('\n');
-  const info = [
-    ...rest.filter(line => line.trim()),
+  const intro = rest.filter(line => line.trim());
+  const tips = [
     ...(config.welcomeShowCount !== false && memberCount > 0 ? [members.length === 1 ? `🎉 你是本群第 <b>${memberCount.toLocaleString('en-US')}</b> 位成员` : `🎉 群里现在共有 <b>${memberCount.toLocaleString('en-US')}</b> 位成员`] : []),
-    ...(config.rulesMessage ? ['📜 发言前请先看一眼「群规」'] : []),
+    ...(config.rulesMessage ? ['📜 发言前请先点下方「群规」看一眼'] : []),
+    '🛡 广告和骗子会被机器人自动清理',
+  ];
+  const footer = [
+    ...(keep > 0 ? [`⏳ ${keep >= 60 && keep % 60 === 0 ? `${keep / 60} 小时` : `${keep} 分钟`}后自动消失`] : []),
+    ...(config.welcomeButtons?.length ? ['👇 常用入口'] : []),
   ];
   return [
-    title,
-    ...(info.length ? [`<blockquote>${info.join('\n')}</blockquote>`] : []),
-    ...(keep > 0 ? [`<i>⏳ ${keep >= 60 && keep % 60 === 0 ? `${keep / 60} 小时` : `${keep} 分钟`}后自动消失</i>`] : []),
-  ].join('\n');
+    [`<b>${title.replace(/<\/?b>/g, '')}</b>`, ...intro].join('\n'),
+    `<blockquote>${tips.join('\n')}</blockquote>`,
+    ...(footer.length ? [`<i>${footer.join(' · ')}</i>`] : []),
+  ].join('\n\n');
 }
 // The Bot API call that posts a card: a photo with caption when a banner is set and the text fits.
 export function welcomeSend(config, env, chatId, text, keyboard, extra = {}) {

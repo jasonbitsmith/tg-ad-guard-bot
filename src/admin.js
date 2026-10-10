@@ -232,14 +232,16 @@ function welcomeFormat(text){return welcomeEsc(text).replace(/\\*\\*([^*\\n][^\\
 function renderWelcomePreview(){
   const title=(registeredChats.find(x=>String(x.id)===String(chat()))?.title)||'本群',keep=Number($('welcomeDeleteMinutes').value)||0,rules=$('rulesMessage').value.trim();
   const [head,...rest]=welcomeFormat($('welcomeMessage').value.trim()||'👋 欢迎 {name} 加入 **{group}**！').replaceAll('{group}',welcomeEsc(title)).replaceAll('{name}','<a>张三</a>').split('\\n');
-  const info=rest.filter(x=>x.trim());
-  if($('welcomeShowCount').checked)info.push('🎉 你是本群第 <b>1,285</b> 位成员');
-  if(rules)info.push('📜 发言前请先看一眼「群规」');
-  const lines=[head];if(info.length)lines.push('<blockquote>'+info.join('\\n')+'</blockquote>');
-  if(keep>0)lines.push('<i>⏳ '+(keep>=60&&keep%60===0?keep/60+' 小时':keep+' 分钟')+'后自动消失</i>');
+  const tips=[];
+  if($('welcomeShowCount').checked)tips.push('🎉 你是本群第 <b>1,285</b> 位成员');
+  if(rules)tips.push('📜 发言前请先点下方「群规」看一眼');
+  tips.push('🛡 广告和骗子会被机器人自动清理');
+  const footer=[];if(keep>0)footer.push('⏳ '+(keep>=60&&keep%60===0?keep/60+' 小时':keep+' 分钟')+'后自动消失');if($('welcomeButtons').value.trim())footer.push('👇 常用入口');
+  const lines=[['<b>'+head.replace(/<\\/?b>/g,'')+'</b>',...rest.filter(x=>x.trim())].join('\\n'),'<blockquote>'+tips.join('\\n')+'</blockquote>'];
+  if(footer.length)lines.push('<i>'+footer.join(' · ')+'</i>');
   const mode=$('welcomeBannerMode').value;$('welcomeBannerUrl').classList[mode==='custom'?'remove':'add']('hidden');
   $('welcomePreviewBanner').src=!$('welcomeEnabled').checked||mode==='off'?'':mode==='custom'?$('welcomeBannerUrl').value.trim():'/welcome-banner-'+(mode==='default'?'blue':mode)+'.jpg';
-  $('welcomePreviewText').innerHTML=$('welcomeEnabled').checked?lines.join('\\n'):'<i>入群欢迎已关闭，不会发送</i>';
+  $('welcomePreviewText').innerHTML=$('welcomeEnabled').checked?lines.join('\\n\\n'):'<i>入群欢迎已关闭，不会发送</i>';
   const colors={'蓝':'primary','蓝色':'primary','blue':'primary','绿':'success','绿色':'success','green':'success','红':'danger','红色':'danger','red':'danger'};
   const link=/(?:https?:\\/\\/|tg:\\/\\/)[^\\s|｜]+|t\\.me\\/[^\\s|｜]+|@[A-Za-z][A-Za-z0-9_]{3,31}(?![A-Za-z0-9_])/i;const labels=[...(rules?[['📜 群规','primary']]:[]),...$('welcomeButtons').value.split('\\n').map(x=>x.trim()).filter(Boolean).slice(0,8).map(x=>{const m=link.exec(x);if(!m)return [x+'（缺链接）','danger'];return [x.slice(0,m.index).replace(/[\\s|｜:：\\-—]+$/,'').trim()||'（缺文字）',colors[x.slice(m.index+m[0].length).replace(/^[\\s|｜:：,，]+/,'').trim().toLowerCase()]||''];})];
   $('welcomePreviewButtons').replaceChildren(...($('welcomeEnabled').checked?labels:[]).map(([label,style])=>{const b=document.createElement('span');b.textContent=label;if(style)b.className=style;return b;}));
