@@ -100,6 +100,27 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
     assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567890'&&chat.title==='新加入测试群'));
   });
+  await t.test('机器人被移出或退出群时自动从后台列表除名', async () => {
+    const state=await mf.getDurableObjectNamespace('GUARD_STATE');
+    const send=status=>mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify({update_id:1,my_chat_member:{chat:{id:-1001234567891,type:'supergroup',title:'将被移出群'},new_chat_member:{status,user:{id:555,is_bot:true}}}})});
+    assert.equal((await send('member')).status,200);
+    assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567891'));
+    assert.equal((await send('left')).status,200);
+    assert.ok(!(await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567891'));
+  });
+  await t.test('后台「退出并移除」让机器人退群并从列表移除', async () => {
+    const state=await mf.getDurableObjectNamespace('GUARD_STATE');
+    await state.getByName('admin').register({id:-1001234567892,title:'要移除的群'});
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('set-cookie').split(';')[0];
+    const remove=chatId=>mf.dispatchFetch('https://bot.test/admin/api/groups/remove',{method:'POST',headers:{Cookie:cookie,Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({chatId})});
+    const before=(await state.getByName('admin').listChats()).length;
+    const response=await remove('-1001234567892');assert.equal(response.status,200);
+    assert.ok(calls.some(call=>call.method==='leaveChat'&&call.params.chat_id===-1001234567892));
+    const chats=(await response.json()).chats;
+    assert.equal(chats.length,before-1);assert.ok(!chats.some(chat=>chat.id==='-1001234567892'));
+    assert.equal((await remove('-1001234567892')).status,400);
+  });
   await t.test('所有者私聊转发已有群消息时登记该群', async () => {
     const forwarded = { update_id: 2, message: { message_id: 2, date: Math.floor(Date.now() / 1000), chat: { id: 99, type: 'private' }, from: { id: 99 }, forward_origin: { type: 'chat', chat: { id: -1009999999999, type: 'supergroup', title: '转发登记群' } } } };
     const response = await mf.dispatchFetch('https://bot.test/webhook/path', { method: 'POST', headers: { 'X-Telegram-Bot-Api-Secret-Token': 'verify' }, body: JSON.stringify(forwarded) });
