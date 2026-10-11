@@ -11,6 +11,8 @@ export const BOT_NAME = 'Jason Guard Bot';
 export const BOT_ABOUT = '自动群管理机器人｜负责广告拦截、入群验证与群秩序维护。误封请联系管理员复核。';
 const BOT_DESCRIPTION = `${BOT_ABOUT}\n\n被误封了？私聊我发送 /start，可以查看封禁原因并提交申诉。`;
 
+export const ADMIN_MENU_TEXT = '管理后台';
+
 const avatarBytes = () => Uint8Array.from(atob(AVATAR_BASE64), c => c.charCodeAt(0));
 
 export class ProfileMethods {
@@ -41,5 +43,34 @@ export class ProfileMethods {
       this.log({ action: 'bot-photo', outcome: 'success' });
     }
     return true;
+  }
+
+  // A 「管理后台」 button next to the message box in the owner's own chat with
+  // the bot; it opens /admin inside Telegram. Set per owner, so other people
+  // who open the bot never see it. The address comes from the webhook URL.
+  async ensureAdminMenu() {
+    const url = await this.adminAppUrl();
+    if (!url) return false;
+    const owners = this.owners().filter(id => /^[1-9]\d{0,15}$/.test(id));
+    const doneKey = `bot-profile:admin-menu:${url}:${owners.join(',')}`;
+    if (!owners.length || this.read(doneKey) || this.read(`${doneKey}:checked`)) return false;
+    this.write(`${doneKey}:checked`, true, 3600000);
+    const tg = telegram(this.env.BOT_TOKEN);
+    for (const id of owners) await tg('setChatMenuButton', { chat_id: Number(id), menu_button: { type: 'web_app', text: ADMIN_MENU_TEXT, web_app: { url } } });
+    this.write(doneKey, true);
+    this.log({ action: 'admin-menu', outcome: 'success' });
+    return true;
+  }
+
+  async adminAppUrl() {
+    const cached = this.read('bot-profile:admin-url');
+    if (cached) return cached;
+    const hook = await telegram(this.env.BOT_TOKEN)('getWebhookInfo');
+    let origin;
+    try { origin = new URL(hook?.url).origin; } catch { return null; }
+    if (!origin.startsWith('https://')) return null;
+    const url = origin + '/admin';
+    this.write('bot-profile:admin-url', url, 86400000);
+    return url;
   }
 }

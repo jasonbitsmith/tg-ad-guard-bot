@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { ADMIN_JS } from '../src/admin.js';
 
-function harness(failures={},responses={}) {
+function harness(failures={},responses={},globals={}) {
   const nodes=new Map(), calls=[];
   function node(id='',tag='DIV') {
     return {id,tagName:tag,value:'',textContent:'',checked:false,dataset:{},children:[],isConnected:true,
@@ -13,11 +13,11 @@ function harness(failures={},responses={}) {
   const document={getElementById(id){if(!nodes.has(id))nodes.set(id,node(id,id.endsWith('Form')?'FORM':'DIV'));return nodes.get(id);},body:node(),querySelector(){return null;},querySelectorAll(){return [];},createElement:tag=>node('',tag.toUpperCase())};
   let loggedIn=false;
   const context=vm.createContext({document,localStorage:{removeItem(){},getItem(){return null;},setItem(){}},Option:function(text,value){return {text,value};},fetch:async(url,options)=>{
-    calls.push(url);if(url.endsWith('/login'))loggedIn=true;
+    calls.push(url);if(url.endsWith('/login')||url.endsWith('/telegram-login'))loggedIn=true;
     const failure=loggedIn&&failures[url.split('/').at(-1)];if(failure)return {ok:false,status:failure,json:async()=>({error:'模拟读取失败'})};
     const ok=loggedIn, data=url.endsWith('/chats')?{chats:[{id:'-100123',title:'测试群'}]}:url.endsWith('/samples')?{samples:[]}:url.endsWith('/federation')?{chats:[]}:{ok:true};
     return {ok,status:ok?200:401,json:async()=>ok?(responses[url.split('/').at(-1)]||data):{error:'请重新登录'}};
-  }});
+  },...globals});
   vm.runInContext(ADMIN_JS,context);
   return {nodes,calls,context,document};
 }
@@ -133,4 +133,13 @@ test('开启入群欢迎但欢迎语留空时，保存会填入默认欢迎语�
   h.document.getElementById('chatId').value='-100123';h.document.getElementById('welcomeEnabled').checked=true;
   await h.document.getElementById('welcomeForm').onsubmit({preventDefault(){},currentTarget:h.document.getElementById('welcomeForm')});
   assert.equal(h.document.getElementById('welcomeMessage').value,'👋 欢迎 {name} 加入 **{group}**！');
+});
+
+test('从机器人私聊打开时先用 Telegram 身份登录，再加载后台，并清掉地址栏里的登录数据',async()=>{
+  let replaced=null;
+  const h=harness({},{},{location:{hash:'#tgWebAppData=user%3D%257B%2522id%2522%253A99%257D%26hash%3Dabc&tgWebAppVersion=8.0',pathname:'/admin',search:''},history:{replaceState(a,b,url){replaced=url;}},window:{},URLSearchParams});
+  await flush();await flush();
+  assert.ok(h.calls[0].endsWith('/telegram-login'));
+  assert.equal(replaced,'/admin');
+  assert.equal(h.document.getElementById('chats').children.length,2);
 });

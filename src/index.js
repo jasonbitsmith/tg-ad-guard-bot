@@ -1,12 +1,12 @@
 import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
-import { secureEqual, digest, telegram } from './telegram.js';
+import { secureEqual, digest, telegram, verifyWebAppData } from './telegram.js';
 import { channelStatus, editPostCaption } from './bookscape.js';
 import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.20.0';
+export const VERSION = '2.21.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -68,6 +68,19 @@ async function admin(request, env, url) {
     let body;
     try { body = await readJson(request, 4096); } catch { return json({ error: '无效请求' }, 400); }
     if (!await secureEqual(body.password, env.ADMIN_PASSWORD)) { await state.recordLoginFailure(ip); return json({ error: '密码错误' }, 401); }
+    const session = crypto.randomUUID() + crypto.randomUUID();
+    await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD));
+    return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800` });
+  }
+  // Opened from the bot chat as a Telegram Mini App: Telegram signs who opened
+  // it, so the owner gets in without typing the password. Anyone else is refused.
+  if (path === 'telegram-login' && request.method === 'POST') {
+    if (!await loginRateAllowed(request, env)) return json({ error: '请求过于频繁，请稍后再试' }, 429);
+    let body;
+    try { body = await readJson(request, 8192); } catch { return json({ error: '无效请求' }, 400); }
+    const user = await verifyWebAppData(body.initData, env.BOT_TOKEN);
+    if (!user) return json({ error: 'Telegram 登录校验失败，请关闭后从机器人私聊重新打开' }, 401);
+    if (!owners(env).has(String(user.id))) return json({ error: '只有机器人所有者可以打开管理后台' }, 403);
     const session = crypto.randomUUID() + crypto.randomUUID();
     await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD));
     return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800` });
@@ -334,6 +347,12 @@ export default {
       const release=/^\/release\s+(\d{1,16})\s+(-\d+)$/i.exec(text);
       const find=/^\/findmember(?:\s+(.+))?$/i.exec(text);
       const logTarget=/^\/log(?:channel)?(?:\s+(\S+))?$/i.exec(text);
+      if(/^(\/admin|后台|管理后台)$/i.test(text)){
+        const url=await globalState(env).adminAppUrl().catch(()=>null);
+        await tg('sendMessage',{chat_id:privateMessage.chat.id,text:url?'点下面的按钮，在 Telegram 里直接打开管理后台（只有你能进入，不用输密码）。':'暂时读不到后台地址，请稍后再试，或用浏览器打开后台。',...(url?{reply_markup:{inline_keyboard:[[{text:'🛡 打开管理后台',web_app:{url}}]]}}:{})});
+        await globalState(env).ensureAdminMenu().catch(()=>null);
+        return new Response('OK');
+      }
       if(logTarget){
         let reply;
         try{reply=logTarget[1]?'✅ 处理记录：'+(await globalState(env).describeLogTarget(await globalState(env).setLogTarget(logTarget[1]))):'处理记录当前：'+(await globalState(env).describeLogTarget())+'\n\n/log me 发给我\n/log @频道用户名 发到频道（先把机器人加为频道管理员）\n/log off 关闭';}
@@ -388,6 +407,7 @@ export default {
       ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
       ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
       ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
+      ctx.waitUntil(globalState(env).ensureAdminMenu().catch(() => null));
     }
   },
 };

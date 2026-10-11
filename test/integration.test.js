@@ -567,6 +567,31 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const desc=made.find(c=>c.method==='setMyDescription');assert.ok(desc.params.description.startsWith('自动群管理机器人'));assert.ok(desc.params.description.includes('/start'));
     assert.equal(await admin.ensureBotProfile(),false);
   });
+  await t.test('手机后台：只有所有者能从机器人私聊免密码打开', async () => {
+    const { createHmac } = await import('node:crypto');
+    const sign=(id,age=0,token='fake')=>{const p=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)-age),query_id:'AAE',user:JSON.stringify({id,first_name:'Jason'})});const check=[...p].map(([k,v])=>k+'='+v).sort().join('\n');p.set('hash',createHmac('sha256',createHmac('sha256','WebAppData').update(token).digest()).update(check).digest('hex'));return p.toString();};
+    const login=initData=>mf.dispatchFetch('https://bot.test/admin/api/telegram-login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({initData})});
+    assert.equal((await login(sign(12345))).status,403,'非所有者不能进入');
+    assert.equal((await login(sign(99,2*86400))).status,401,'过期的启动数据无效');
+    assert.equal((await login(sign(99,0,'other-token'))).status,401,'别的机器人签名无效');
+    assert.equal((await login(sign(99).replace('Jason','Mallory'))).status,401,'篡改后签名无效');
+    const ok=await login(sign(99));assert.equal(ok.status,200);
+    const raw=ok.headers.get('set-cookie');assert.ok(raw.includes('HttpOnly')&&raw.includes('SameSite=Strict'));
+    assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/chats',{headers:{Cookie:raw.split(';')[0]}})).status,200);
+    const admin=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');let before=calls.length;
+    assert.equal(await admin.ensureAdminMenu(),true);
+    const menu=calls.slice(before).filter(c=>c.method==='setChatMenuButton');
+    assert.deepEqual(menu.map(c=>c.params.chat_id),[99],'菜单按钮只设置给所有者');
+    assert.equal(menu[0].params.menu_button.type,'web_app');assert.match(menu[0].params.menu_button.web_app.url,/^https:\/\/[^/]+\/admin$/);
+    assert.equal(await admin.ensureAdminMenu(),false);
+    before=calls.length;
+    await send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99,first_name:'Jason'},text:'/admin'}});
+    const reply=calls.slice(before).find(c=>c.method==='sendMessage'&&c.params.chat_id===99);
+    assert.match(reply.params.reply_markup.inline_keyboard[0][0].web_app.url,/\/admin$/);
+    before=calls.length;
+    await send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:4242,type:'private'},from:{id:4242,first_name:'路人'},text:'/admin'}});
+    assert.ok(!calls.slice(before).some(c=>JSON.stringify(c.params.reply_markup||{}).includes('web_app')),'别人发 /admin 拿不到后台按钮');
+  });
   await t.test('误封申诉：私聊机器人提交，所有者一键解封并通知本人', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
     await send(update(-510,'兼职招聘 私聊我',{from:{id:7301,first_name:'误封者'}}));await tick(-510);

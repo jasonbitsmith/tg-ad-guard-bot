@@ -73,3 +73,22 @@ export async function digest(value) {
   const data = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return Array.from(new Uint8Array(data), x => x.toString(16).padStart(2, '0')).join('');
 }
+
+// Checks the signed launch data Telegram hands a Mini App (the admin page
+// opened from the bot chat). Returns the Telegram user when the signature
+// matches this bot's token and the data is fresh, otherwise null.
+// https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+export async function verifyWebAppData(initData, token, maxAgeSeconds = 86400, now = Date.now()) {
+  if (typeof initData !== 'string' || !initData || initData.length > 4096 || !token) return null;
+  const params = new URLSearchParams(initData), hash = params.get('hash');
+  if (!/^[0-9a-f]{64}$/.test(hash || '')) return null;
+  params.delete('hash');
+  const check = [...params].map(([k, v]) => `${k}=${v}`).sort().join('\n');
+  const enc = new TextEncoder(), hmac = async (key, data) => new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(data)));
+  const signature = await hmac(await hmac(enc.encode('WebAppData'), token), check);
+  const hex = Array.from(signature, x => x.toString(16).padStart(2, '0')).join('');
+  if (!await secureEqual(hex, hash)) return null;
+  const authDate = Number(params.get('auth_date'));
+  if (!Number.isSafeInteger(authDate) || now / 1000 - authDate > maxAgeSeconds || authDate - now / 1000 > 300) return null;
+  try { const user = JSON.parse(params.get('user') || 'null'); return Number.isSafeInteger(user?.id) ? user : null; } catch { return null; }
+}
