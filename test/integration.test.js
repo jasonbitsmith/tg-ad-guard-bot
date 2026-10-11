@@ -1198,6 +1198,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await g.seedRecordTest('member-ban:7552',{action:'newer-ban',jobId:'newer'});await g.seedRecordTest('ban-owner:7552','newer-case');await global.ensureCase({id:'older-case-2',userId:7552,chatId:-9008,federationTargets:[]});await global.recoverMember({userId:'7552',scope:'federation'});await tick(-9008);assert.equal((await g.memberBan('7552')).action,'newer-ban');
     await global.ensureCase({id:'new-case-3',userId:7551,chatId:-9009,federationTargets:['-9008']});const before=actions(-9008).length;await g.queueFederation('new-case-3','-9008',7551,'-9009');await tick(-9008);assert.equal(actions(-9008).length,before);
   });
+  await t.test('频道私信聊天拒绝封禁时联防跳过，不报警也不重试',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),g=ns.getByName('chat:-9010');
+    failures.set('banChatMember:-9010',{error_code:400,description:"Bad Request: can't restrict members in the chat; users must be banned in the corresponding channel chat"});
+    await global.ensureCase({id:'dm-case',userId:7601,chatId:-9011,federationTargets:['-9010']});await g.queueFederation('dm-case','-9010',7601,'-9011');await tick(-9010);
+    const item=(await global.listCases()).find(x=>x.id==='dm-case').groups.find(x=>x.chatId==='-9010');assert.equal(item.status,'skipped');
+    assert.equal(calls.filter(c=>c.method==='banChatMember'&&c.params.user_id===7601).length,1);
+    assert.equal(calls.some(c=>c.method==='sendMessage'&&String(c.params.text||'').includes('已停止重试')&&String(c.params.text||'').includes('federation-ban')&&String(c.params.text||'').includes('banned in the corresponding channel')),false);
+    failures.delete('banChatMember:-9010');
+  });
   await t.test('全群状态总览显示权限、队列、接收时间和应急状态',async()=>{
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');const result=await global.operationsOverview();const group=result.groups.find(x=>x.id==='-9005');assert.ok(group);assert.ok(group.health);assert.ok(group.lastReceived);assert.equal(typeof group.permissions.deleteMessages,'boolean');assert.equal(typeof group.attention,'boolean');
   });
