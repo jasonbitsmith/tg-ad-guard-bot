@@ -33,7 +33,7 @@ export const ADMIN_PAGE = `<!doctype html>
 <h2>链接域名名单</h2><p class="muted">黑名单域名会直接删除并计警告；白名单域名不因“含链接”本身加分，但其他广告特征仍会处理。子域名也会匹配。</p><form id="domainForm"><select id="domainList"><option value="deny">黑名单</option><option value="allow">白名单</option></select><input id="domain" maxlength="253" placeholder="example.com" required><button>添加域名</button></form><p><strong>黑名单</strong></p><div id="denyDomains"></div><p><strong>白名单</strong></p><div id="allowDomains"></div>
 <h2>关键词命中统计</h2><p id="keywordStats" class="muted">选择群后加载近 30 天统计。</p>
 <h2>处理记录</h2><p id="summary"></p><p id="ocrQuotaStatus" role="status"></p><button id="legacy">查看旧版记录</button><button id="refresh">刷新新版记录</button><div id="logs"></div><button id="more" disabled>加载更多</button>
-<h2>成员举报</h2><p>成员可回复可疑消息发送 <code>/report</code>（可附原因）。举报会进入本群处理记录，管理员可据此使用 <code>/ban</code> 处理。</p><h2>纠错指令</h2><p>管理员回复广告发送 /spam：删除广告并永久封禁，样本进入待审核；本群手动处理不会自动同步联防。</p><p>在群内回复用户消息，或填写用户 ID：<code>/warnings</code> 查看警告；<code>/clearwarn</code> 清除警告；<code>/allow</code> 加白名单；<code>/unallow</code> 移出白名单；<code>/unmute</code> 解除禁言；<code>/unban</code> 解除封禁。白名单不会自动解除已有处罚，解除封禁也不能恢复已删除的消息。</p></section><script src="/admin/app.js?v=20261010-1"></script></body></html>`;
+<h2>成员举报</h2><p>成员可回复可疑消息发送 <code>/report</code>（可附原因）。举报会进入本群处理记录，管理员可据此使用 <code>/ban</code> 处理。</p><h2>纠错指令</h2><p>管理员回复广告发送 /spam：删除广告并永久封禁，样本进入待审核；本群手动处理不会自动同步联防。</p><p>在群内回复用户消息，或填写用户 ID：<code>/warnings</code> 查看警告；<code>/clearwarn</code> 清除警告；<code>/allow</code> 加白名单；<code>/unallow</code> 移出白名单；<code>/unmute</code> 解除禁言；<code>/unban</code> 解除封禁。白名单不会自动解除已有处罚，解除封禁也不能恢复已删除的消息。</p></section><script src="/admin/app.js?v=20261011-1"></script></body></html>`;
 
 export const ADMIN_JS = `
 localStorage.removeItem('tg_ad_guard_admin_pw');
@@ -121,12 +121,15 @@ function openDetail(title,push=true){
   const pill=panel.querySelector('.status-pill')?.textContent||'',group=$('chats').selectedOptions?.[0];let scope=panel.querySelector('.m-scope');
   if(!scope){scope=document.createElement('p');scope.className='m-scope';panel._body?.prepend(scope);}
   scope.textContent=!GLOBAL_PILLS.includes(pill)?(group?.value?'当前群：'+group.text.replace(/ [(]-[0-9]+[)]$/,''):'请先在首页选择一个群'):'';
-  globalThis.scrollTo?.(0,0);
+  // Push before scrolling: the browser saves the home entry's scroll offset at
+  // push time, and with manual restoration we put it back ourselves on return.
   if(push)history.pushState({panel:title},'');
+  globalThis.scrollTo?.(0,0);
   tgEvent('web_app_setup_back_button',{is_visible:true});
 }
-function closeDetail(){if(!detailPanel)return;detailPanel.classList.remove('active');detailPanel=null;document.body.classList.remove('detail-mode');globalThis.scrollTo?.(0,homeScroll);tgEvent('web_app_setup_back_button',{is_visible:false});}
+function closeDetail(){if(!detailPanel)return;detailPanel.classList.remove('active');detailPanel=null;document.body.classList.remove('detail-mode');const y=homeScroll;globalThis.scrollTo?.(0,y);globalThis.requestAnimationFrame?.(()=>globalThis.scrollTo?.(0,y));tgEvent('web_app_setup_back_button',{is_visible:false});}
 function phoneBack(){if(history.state?.panel)history.back();else closeDetail();}
+if(globalThis.history&&'scrollRestoration' in history)history.scrollRestoration='manual';
 globalThis.addEventListener?.('popstate',()=>{if(history.state?.panel)openDetail(history.state.panel,false);else closeDetail();});
 // Telegram calls these with events such as its header back button being pressed.
 if(globalThis.window){const receive=(type)=>{if(type==='back_button_pressed')phoneBack();};window.Telegram=window.Telegram||{};window.Telegram.WebView={receiveEvent:receive};window.TelegramGameProxy={receiveEvent:receive};window.TelegramGameProxy_receiveEvent=receive;}
