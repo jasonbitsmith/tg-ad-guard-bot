@@ -284,6 +284,9 @@ export class GuardState extends DurableObject {
               // Best-effort steps (a private prompt, a join request someone
               // else already handled) must not block or retry the whole plan.
               else if (op.optional && [400, 403].includes(error.code)) { op.skipped = String(error.message || '').slice(0, 120) || '未完成'; }
+              // A channel's direct-messages chat refuses bans ("users must be
+              // banned in the corresponding channel chat"); retrying never helps.
+              else if (op.method === 'banChatMember' && error.code === 400 && /corresponding channel chat/i.test(error.message)) { op.skipped = '频道私信聊天不支持封禁，已跳过'; }
               else if(op.method==='deleteMessage' && plan.ops.some(x=>x.method==='banChatMember')){op.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);deferredDeleteError=error;continue;}
               else throw error;
             }
@@ -325,7 +328,9 @@ export class GuardState extends DurableObject {
       if (!retry) {
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
-        await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${msg?.chat?.title || msg?.chat?.id || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
+        const alertChatId=String(plan?.entry?.chatId || msg?.chat?.id || '');
+        const alertChatTitle=msg?.chat?.title || plan?.entry?.chatTitle || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
+        await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${alertChatTitle || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
       }
     }
   }
