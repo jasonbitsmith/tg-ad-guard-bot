@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
 
 test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后台', async t => {
-  const calls = [], failures = new Map();let officialPostId=9876,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
+  const calls = [], failures = new Map();let dmitOfficialDown=false,officialPostId=9876,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
   const wrapper = `import worker, { GuardState as Base } from './index.js';
     export class GuardState extends Base {
       constructor(ctx,env) { super(ctx,env); }
@@ -52,6 +52,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     outboundService: async request => {
       const url = new URL(request.url);
       if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
+      if(url.hostname==='t.me'&&dmitOfficialDown)throw new Error('The operation was aborted due to timeout');
       if(url.hostname==='t.me')return new MFResponse('<div data-post="DMIT_INC/'+officialPostId+'"><div class="tgme_widget_message_text">HKG restocked and back in stock</div></div>');
       if(url.hostname==='api.cas.chat')return MFResponse.json(url.searchParams.get('user_id')==='666'?{ok:true,result:{offenses:3}}:{ok:false,description:'Record not found.'});
       assert.equal(url.hostname, 'api.telegram.org');
@@ -695,6 +696,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(buttons[0].url,'https://bot.jasonselect.com/go/dmit');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
     const buy=await mf.dispatchFetch('https://bot.test/go/dmit',{redirect:'manual',headers:{'User-Agent':'Mozilla/5.0 (iPhone)'}});assert.equal(buy.status,302);assert.equal(new URL(buy.headers.get('location')).searchParams.get('aff'),'16962');
     const count=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length;await global.monitorDmit();officialPostId=9875;await global.monitorDmit();assert.equal(calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length,count);assert.equal((await global.dmitStatus()).sourceType,'official-announcement');
+    const dmitAlerts=()=>calls.filter(x=>x.method==='sendMessage'&&String(x.params.text||'').includes('DMIT 补货监控读取失败')).length,alertsBefore=dmitAlerts();
+    dmitOfficialDown=true;await global.monitorDmit();assert.equal(dmitAlerts(),alertsBefore);assert.equal((await global.dmitStatus()).state,'读取失败');
+    await global.seedRecordTest('dmit:status',{...await global.dmitStatus(),lastSuccess:new Date(Date.now()-16*60000).toISOString()});await global.monitorDmit();assert.equal(dmitAlerts(),alertsBefore+1);dmitOfficialDown=false;
   });
 
   await t.test('推广短链接：跳转、计数、排除预览程序、周报排行和后台管理',async()=>{
