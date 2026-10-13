@@ -3,7 +3,7 @@ import { aiReviewCandidate } from '../ai-review.js';
 // Message classification into action plans, commands and callbacks.
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
-import { classify, normalize, parseCommand, validateWord } from '../filters.js';
+import { classify, normalize, parseCommand, validateWord, validateNewWord } from '../filters.js';
 import { sampleMatches } from '../samples.js';
 import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
 
@@ -302,7 +302,7 @@ export class ModerationMethods {
       const config = await this.config();
       if (command === 'listwords') return reply(`本群黑名单关键词（命中即删消息）：\n${config.keywords.join('、')}`);
       let word;
-      try { word = validateWord(arg); } catch (e) { return reply(e.message); }
+      try { word = command === 'addword' ? validateNewWord(arg) : validateWord(arg); } catch (e) { return reply(e.message); }
       if (command === 'addword') {
         if (config.keywords.length >= 500) return reply('词库已达 500 个，请先清理。');
         if (!config.keywords.includes(word)) config.keywords.push(word);
