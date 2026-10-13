@@ -240,3 +240,18 @@ test('欢迎横幅：四种内置配色、自定义链接、关闭', async () =>
   assert.equal(bannerUrl({ welcomeBanner: 'https://x.test/a.jpg' }, env), 'https://x.test/a.jpg');
   assert.equal(bannerUrl({ welcomeBanner: 'off' }, env), '');
 });
+
+test('群防日报：先说要处理的事，隐藏 0，联防封禁不算成各群自己的封禁', async () => {
+  const { formatDailyReport } = await import('../src/state/reports.js');
+  const group = (title, extra = {}) => ({ chat: { title }, intercepted: 0, banned: 0, federationBanned: 0, reversals: 0, reports: 0, ocr: 0, ...extra });
+  const summaries = [group('甲群', { intercepted: 2, banned: 3, federationBanned: 1 }), group('乙群', { banned: 1, federationBanned: 1 }), group('丙群')];
+  const base = { targetDate: '2026-10-12', chats: summaries, summaries, totals: { intercepted: 2, banned: 4, reversals: 0, reports: 0, ocr: 0 }, adUsers: 3, health: { failed: 0, retries: 0, ocrFailures: 0, latency: 0, completed: 0 }, queues: [{ pending: 0, oldestPendingSeconds: 0 }], dmit: { enabled: false } };
+  const text = formatDailyReport({ ...base, exceptions: [{ title: '丙群', problem: '机器人缺少「封禁成员」权限', fix: '请打开。' }] });
+  assert.match(text, /群防日报｜10月12日（周一）/);
+  assert.match(text, /有 1 件事需要你处理\n• 「丙群」：机器人缺少「封禁成员」权限/);
+  assert.match(text, /• 甲群：删 2 条 · 封 2 人/);
+  assert.doesNotMatch(text, /乙群/);
+  assert.match(text, /同步封到了 2 个群，共 2 次/);
+  assert.doesNotMatch(text, /举报|撤销|DMIT|：0/);
+  assert.match(formatDailyReport({ ...base, exceptions: [] }), /✅ 一切正常/);
+});
