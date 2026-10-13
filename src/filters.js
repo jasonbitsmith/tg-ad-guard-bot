@@ -27,6 +27,15 @@ export function extractDomains(text, links = []) {
 
 const matchesDomain = (domain, list) => list.some(item => domain === item || domain.endsWith('.' + item));
 
+// A Latin keyword such as "u" or "usdt" must not sit inside a longer English
+// word: "收u", "500u" or "usdt 日结" match, but "Ultra" or "sub" do not.
+// Chinese keywords keep plain substring matching.
+function keywordIn(text, word) {
+  if (!word) return false;
+  if (!/^[a-z0-9]+$/.test(word)) return text.includes(word);
+  return new RegExp(`(?<![a-z])${word}(?![a-z])`).test(text);
+}
+
 export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const text = msg.text || msg.caption || '';
   const body = normalize(text);
@@ -50,8 +59,8 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const hasLink = /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/|tg:\/\/)/i.test(destinations) || entities.some(e => e.type === 'url');
   const invitation = /(?:t\.me|telegram\.me)\/(?:\+|joinchat\/)/i.test(destinations);
   const contact = /(?:加\s*[vw微]|加微信|私聊我|联系我|看我?简介|微信\s*[:：]|qq\s*[:：]|@[a-z0-9_]{5,})/i.test(body);
-  const hits = [...new Set(keywords.map(normalize).filter(w => w && body.includes(w)))];
-  const nameHits = keywords.map(normalize).some(w => w && name.includes(w));
+  const hits = [...new Set(keywords.map(normalize).filter(w => keywordIn(body, w)))];
+  const nameHits = keywords.map(normalize).some(w => keywordIn(name, w));
   const scamPitch = /(?:稳赚|保本|稳赚不赔|无需经验|无押金|日入\s*\d|月入过万|点赞赚钱|代收代付|跑分|翻倍收益)/.test(body);
   // Short-form recruitment ads often omit a URL and contact handle, using an
   // invitation slogan plus an implausible daily-income promise instead.
@@ -155,6 +164,13 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
 export function validateWord(word) {
   if (typeof word !== 'string' || !word.trim() || word.trim().length > 80) throw new Error('关键词须为 1–80 个字符');
   return word.trim();
+}
+
+// Used when adding a word: a single letter or digit catches ordinary chat.
+export function validateNewWord(word) {
+  word = validateWord(word);
+  if (/^[a-z0-9]$/i.test(word)) throw new Error('关键词不能只有一个字母或数字，容易误封正常聊天，请写完整一点，例如“收u”');
+  return word;
 }
 
 export function parseCommand(text, botUsername) {

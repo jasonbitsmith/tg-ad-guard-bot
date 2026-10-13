@@ -255,3 +255,18 @@ test('群防日报：先说要处理的事，隐藏 0，联防封禁不算成各
   assert.doesNotMatch(text, /举报|撤销|DMIT|：0/);
   assert.match(formatDailyReport({ ...base, exceptions: [] }), /✅ 一切正常/);
 });
+
+test('Latin keywords only match as whole words, not inside other English words', () => {
+  const question = '这个 Ultra Mobile PayGo 怎么安装到 9eSIM v3 上，测试了几次都没有成功';
+  assert.equal(classify(msg(question), ['u']).deleteOnKeyword, false);
+  assert.equal(classify(msg('收u 私聊'), ['u']).deleteOnKeyword, true);
+  assert.equal(classify(msg('日赚500u'), ['u']).deleteOnKeyword, true);
+  assert.equal(classify(msg('日赚500USDT'), DEFAULT_KEYWORDS).hits.includes('usdt'), true);
+  assert.equal(classify(msg('刷单'), DEFAULT_KEYWORDS).deleteOnKeyword, true);
+});
+
+test('single-letter keywords are refused when added', async () => {
+  const { validateNewWord } = await import('../src/filters.js');
+  assert.throws(() => validateNewWord('u'), /一个字母/);
+  assert.equal(validateNewWord('收u'), '收u');
+});
