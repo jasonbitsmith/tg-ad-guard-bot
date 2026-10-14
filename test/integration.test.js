@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
 
 test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后台', async t => {
-  const calls = [], failures = new Map();let officialPostId=9876,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
+  const calls = [], failures = new Map();let officialPostId=9876,relayPostId=107,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
   const wrapper = `import worker, { GuardState as Base } from './index.js';
     export class GuardState extends Base {
       constructor(ctx,env) { super(ctx,env); }
@@ -48,10 +48,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     compatibilityDate: '2026-09-22', compatibilityFlags: ['nodejs_compat'],
     modules: [{ type: 'ESModule', path: 'test-wrapper.js', contents: wrapper }, { type: 'ESModule', path: 'index.js', contents: await readFile(new URL('../dist/index.js', import.meta.url), 'utf8') }],
     durableObjects: { GUARD_STATE: { className: 'GuardState', useSQLite: true } },
-    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', DMIT_MONITOR_ENABLED:'true',DMIT_AFFILIATE_ID:'16962',DMIT_NOTIFY_CHAT:'@jason_vps_deal', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
+    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', DMIT_MONITOR_ENABLED:'true',DMIT_AFFILIATE_ID:'16962',DMIT_NOTIFY_CHAT:'@jason_vps_deal',DMIT_RELAY_ENABLED:'true',DMIT_RELAY_SOURCE_CHAT:'@APPKITLIFE', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
     outboundService: async request => {
       const url = new URL(request.url);
       if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
+      if(url.hostname==='t.me'&&url.pathname==='/s/APPKITLIFE')return new MFResponse('<div data-post="APPKITLIFE/'+relayPostId+'"><div class="tgme_widget_message_text">【DMIT】LAX.AN5.Pro.MINI 补货！ https://www.dmit.io/aff.php?aff=16962</div></div>');
       if(url.hostname==='t.me')return new MFResponse('<div data-post="DMIT_INC/'+officialPostId+'"><div class="tgme_widget_message_text">HKG restocked and back in stock</div></div>');
       if(url.hostname==='api.cas.chat')return MFResponse.json(url.searchParams.get('user_id')==='666'?{ok:true,result:{offenses:3}}:{ok:false,description:'Record not found.'});
       assert.equal(url.hostname, 'api.telegram.org');
@@ -76,7 +77,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };
       if (method === 'getMyShortDescription') result = { short_description: '' };
       if (method === 'getMyName') result = { name: 'JASON_BOT' };
-      if (method === 'sendMessage' || method === 'sendPhoto') result = { message_id: 444 };
+      if (method === 'sendMessage' || method === 'sendPhoto' || method === 'copyMessage') result = { message_id: 444 };
       return MFResponse.json({ ok: true, result });
     },
   }));
@@ -1020,7 +1021,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
     webhookState={...webhookState,allowed_updates:['message','edited_message','my_chat_member']};
     const result=await global.ensureWebhookUpdates();
-    assert.deepEqual(result.fixed,['callback_query','chat_join_request','chat_member']);
+    assert.deepEqual(result.fixed,['callback_query','chat_join_request','chat_member','channel_post']);
     const set=calls.findLast(c=>c.method==='setWebhook');
     assert.equal(set.params.url,'https://bot.test/webhook/path');assert.equal(set.params.secret_token,'verify');
     assert.ok(set.params.allowed_updates.includes('callback_query')&&set.params.allowed_updates.includes('message'));
@@ -1209,6 +1210,25 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   });
   await t.test('全群状态总览显示权限、队列、接收时间和应急状态',async()=>{
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');const result=await global.operationsOverview();const group=result.groups.find(x=>x.id==='-9005');assert.ok(group);assert.ok(group.health);assert.ok(group.lastReceived);assert.equal(typeof group.permissions.deleteMessages,'boolean');assert.equal(typeof group.attention,'boolean');
+  });
+
+  await t.test('频道补货同步建立基线，新增公开消息和 Webhook 去重，失败重试保留进度',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    const copied=()=>calls.filter(x=>x.method==='copyMessage');const before=copied().length;
+    await global.monitorDmitRelay();assert.equal(copied().length,before);assert.equal((await global.relayStatus()).lastSeen,107);
+    relayPostId=108;await global.monitorDmitRelay();
+    const message={chat:{id:-100111,type:'channel',username:'APPKITLIFE'},message_id:108,text:'【DMIT】LAX.AN5.Pro.MINI 补货！'};
+    await send({update_id:++seq,channel_post:message});await global.inspectTest(true);assert.equal(copied().length,before+1);
+    assert.deepEqual(copied().at(-1).params,{chat_id:'@jason_vps_deal',from_chat_id:'@APPKITLIFE',message_id:108});
+    await global.monitorDmitRelay();await send({update_id:++seq,channel_post:message});await global.inspectTest(true);assert.equal(copied().length,before+1);
+    assert.equal((await global.relayStatus()).lastDelivery.targetMessageId,444);
+    for(const text of ['Muse 新技巧','【DMIT】LAX.AN5.Pro.MINI 已售罄','【DMIT】今天补货'])await send({update_id:++seq,channel_post:{...message,message_id:++seq,text}});
+    await send({update_id:++seq,channel_post:{...message,message_id:++seq,chat:{...message.chat,username:'AnotherChannel'}}});await global.inspectTest(true);assert.equal(copied().length,before+1);
+    relayPostId=109;failures.set('copyMessage:@jason_vps_deal',{error_code:429,description:'Too Many Requests',parameters:{retry_after:1}});await global.monitorDmitRelay();await global.inspectTest(true);assert.equal(copied().length,before+2);
+    await global.inspectTest(true);assert.equal(copied().length,before+3);assert.equal((await global.relayStatus()).lastDelivery.sourceMessageId,109);
+    await global.monitorDmitRelay();await global.inspectTest(true);assert.equal(copied().length,before+3);
+    relayPostId=110;failures.set('copyMessage:@jason_vps_deal',{error_code:403,description:'Forbidden: bot is not a member of the channel'});await global.monitorDmitRelay();await global.inspectTest(true);assert.equal(copied().length,before+4);assert.ok((await global.relayStatus()).queue.some(x=>x.status==='failed'&&x.count===1));assert.ok(calls.some(x=>x.method==='sendMessage'&&String(x.params.text).includes('补货同步到 @jason_vps_deal 失败')));
+    assert.equal((await global.retryDmitRelays()).queued,1);await global.inspectTest(true);assert.equal(copied().length,before+5);assert.equal((await global.relayStatus()).lastDelivery.sourceMessageId,110);assert.equal((await global.retryDmitRelays()).queued,0);
   });
 
 });

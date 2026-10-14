@@ -1,3 +1,4 @@
+import { isDmitRestock,relayPosts } from '../src/state/dmit-relay.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
@@ -269,4 +270,11 @@ test('single-letter keywords are refused when added', async () => {
   const { validateNewWord } = await import('../src/filters.js');
   assert.throws(() => validateNewWord('u'), /一个字母/);
   assert.equal(validateNewWord('收u'), '收u');
+});
+
+test('补货同步只识别指定产品补货并解析混合大小写编码',()=>{
+ assert.equal(isDmitRestock('【DMIT】洛杉矶 LAX.AN5.Pro.MINI 补货！'),true);
+ assert.equal(isDmitRestock('DMIT LAX.AN5.Pro.MICRO back in stock'),true);
+ for(const value of ['Muse 技巧分享','【DMIT】LAX.AN5.Pro.MINI 补货失败','【DMIT】LAX.AN5.Pro.MINI 已售罄','DMIT 维护消息'])assert.equal(isDmitRestock(value),false);
+ const result=relayPosts('<div data-post="APPKITLIFE/108"><div class="tgme_widget_message_text">【DMIT】 LAX.AN5.Pro.MINI 补货</div></div><div data-post="APPKITLIFE/109"><div class="tgme_widget_message_text">普通消息</div></div>','APPKITLIFE');assert.deepEqual(result.map(x=>x.id),[108,109]);assert.equal(isDmitRestock(result[0].text),true);
 });
