@@ -157,7 +157,7 @@ export class GuardState extends DurableObject {
       for (let n = 0; n < 10 && Date.now() - started < 20000; n++) {
         // Keep each group's processing order across retries. Otherwise a later warning
         // could be overwritten by a previously planned event that was rate-limited.
-        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
+        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'dmit-relay:%' AND id NOT LIKE 'dmit-notify:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
         if (!job || job.due > Date.now()) break;
         await this.runJob(job);
       }
@@ -245,7 +245,7 @@ export class GuardState extends DurableObject {
         } else if(op.local==='case-unban'){
           if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
-        } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage')?.result);
+        } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage'||x.method==='sendMessage')?.result);
         } else if(op.local==='missed-record'){this.saveMissedRecord(op.body);
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);

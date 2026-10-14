@@ -109,20 +109,19 @@ export class MonitorsMethods {
         const previous = this.read(key);
         if (initialized && previous?.inStock === false && product.inStock) {
           try {
-            await telegram(this.env.BOT_TOKEN)('sendMessage', {
-              chat_id: channel,
+            await this.queueDmitNotification('inventory:'+product.id+':'+(previous?.stockEvent||0), {
               text: dmitNotification(product, channel),
               reply_markup: product.orderUrl ? { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: this.dmitShortLink('dmit-' + product.product, withDmitAffiliate(product.orderUrl, affiliateId), `DMIT ${product.product}`) }]] } : undefined,
               disable_web_page_preview: true,
             });
             notifications++;
-            this.log({ action: 'dmit-restock-notification', product: product.product, channel, outcome: 'success' });
+            this.log({ action: 'dmit-restock-notification', product: product.product, channel, outcome: 'queued' });
           } catch (error) {
             this.log({ action: 'dmit-restock-notification', product: product.product, channel, outcome: 'failed', error: String(error.message || 'unknown error').slice(0, 300) });
             continue;
           }
         }
-        this.write(key, product);
+        this.write(key, {...product,stockEvent:!product.inStock&&previous?.inStock!==false?(previous?.stockEvent||0)+1:previous?.stockEvent||0});
       }
       this.write('dmit:initialized', true);
       this.write('dmit:status', { enabled: true, state: '正常', sourceType:'inventory-page', source, channel, affiliateId: affiliateId || null, lastChecked: now, lastSuccess: now, products: products.length, inStock: products.filter(item => item.inStock).length, notifications });
@@ -144,15 +143,14 @@ export class MonitorsMethods {
           const key = `dmit:official:${item.id}`;
           if (this.read(key, false)) continue;
           if(baseline || Number(item.id)<=lastId){this.write(key,true,180*DAY);continue;}
-          await telegram(this.env.BOT_TOKEN)('sendMessage', {
-            chat_id: channel,
+          await this.queueDmitNotification('official:'+item.id, {
             text: dmitOfficialNotification(item, channel),
             reply_markup: { inline_keyboard: [[{ text: '🛒 ➔ 点击这里｜立即抢购', url: this.dmitShortLink('dmit', withDmitAffiliate('https://www.dmit.io/aff.php',affiliateId), 'DMIT 官网') }],[{text:'🔍 查看官方补货公告',url:item.url}]] },
             disable_web_page_preview: true,
           });
           this.write(key, true, 180 * DAY);
           notifications++;
-          this.log({ action: 'dmit-official-restock-notification', channel, outcome: 'success' });
+          this.log({ action: 'dmit-official-restock-notification', channel, outcome: 'queued' });
         }
         this.write('dmit:official-last-id',Math.max(lastId,...postIds));
         this.write('dmit:official-initialized',true);

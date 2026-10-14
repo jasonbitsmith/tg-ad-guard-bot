@@ -1,4 +1,4 @@
-import { isDmitRestock,relayPosts } from '../src/state/dmit-relay.js';
+import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
@@ -277,4 +277,8 @@ test('补货同步只识别指定产品补货并解析混合大小写编码',()=
  assert.equal(isDmitRestock('DMIT LAX.AN5.Pro.MICRO back in stock'),true);
  for(const value of ['Muse 技巧分享','【DMIT】LAX.AN5.Pro.MINI 补货失败','【DMIT】LAX.AN5.Pro.MINI 已售罄','DMIT 维护消息'])assert.equal(isDmitRestock(value),false);
  const result=relayPosts('<div data-post="APPKITLIFE/108"><div class="tgme_widget_message_text">【DMIT】 LAX.AN5.Pro.MINI 补货</div></div><div data-post="APPKITLIFE/109"><div class="tgme_widget_message_text">普通消息</div></div>','APPKITLIFE');assert.deepEqual(result.map(x=>x.id),[108,109]);assert.equal(isDmitRestock(result[0].text),true);
+});
+
+test('补货接收目标支持频道和群 ID，大小写去重及拒绝非法目标',()=>{
+ assert.deepEqual(dmitTargets({DMIT_NOTIFY_CHATS:'@wpzyz,@WPZYZ,-10055555'}),['@wpzyz','-10055555']);assert.throws(()=>dmitTargets({DMIT_NOTIFY_CHATS:'https://t.me/test'}));assert.deepEqual(dmitTargets({}),['@jason_vps_deal']);
 });
