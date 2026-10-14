@@ -6,7 +6,7 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.23.1';
+export const VERSION = '2.23.2';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -129,7 +129,7 @@ async function admin(request, env, url) {
         const member = await tg('getChatMember', { chat_id: Number(chatId), user_id: me.id });
         permissions = { deleteMessages: !!member.can_delete_messages, restrictMembers: !!member.can_restrict_members, status: member.status };
       }
-      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, groups, dmitMonitor: await state.dmitStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
+      return json({ version: VERSION, bot: me.username, automaticPermanentBan: '所有广告命中', pendingUpdates: webhook.pending_update_count, lastWebhookErrorAt: webhook.last_error_date || null, webhookConfigured: !!webhook.url, permissions, groups, dmitMonitor: await state.dmitStatus(), dmitChannelRelay: await state.relayStatus(), ocr: { enabled: env.OCR_ENABLED === 'true', maxPerChatHour: Number(env.OCR_MAX_PER_CHAT_HOUR || 30) } });
     }
   }
   if(request.method==='GET' && path==='review-examples')return json({examples:await state.listReviewExamples()});
@@ -155,6 +155,8 @@ async function admin(request, env, url) {
   }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
 }
 async function mutateAdmin(request,env,url,state,path){
+  if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
+  if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
   if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
@@ -297,6 +299,7 @@ export default {
     let update;
     try { update = await readJson(request); } catch { return new Response('Bad Request', { status: 400 }); }
     if (!Number.isSafeInteger(update?.update_id)) return new Response('Bad Request', { status: 400 });
+    if(update.channel_post){try{await globalState(env).queueDmitRelay(update.channel_post);return new Response('OK');}catch{return new Response('Retry later',{status:503});}}
     const membership = update.my_chat_member;
     if (membership?.chat && ['group','supergroup'].includes(membership.chat.type) && ['left','kicked'].includes(membership.new_chat_member?.status)) {
       // The bot was removed or left: drop the group from the admin list.
@@ -396,6 +399,7 @@ export default {
   async scheduled(controller, env, ctx) {
     if (env.GUARD_STATE) {
       ctx.waitUntil(globalState(env).runAutomaticBackup());
+      ctx.waitUntil(globalState(env).monitorDmitRelay().catch(()=>null));
       if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
       // Each group's own alarm already runs quiet-hours switching every minute
       // while quiet mode is on; this sweep is only a safety net, so it wakes

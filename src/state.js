@@ -1,3 +1,4 @@
+import { DmitRelayMethods } from './state/dmit-relay.js';
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
 import { DEFAULT_KEYWORDS, DEFAULT_POLICY } from './filters.js';
@@ -244,6 +245,7 @@ export class GuardState extends DurableObject {
         } else if(op.local==='case-unban'){
           if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
+        } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage')?.result);
         } else if(op.local==='missed-record'){this.saveMissedRecord(op.body);
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
@@ -326,6 +328,7 @@ export class GuardState extends DurableObject {
       this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, operationSteps:operationSteps(plan?.ops,retry?'pending':'failed'), steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
+        if(plan?.entry?.action==='dmit-channel-relay')await this.alertOwner('dmit-relay-send','补货同步到 '+plan.entry.channel+' 失败\n消息 '+plan.entry.messageId+'；原因：'+String(error.message).slice(0,160)+'\n请检查机器人是否拥有两个频道的相应权限。').catch(()=>{});
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
         const alertChatId=String(plan?.entry?.chatId || msg?.chat?.id || '');
@@ -373,7 +376,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);
