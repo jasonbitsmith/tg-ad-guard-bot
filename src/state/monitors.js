@@ -165,7 +165,9 @@ export class MonitorsMethods {
       // Keep a compact durable audit trail without flooding it on every minute.
       if (previous.error !== status.error || !previous.lastError || Date.now() - Date.parse(previous.lastError) > 3600000) this.log({ action: 'dmit-monitor', outcome: 'failed', error: status.error });
       status.lastError = now; this.write('dmit:status', status);
-      await this.alertOwner('dmit-monitor-failure', `DMIT 补货监控读取失败\n原因：${status.error}`).catch(() => {});
+      // The check runs every minute and the fallback page sometimes times out
+      // once; only alert after 15 minutes without any successful read.
+      if (!(Date.now() - Date.parse(previous.lastSuccess || 0) < 15 * 60000)) await this.alertOwner('dmit-monitor-failure', `DMIT 补货监控读取失败\n原因：${status.error}`).catch(() => {});
     }
   }
   incidentList(){return this.sql.exec("SELECT value FROM records WHERE key LIKE 'incident:%' AND expires>? ORDER BY json_extract(value,'$.active') DESC,rowid DESC LIMIT 200",Date.now()).toArray().map(x=>JSON.parse(x.value));}
