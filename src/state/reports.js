@@ -5,7 +5,7 @@ import { DAY } from './shared.js';
 
 export class ReportsMethods {
   dailySummary(from, to) {
-    const result = { intercepted:0, banned:0, federationBanned:0, adUsers:[], reversals:0, reports:0, ocr:0, ocrSkipped:0, failedOperations:0, retries:0, ocrFailures:0, latencyTotal:0, completed:0 };
+    const result = { intercepted:0, banned:0, federationBanned:0, adUsers:[], reversals:0, reports:0, ocr:0, ocrSkipped:0, failedOperations:0, retries:0, ocrFailures:0, latencyTotal:0, completed:0, keywordCases:[] };
     const jobs=new Map(), users=new Set();
     for(const row of this.sql.exec('SELECT id,data FROM logs WHERE ts>=? AND ts<? ORDER BY id',from,to).toArray()){
       const log=JSON.parse(row.data), action=String(log.action||'');
@@ -27,6 +27,9 @@ export class ReportsMethods {
         if(action==='federation-ban')result.federationBanned++;
         if((action.includes('permanent-ban') || action==='federation-ban' || action==='review-resolve-ban') && log.userId)users.add(String(log.userId));
       }
+      // Messages handled only because of a keyword, so the owner can spot a
+      // keyword that catches normal chat.
+      if(log.keywordOnly && (action==='keyword-delete' ? deleted || (!log.steps && success) : ban && action.includes('permanent-ban')))result.keywordCases.push({chat:log.chatTitle||'',user:log.userName||String(log.userId||''),text:String(log.text||'').replace(/\s+/g,' ').slice(0,40),words:(log.keywordHits||[]).slice(0,3),banned:action!=='keyword-delete'});
       if(action==='federation-undo' && log.steps?.some(x=>x.method==='case-unban' && executed(x) && x.undoOutcome==='success'))result.reversals++;
       if(success && action==='user-report')result.reports++;
       if(success && action==='ocr')result.ocr++;
@@ -63,7 +66,7 @@ export class ReportsMethods {
     const exceptions = checks.filter(Boolean);
     const health=summaries.reduce((a,x)=>({failed:a.failed+x.failedOperations,retries:a.retries+x.retries,ocrFailures:a.ocrFailures+x.ocrFailures,latency:a.latency+x.latencyTotal,completed:a.completed+x.completed}),{failed:0,retries:0,ocrFailures:0,latency:0,completed:0});
     const queues=await Promise.all(chats.map(chat=>this.env.GUARD_STATE.getByName('chat:'+chat.id).healthSummary()));
-    const text=formatDailyReport({targetDate,chats,summaries,totals,adUsers:adUsers.size,exceptions,health,queues,dmit:this.dmitStatus(),now});
+    const text=formatDailyReport({targetDate,chats,summaries,keywordCases:summaries.flatMap(item=>item.keywordCases||[]),totals,adUsers:adUsers.size,exceptions,health,queues,dmit:this.dmitStatus(),now});
     const recipients = this.owners().filter(id => /^\d{1,16}$/.test(id));
     const snapshotKey=reportKey+':text';let snapshot=this.read(snapshotKey);if(!snapshot){snapshot=text;this.write(snapshotKey,snapshot,3*DAY);}
     const chunks=[];let rest=snapshot;while(rest.length){let end=Math.min(3800,rest.length);if(end<rest.length){const split=rest.lastIndexOf('\n',end);if(split>0)end=split+1;}chunks.push(rest.slice(0,end));rest=rest.slice(end);}
@@ -94,7 +97,7 @@ const beijingTime=iso=>{
   const d=new Date(time+8*3600000);return `${d.getUTCMonth()+1}月${d.getUTCDate()}日 ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
 };
 // Plain-language daily report: what needs attention first, then yesterday's numbers, zero values hidden.
-export function formatDailyReport({targetDate,chats,summaries,totals,adUsers,exceptions,health,queues,dmit}){
+export function formatDailyReport({targetDate,chats,summaries,keywordCases=[],totals,adUsers,exceptions,health,queues,dmit}){
   const day=new Date(targetDate+'T00:00:00Z');
   const title=`🛡 群防日报｜${day.getUTCMonth()+1}月${day.getUTCDate()}日（周${WEEKDAYS[day.getUTCDay()]}）`;
   const backlog=queues.reduce((n,x)=>n+x.pending,0), oldest=Math.max(0,...queues.map(x=>x.oldestPendingSeconds));
@@ -115,8 +118,9 @@ export function formatDailyReport({targetDate,chats,summaries,totals,adUsers,exc
   const body=[`📊 昨天（共 ${chats.length} 个群）`,...(stats.length?stats:['风平浪静，没有发现广告。'])];
   const active=summaries.map(x=>({title:x.chat.title,parts:[x.intercepted&&`删 ${x.intercepted} 条`,(x.banned-(x.federationBanned||0))>0&&`封 ${x.banned-(x.federationBanned||0)} 人`,x.reports&&`举报 ${x.reports} 次`,x.reversals&&`撤销 ${x.reversals} 次`].filter(Boolean)})).filter(x=>x.parts.length);
   const detail=active.length?['','📍 广告出现在这些群',...active.map(x=>`• ${x.title}：${x.parts.join(' · ')}`)]:[];
+  const keywords=keywordCases.length?['','🔎 只因关键词处理的消息（看看有没有误伤）',...keywordCases.slice(0,8).map(x=>`• 「${x.chat}」${x.user}：${x.banned?'AI 确认是广告，已封':'只删消息没封号'}｜${x.text}${x.words.length?`（词：${x.words.join('、')}）`:''}`),...(keywordCases.length>8?[`…还有 ${keywordCases.length-8} 条，在后台「日志」里看。`]:[]),'如果是正常聊天，可以在后台「广告规则」里删掉那个词。']:[];
   const avg=health.completed?Math.round(health.latency/health.completed):0;
   const system=[`⚙️ 机器人：${health.failed||health.retries||backlog?`失败 ${health.failed} · 重试 ${health.retries} · 排队 ${backlog}`:'运行正常'}${avg?`，平均 ${(avg/1000).toFixed(1)} 秒处理一条`:''}`];
   if(dmit?.enabled){const at=beijingTime(dmit.lastChecked);system.push(`📦 DMIT 补货监控：${dmit.state||'尚未执行'}${at?`（最近检查 ${at}）`:''}`);}
-  return [title,'',...head,'',...body,...detail,'',...system].join('\n');
+  return [title,'',...head,'',...body,...detail,...keywords,'',...system].join('\n');
 }

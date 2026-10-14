@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
 
 test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后台', async t => {
-  const calls = [], failures = new Map();let officialPostId=9876,relayPostId=107,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
+  const calls = [], failures = new Map();let dmitOfficialDown=false,officialPostId=9876,relayPostId=107,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
   const wrapper = `import worker, { GuardState as Base } from './index.js';
     export class GuardState extends Base {
       constructor(ctx,env) { super(ctx,env); }
@@ -54,6 +54,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const url = new URL(request.url);
       if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
       if(url.hostname==='t.me'&&url.pathname==='/s/APPKITLIFE')return new MFResponse('<div data-post="APPKITLIFE/'+relayPostId+'"><div class="tgme_widget_message_text">【DMIT】LAX.AN5.Pro.MINI 补货！ https://www.dmit.io/aff.php?aff=16962</div></div>');
+      if(url.hostname==='t.me'&&dmitOfficialDown)throw new Error('The operation was aborted due to timeout');
       if(url.hostname==='t.me')return new MFResponse('<div data-post="DMIT_INC/'+officialPostId+'"><div class="tgme_widget_message_text">HKG restocked and back in stock</div></div>');
       if(url.hostname==='api.cas.chat')return MFResponse.json(url.searchParams.get('user_id')==='666'?{ok:true,result:{offenses:3}}:{ok:false,description:'Record not found.'});
       assert.equal(url.hostname, 'api.telegram.org');
@@ -654,7 +655,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(actions(-181).some(x=>x.method==='unbanChatMember'&&x.params.user_id===88&&x.params.only_if_banned));
     assert.equal((await g.verificationMembers('88'))[0].state,'released');
     await send(update(-181,'',{new_chat_members:[{id:88,username:'Recover_User'}]}));await tick(-181);assert.equal(await g.verification(88),undefined);
-    await send(update(-181,'兼职',{from:{id:88,username:'Recover_User'}}));await tick(-181);assert.ok(actions(-181).filter(x=>x.method==='banChatMember'&&x.params.user_id===88).length>=2);
+    await send(update(-181,'兼职 私聊我',{from:{id:88,username:'Recover_User'}}));await tick(-181);assert.ok(actions(-181).filter(x=>x.method==='banChatMember'&&x.params.user_id===88).length>=2);
   });
   await t.test('管理员手动通过取消旧超时任务，恢复群默认权限，不影响其他群',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-182'),other=ns.getByName('chat:-183');
@@ -697,6 +698,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(buttons[0].url,'https://bot.jasonselect.com/go/dmit');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
     const buy=await mf.dispatchFetch('https://bot.test/go/dmit',{redirect:'manual',headers:{'User-Agent':'Mozilla/5.0 (iPhone)'}});assert.equal(buy.status,302);assert.equal(new URL(buy.headers.get('location')).searchParams.get('aff'),'16962');
     const count=calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length;await global.monitorDmit();officialPostId=9875;await global.monitorDmit();assert.equal(calls.filter(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal').length,count);assert.equal((await global.dmitStatus()).sourceType,'official-announcement');
+    const dmitAlerts=()=>calls.filter(x=>x.method==='sendMessage'&&String(x.params.text||'').includes('DMIT 补货监控读取失败')).length,alertsBefore=dmitAlerts();
+    dmitOfficialDown=true;await global.monitorDmit();assert.equal(dmitAlerts(),alertsBefore);assert.equal((await global.dmitStatus()).state,'读取失败');
+    await global.seedRecordTest('dmit:status',{...await global.dmitStatus(),lastSuccess:new Date(Date.now()-16*60000).toISOString()});await global.monitorDmit();assert.equal(dmitAlerts(),alertsBefore+1);dmitOfficialDown=false;
   });
 
   await t.test('推广短链接：跳转、计数、排除预览程序、周报排行和后台管理',async()=>{
@@ -747,10 +751,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-183,'改名后的消息',{chat:{id:-183,type:'supergroup',title:'改名后的测试群'},from:{id:91,first_name:'普通成员'}}));await tick(-183);
     assert.equal((await global.listChats()).find(x=>x.id==='-183').title,'改名后的测试群');
   });
-  await t.test('明确黑名单词命中直接封号，带联系方式仍直接封号',async()=>{
+  await t.test('只命中关键词只删消息不封号，带联系方式仍直接封号',async()=>{
     const plain=update(-185,'我周末兼职做家教',{from:{id:93,first_name:'普通成员'}});await send(plain);await tick(-185);
     assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===plain.message.message_id));
-    assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===93));
+    assert.ok(!actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===93));
+    const summary=await (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-185').dailySummary(0,Date.now()+1000);
+    assert.ok(summary.keywordCases.some(x=>!x.banned&&x.chat&&x.text==='我周末兼职做家教'&&x.words.includes('兼职')));
     await send(update(-185,'兼职日结 私聊我',{from:{id:94,first_name:'广告号'}}));await tick(-185);
     assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===94));
   });
@@ -868,8 +874,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(update(-196,'官网入口',{entities:[{type:'text_link',offset:0,length:4,url:'https://trial-only.example/private'}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.kind==='domain').hits,2);
     await send(update(-196,'兼职 私聊我'));await tick(-196);assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
     await group.editTrial('promote',{id:trial.id});const promoted=update(-196,'再聊观察词');await send(promoted);await tick(-196);
-    // Promoted blacklist words delete and ban immediately.
-    assert.ok(actions(-196).some(x=>x.method==='deleteMessage'&&x.params.message_id===promoted.message.message_id));assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,2);
+    // A promoted word on its own deletes the message; banning needs a link, contact or confirmed ad.
+    assert.ok(actions(-196).some(x=>x.method==='deleteMessage'&&x.params.message_id===promoted.message.message_id));assert.equal(actions(-196).filter(x=>x.method==='banChatMember').length,1);
     assert.ok((await group.config()).keywords.includes('观察词'));
     await group.editTrial('add',{kind:'keyword',value:'渠道正品'});await send(update(-196,'',{photo:[{file_id:'trial-ocr',file_unique_id:'trial-ocr-unique',file_size:12000}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.value==='渠道正品').hits,1);
   });
@@ -949,7 +955,18 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       assert.ok(!input.messages[1].content.includes('测试用户'));
     }
     const group=ns.getByName('chat:-305');await group.seedRecordTest('test:ai',{fail:true});
-    await send(update(-305,'USDT'));await tick(-305);assert.ok(actions(-305).some(x=>x.method==='banChatMember'));assert.equal(await group.readRecordTest('test:ai-calls'),null);
+    await send(update(-305,'USDT'));await tick(-305);assert.ok(actions(-305).some(x=>x.method==='deleteMessage'));assert.ok(!actions(-305).some(x=>x.method==='banChatMember'));assert.equal(await group.readRecordTest('test:ai-calls'),null);
+    // A lone keyword in a normal question goes to AI instead of an instant ban.
+    for(const [chatId,mock,deleted,banned] of [
+      [-307,{decision:'normal',confidence:0.99,reason:'询问付款方式',evidence:[]},false,false],
+      [-308,{decision:'ad',confidence:0.99,reason:'收U引流',evidence:['USDT']},true,true],
+      [-309,{fail:true},true,false],
+    ]){
+      await ns.getByName('chat:'+chatId).seedRecordTest('test:ai',mock);
+      await send(update(chatId,'这家支持USDT付款吗？'));await tick(chatId);
+      assert.equal(actions(chatId).some(x=>x.method==='deleteMessage'),deleted);assert.equal(actions(chatId).some(x=>x.method==='banChatMember'),banned);
+    }
+    await send(update(-310,'USDT 收u 私聊我'));await tick(-310);assert.ok(actions(-310).some(x=>x.method==='banChatMember'));
   });
   await t.test('AI 缓存按正文区分，修改后的消息重新判断，群与全局额度均生效',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-306'),global=ns.getByName('admin');

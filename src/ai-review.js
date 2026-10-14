@@ -1,6 +1,8 @@
 export const AI_REVIEW_MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export function aiReviewCandidate(text,verdict){
-  if(verdict.permanentBan||verdict.deleteOnKeyword||verdict.score>=4)return false;
+  // A lone keyword (no link, contact or ad template) is checked by AI before
+  // anyone is banned; every other keyword hit is already a confirmed ad.
+  if(verdict.permanentBan||(verdict.deleteOnKeyword&&!verdict.keywordOnly)||verdict.score>=4)return false;
   return String(text||'').trim().length>=6&&(verdict.score>0||/(?:名额|代理|返佣|福利|收益|代办|客户|限量|优惠|赚|招募|现货|私信|私聊|开户|带单|跟单|邀请码|批量|纯手工|登[录陆]包保|售后包保|支持一手测试)/i.test(text));
 }
 export function parseAiReview(result,text){

@@ -191,11 +191,16 @@ export class ModerationMethods {
       verdict.reasons.push(repeat >= policy.repeatThreshold ? `60 秒内相同内容 ${repeat} 次（含交替刷屏）` : `60 秒内消息 ${samples.length} 条`);
     }
     this.observeCampaign(text,senderId,msg.message_id,verdict);
+    // Common words such as USDT, 接单 or 招聘 also appear in normal chat. A
+    // keyword hit with no link, contact pitch or ad template is never banned
+    // on its own: AI decides, and without a confirmed ad it is only deleted.
+    verdict.keywordOnly = verdict.deleteOnKeyword && !verdict.permanentBan && verdict.score < 4 && !verdict.hasLink && !verdict.contact && !verdict.blockedDomains?.length;
     let aiReview;
     if(policy.aiReviewEnabled&&aiReviewCandidate(reviewText,verdict)){
       aiReview=await this.reviewWithAi(msg,reviewText);
       if(aiReview.decision==='ad'){verdict.permanentBan=true;verdict.score=Math.max(7,verdict.score);verdict.reasons.push('AI 确认广告：'+aiReview.reason);}
-      else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];}
+      else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];verdict.deleteOnKeyword=false;}
+      else if(verdict.keywordOnly){verdict.reasons.push('AI 未确认：'+aiReview.reason);}
       else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
     }
     const knowledge = guest ? null : this.findKnowledgeTrigger(text, policy);
@@ -207,11 +212,15 @@ export class ModerationMethods {
       }
     }
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && !emergencyLink) return empty;
-    const entry = { aiReview, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
+    const entry = { aiReview, keywordOnly: verdict.keywordOnly || undefined, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, emergencyNewcomer?'应急模式：近两小时加入成员的媒体暂时隔离':`新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (emergencyLink && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'emergency-link-quarantine', reasons: [...entry.reasons, '应急模式：暂时限制新成员链接，不仅凭链接封号'] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
+    if (verdict.keywordOnly && !verdict.permanentBan) {
+      ops.push({ local: 'processed', messageId: msg.message_id });
+      return { ops, entry: { ...entry, action: 'keyword-delete', reasons: [...entry.reasons, '只命中关键词，没有链接或联系方式：只删消息，不封号'] } };
+    }
     if (msg.sender_chat) {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };

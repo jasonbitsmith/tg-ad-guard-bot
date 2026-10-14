@@ -57,6 +57,17 @@ test('洗米招揽、手机拍违停和投资带单广告首条永久封禁', ()
   assert.equal(classify(msg('洗mi 是什么意思，有人知道吗'), DEFAULT_KEYWORDS).permanentBan, false);
   assert.equal(classify(msg('有人知道为什么会爆仓吗？'), DEFAULT_KEYWORDS).permanentBan, false);
 });
+test('同城色情群引流（进上海4T群）首条永久封禁，普通进群讨论不误判', () => {
+  assert.equal(classify(msg('有没有人进上海4T群'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.ok(classify(msg('有没有人进上海4T群'), DEFAULT_KEYWORDS).score >= 4);
+  assert.equal(classify(msg('谁要进 北京 3P 群，私我'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('拉你加入深圳4t群'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(msg('有没有人进上海VPS群'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('有没有人进搬瓦工交流群'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('上海4T流量的机器怎么样'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('有人进上海5G群吗'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(msg('警惕：有人拉你进上海4T群都是骗局'), DEFAULT_KEYWORDS).permanentBan, false);
+});
 test('账号低价售卖昵称在昵称筛查中封禁，普通买卖讨论不误判', () => {
   assert.equal(classify(msg('z支书5元QQ(全网首码注册) lh⭐'), DEFAULT_KEYWORDS).permanentBan, true);
   assert.equal(classify(msg('出售微信号 3元一个 实名号'), DEFAULT_KEYWORDS).permanentBan, true);
@@ -255,6 +266,28 @@ test('群防日报：先说要处理的事，隐藏 0，联防封禁不算成各
   assert.match(text, /同步封到了 2 个群，共 2 次/);
   assert.doesNotMatch(text, /举报|撤销|DMIT|：0/);
   assert.match(formatDailyReport({ ...base, exceptions: [] }), /✅ 一切正常/);
+});
+
+test('群防日报：列出只因关键词处理的消息，方便发现误伤', async () => {
+  const { formatDailyReport } = await import('../src/state/reports.js');
+  const base = { targetDate: '2026-10-13', chats: [], summaries: [], totals: { intercepted: 0, banned: 0, reversals: 0, reports: 0, ocr: 0 }, adUsers: 0, exceptions: [], health: { failed: 0, retries: 0, ocrFailures: 0, latency: 0, completed: 0 }, queues: [], dmit: { enabled: false } };
+  assert.doesNotMatch(formatDailyReport(base), /只因关键词/);
+  const cases = [{ chat: '甲群', user: '张三', text: '这家支持USDT付款吗', words: ['usdt'], banned: false }, { chat: '乙群', user: '李四', text: '收U 高价', words: ['usdt'], banned: true }];
+  const text = formatDailyReport({ ...base, keywordCases: cases });
+  assert.match(text, /🔎 只因关键词处理的消息/);
+  assert.match(text, /• 「甲群」张三：只删消息没封号｜这家支持USDT付款吗（词：usdt）/);
+  assert.match(text, /• 「乙群」李四：AI 确认是广告，已封/);
+  assert.match(formatDailyReport({ ...base, keywordCases: Array(10).fill(cases[0]) }), /还有 2 条/);
+});
+
+test('只命中关键词：没有链接和联系方式时可交给 AI 判断，不直接封号', async () => {
+  const { classify, DEFAULT_KEYWORDS } = await import('../src/filters.js');
+  const { aiReviewCandidate } = await import('../src/ai-review.js');
+  const lone = classify({ text: '这家支持USDT付款吗' }, DEFAULT_KEYWORDS);
+  assert.ok(lone.deleteOnKeyword && !lone.contact && !lone.hasLink && lone.score < 4);
+  assert.equal(aiReviewCandidate('这家支持USDT付款吗', { ...lone, keywordOnly: true }), true);
+  assert.equal(aiReviewCandidate('这家支持USDT付款吗', lone), false);
+  assert.ok(classify({ text: '兼职日结 私聊我' }, DEFAULT_KEYWORDS).contact);
 });
 
 test('Latin keywords only match as whole words, not inside other English words', () => {
