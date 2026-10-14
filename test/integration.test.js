@@ -71,7 +71,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getChatMemberCount') result = 1285;
       if (method === 'getWebhookInfo') result = webhookState;
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
-      if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true};
+      if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true,can_post_messages:true};
       if (method === 'getChat') result = params.chat_id===667 ? { id: 667, type: 'private', bio: '兼职日结 私聊我 @abc12345' } : { permissions: { can_send_messages: true, can_send_photos: false } };
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };

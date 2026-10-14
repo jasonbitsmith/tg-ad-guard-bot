@@ -1,3 +1,4 @@
+import { telegram } from '../telegram.js';
 import { DAY } from './shared.js';
 
 export function isDmitRestock(text) {
@@ -15,7 +16,7 @@ export function relayPosts(html,username) {
 }
 export class DmitRelayMethods {
   relayConfig(){return {enabled:this.env.DMIT_RELAY_ENABLED==='true',source:String(this.env.DMIT_RELAY_SOURCE_CHAT||'@APPKITLIFE'),target:String(this.env.DMIT_NOTIFY_CHAT||'@jason_vps_deal')};}
-  relayStatus(){return {...this.relayConfig(),...this.read('dmit-relay:status',{}),lastDelivery:this.read('dmit-relay:last-delivery'),queue:this.sql.exec("SELECT status,COUNT(*) AS count FROM jobs WHERE id LIKE 'dmit-relay:%' GROUP BY status").toArray()};}
+  relayStatus(){return {...this.relayConfig(),...this.read('dmit-relay:status',{}),lastDelivery:this.read('dmit-relay:last-delivery'),permissions:this.read('dmit-relay:permissions'),queue:this.sql.exec("SELECT status,COUNT(*) AS count FROM jobs WHERE id LIKE 'dmit-relay:%' GROUP BY status").toArray()};}
   async queueDmitRelay(message) {
     const config=this.relayConfig();
     if(!config.enabled||message?.chat?.type!=='channel'||String(message.chat.username||'').toLowerCase()!==config.source.slice(1).toLowerCase()||config.source.toLowerCase()===config.target.toLowerCase()||(!Number.isSafeInteger(message.message_id)||message.message_id<=0)||!isDmitRestock(message.text||message.caption))return {accepted:false};
@@ -31,11 +32,20 @@ export class DmitRelayMethods {
     this.write('dmit-relay:last-delivery',{sourceMessageId:op.sourceMessageId,targetMessageId:result?.message_id||null,target:op.target,at:new Date().toISOString()});
   }
   async retryDmitRelays(){const jobs=this.sql.exec("SELECT id FROM jobs WHERE status='failed' AND id LIKE 'dmit-relay:%' ORDER BY created DESC LIMIT 50").toArray();for(const row of jobs)await this.retryJob(row.id);return {queued:jobs.length};}
+  async checkDmitRelayPermissions(){
+    const config=this.relayConfig(),tg=telegram(this.env.BOT_TOKEN),me=await this.me(tg);let permissions;
+    try{const source=await tg('getChatMember',{chat_id:config.source,user_id:me.id}),target=await tg('getChatMember',{chat_id:config.target,user_id:me.id});permissions={sourceStatus:source.status,targetStatus:target.status,targetCanPost:target.status==='creator'||(target.status==='administrator'&&target.can_post_messages===true),checkedAt:new Date().toISOString()};}
+    catch(error){permissions={targetCanPost:false,error:String(error.message).slice(0,200),checkedAt:new Date().toISOString()};}
+    this.write('dmit-relay:permissions',permissions);this.write('dmit-relay:permission-check',true,permissions.targetCanPost?3600000:300000);
+    if(!permissions.targetCanPost)await this.alertOwner('dmit-relay-permissions','补货同步权限检查未通过\n目标：'+config.target+'；请检查机器人是否为频道管理员并允许发布消息。').catch(()=>{});
+    return permissions;
+  }
   async monitorDmitRelay() {
     if(this.relayPolling)return;const config=this.relayConfig();if(!config.enabled)return;
     if(!/^@[a-zA-Z0-9_]{5,32}$/.test(config.source)||!/^@[a-zA-Z0-9_]{5,32}$/.test(config.target)||config.source.toLowerCase()===config.target.toLowerCase())throw Error('补货同步频道配置无效');
     this.relayPolling=true;
     try {
+      if(!this.read('dmit-relay:permission-check'))await this.checkDmitRelayPermissions();
       const response=await fetch('https://t.me/s/'+config.source.slice(1),{headers:{Accept:'text/html'},signal:AbortSignal.timeout(15000)});
       if(!response.ok)throw Error('来源频道返回 HTTP '+response.status);
       const posts=relayPosts(await response.text(),config.source.slice(1));if(!posts.length)throw Error('来源频道未返回有效消息');
