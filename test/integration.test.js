@@ -13,6 +13,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
       seedLogTest(data){this.log(data);}
       readRecordTest(key){return this.read(key);}
+      setDmitTargetsTest(targets){this.env.DMIT_NOTIFY_CHATS=targets;}
       async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
       async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
       async realOcrTest(msg){this.env.AI={run:async()=>({answer:'广告图片测试'})};return super.ocr(msg,async()=>({file_path:'ocr.jpg'}));}
@@ -690,7 +691,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   });
   await t.test('DMIT 备用公告同时提供推广购买链接和官方公告链接',async()=>{
     const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');await global.monitorDmit();assert.ok(!calls.some(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal'));
-    officialPostId=9877;await global.monitorDmit();
+    officialPostId=9877;await global.monitorDmit();await global.inspectTest(true);
     const pushed=calls.find(x=>x.method==='sendMessage'&&x.params.chat_id==='@jason_vps_deal');assert.ok(pushed);
     const buttons=pushed.params.reply_markup.inline_keyboard.flat();
     assert.equal(buttons[0].url,'https://bot.jasonselect.com/go/dmit');assert.equal(buttons[1].url,'https://t.me/DMIT_INC/9877');
@@ -1229,6 +1230,17 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await global.monitorDmitRelay();await global.inspectTest(true);assert.equal(copied().length,before+3);
     relayPostId=110;failures.set('copyMessage:@jason_vps_deal',{error_code:403,description:'Forbidden: bot is not a member of the channel'});await global.monitorDmitRelay();await global.inspectTest(true);assert.equal(copied().length,before+4);assert.ok((await global.relayStatus()).queue.some(x=>x.status==='failed'&&x.count===1));assert.ok(calls.some(x=>x.method==='sendMessage'&&String(x.params.text).includes('补货同步到 @jason_vps_deal 失败')));
     assert.equal((await global.retryDmitRelays()).queued,1);await global.inspectTest(true);assert.equal(copied().length,before+5);assert.equal((await global.relayStatus()).lastDelivery.sourceMessageId,110);assert.equal((await global.retryDmitRelays()).queued,0);
+  });
+
+  await t.test('多个频道和群独立投递：失败只重试目标，旧主频道任务保持去重',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');await global.setDmitTargetsTest('@jason_vps_deal,@wpzyz,-10055555,@wpzyz');
+    const before=calls.length,message={chat:{type:'channel',username:'APPKITLIFE'},message_id:200,text:'DMIT LAX.AN5.Pro.MINI 补货'};
+    failures.set('copyMessage:@wpzyz',{error_code:429,description:'Too Many Requests',parameters:{retry_after:1}});
+    assert.equal((await global.queueDmitRelay(message)).queued,3);await global.inspectTest(true);
+    const copies=()=>calls.slice(before).filter(x=>x.method==='copyMessage');assert.equal(copies().filter(x=>x.params.chat_id==='@jason_vps_deal').length,1);assert.equal(copies().filter(x=>x.params.chat_id==='-10055555').length,1);
+    await global.inspectTest(true);assert.equal(copies().filter(x=>x.params.chat_id==='@wpzyz').length,2);await global.queueDmitRelay(message);await global.inspectTest(true);assert.equal(copies().length,4);
+    const start=calls.length;assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),3);await global.inspectTest(true);assert.equal(calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text==='DMIT 公开补货消息').length,3);assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),0);
+    await global.setDmitTargetsTest('');
   });
 
 });
