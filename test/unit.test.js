@@ -315,3 +315,15 @@ test('补货同步只识别指定产品补货并解析混合大小写编码',()=
 test('补货接收目标支持频道和群 ID，大小写去重及拒绝非法目标',()=>{
  assert.deepEqual(dmitTargets({DMIT_NOTIFY_CHATS:'@wpzyz,@WPZYZ,-10055555'}),['@wpzyz','-10055555']);assert.throws(()=>dmitTargets({DMIT_NOTIFY_CHATS:'https://t.me/test'}));assert.deepEqual(dmitTargets({}),['@jason_vps_deal']);
 });
+
+test('联系人名片：广告名字直接封禁，普通名字只算可疑', () => {
+  const card = (first_name, last_name) => ({ chat: { id: -1 }, from: { id: 9, first_name: 'jingdai' }, contact: { first_name, last_name, phone_number: '+8613594323629' } });
+  const ad = classify(card('点我头像 - 币圈+美股'), DEFAULT_KEYWORDS);
+  assert.equal(ad.permanentBan, true);
+  assert.equal(ad.contactCard, true);
+  const plain = classify(card('张伟'), DEFAULT_KEYWORDS);
+  assert.equal(plain.permanentBan, false);
+  assert.equal(plain.contactCard, true);
+  assert.ok(plain.score >= 4);
+  assert.equal(classify({ chat: { id: -1 }, from: { id: 9 }, text: '张伟' }, DEFAULT_KEYWORDS).score, 0);
+});

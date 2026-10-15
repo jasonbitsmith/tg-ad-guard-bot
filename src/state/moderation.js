@@ -217,6 +217,10 @@ export class ModerationMethods {
     if (emergencyLink && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'emergency-link-quarantine', reasons: [...entry.reasons, '应急模式：暂时限制新成员链接，不仅凭链接封号'] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
+    if (verdict.contactCard && !verdict.permanentBan && verdict.score < 7) {
+      ops.push({ local: 'processed', messageId: msg.message_id });
+      return { ops, entry: { ...entry, action: 'contact-card-delete', reasons: [...entry.reasons, '名片名字没有广告内容：只删消息，不封号'] } };
+    }
     if (verdict.keywordOnly && !verdict.permanentBan) {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'keyword-delete', reasons: [...entry.reasons, '只命中关键词，没有链接或联系方式：只删消息，不封号'] } };

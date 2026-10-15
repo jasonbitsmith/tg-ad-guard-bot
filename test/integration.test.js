@@ -879,6 +879,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok((await group.config()).keywords.includes('观察词'));
     await group.editTrial('add',{kind:'keyword',value:'渠道正品'});await send(update(-196,'',{photo:[{file_id:'trial-ocr',file_unique_id:'trial-ocr-unique',file_size:12000}]}));await tick(-196);assert.equal((await group.listTrials()).find(x=>x.value==='渠道正品').hits,1);
   });
+  await t.test('分享联系人名片：广告名字封禁，普通名片只删不封',async()=>{
+    const card=(id,name)=>{const u=update(-185,'',{from:{id,first_name:'jingdai'},contact:{first_name:name,phone_number:'+8613594323629'}});delete u.message.text;return u;};
+    const ad=card(9101,'点我头像 - 币圈+美股');await send(ad);await tick(-185);
+    assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===ad.message.message_id));
+    assert.ok(actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===9101));
+    const plain=card(9102,'张伟');await send(plain);await tick(-185);
+    assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===plain.message.message_id));
+    assert.ok(!actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===9102));
+  });
   await t.test('完整备份可预览恢复、保留回退包和稳定样本 ID；部分失败可续作',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;
     assert.ok(backup.groups.length>0);assert.ok(!JSON.stringify(backup).includes('fake'));assert.ok(!Object.hasOwn(backup,'session'));
