@@ -29,6 +29,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       async automaticBackupTest(id){try{return {backup:await this.automaticBackup(id)};}catch(error){return {error:error.message};}}
       async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
       async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
+      seedLateRetryTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('late-retry','{}','pending',?,?)",Date.now()-10000,Date.now()-600000);}
       seedFutureJobTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('future','{}','pending',?,?)",Date.now()+3600000,Date.now()-3600000);}
       expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
@@ -921,6 +922,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await global.checkIncident('test-transition',true,'测试权限异常');await global.checkIncident('test-transition',true,'测试权限异常');await global.checkIncident('test-transition',false,'测试权限恢复');await global.checkIncident('test-transition',false,'测试权限恢复');
     const reminders=calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text.includes('测试权限'));assert.equal(reminders.length,2);assert.equal((await global.incidentList()).find(x=>x.id==='test-transition').active,false);
     await global.register({id:'-197',title:'未来到期测试群'});await ns.getByName('chat:-197').seedFutureJobTest();assert.equal((await ns.getByName('chat:-197').healthSummary()).overdueSeconds,0);
+    await global.register({id:'-198',title:'重试到期测试群'});await ns.getByName('chat:-198').seedLateRetryTest();const lateHealth=await ns.getByName('chat:-198').healthSummary();assert.ok(lateHealth.overdueSeconds>=10&&lateHealth.overdueSeconds<300,'overdue counts from due time');
     botPermissionsHealthy=true;webhookState={url:'https://bot.test/webhook/path',pending_update_count:5,last_error_date:Math.floor(Date.now()/1000)};
     await global.monitorOperations(true);assert.ok((await global.incidentList()).find(x=>x.id==='webhook').active);assert.ok(!(await global.incidentList()).some(x=>x.id==='queue--197'&&x.active));
     webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};await global.monitorOperations(true);assert.equal((await global.incidentList()).find(x=>x.id==='webhook').active,false);

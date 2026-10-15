@@ -86,7 +86,9 @@ export class ReportsMethods {
   healthSummary() {
     const rows = this.sql.exec("SELECT status,COUNT(*) AS n,MIN(created) AS oldest FROM jobs GROUP BY status").toArray();
     const pending = rows.find(x => x.status === 'pending');
-    const overdue=this.sql.exec("SELECT MIN(created) AS oldest FROM jobs WHERE status='pending' AND due<=?",Date.now()).toArray()[0]?.oldest;
+    // Lateness counts from when a job was due, not when it was created: delayed
+    // cleanups and retry back-offs are scheduled minutes ahead on purpose.
+    const overdue=this.sql.exec("SELECT MIN(due) AS oldest FROM jobs WHERE status='pending' AND due<=?",Date.now()).toArray()[0]?.oldest;
     return { overdueSeconds:overdue?Math.round((Date.now()-overdue)/1000):0, pending: pending?.n || 0, failed: rows.find(x => x.status === 'failed')?.n || 0, oldestPendingSeconds: pending ? Math.round((Date.now()-pending.oldest)/1000) : 0, lastCompletion: this.read('health:last-completion') };
   }
 }
