@@ -1,6 +1,22 @@
 // Bot API RichMessage contains authored content only. Never walk reply/user
 // metadata: names, quoted replies and guest callers are not message evidence.
 export function moderationMessage(message) {
+  return withContactCard(richMessage(message));
+}
+
+// A shared contact card has no text at all: the ad is the card's name (for
+// example "点我头像 - 币圈+美股") plus a phone number. Expose them as text so
+// keywords, logs and AI review see what the member actually posted.
+function withContactCard(message) {
+  const card = message?.contact;
+  if (!card) return message;
+  const name = [card.first_name, card.last_name].filter(Boolean).join(' ').slice(0, 200);
+  const phone = String(card.phone_number || '').slice(0, 40);
+  const line = ['名片：' + (name || '（无名字）'), phone].filter(Boolean).join(' ');
+  return { ...message, text: [message.text || message.caption || '', line].filter(Boolean).join('\n') };
+}
+
+function richMessage(message) {
   if (!message?.rich_message) return message;
   const links = [], parts = [];
   let visited = 0, remaining = 16000;
