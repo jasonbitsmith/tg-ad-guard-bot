@@ -205,7 +205,7 @@ export class MonitorsMethods {
       }
       const chats=await this.listChats();
       for(const chat of chats){
-        try{const health=await this.env.GUARD_STATE.getByName('chat:'+chat.id).healthSummary();await this.checkIncident('queue-'+chat.id,health.failed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n队列失败 '+health.failed+'，最久等待 '+health.oldestPendingSeconds+' 秒');}
+        try{const health=await this.env.GUARD_STATE.getByName('chat:'+chat.id).healthSummary();await this.checkIncident('queue-'+chat.id,health.failed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n队列失败 '+health.failed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
         catch{await this.checkIncident('queue-'+chat.id,true,'群：'+chat.title+'\n无法检查执行队列');}
         if(me)try{const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});await this.checkIncident('permission-'+chat.id,!ADMIN_STATUS.includes(member.status)||!member.can_delete_messages||!member.can_restrict_members,'群：'+chat.title+'\n身份：'+member.status+'；删消息权限：'+(member.can_delete_messages?'有':'无')+'；封禁权限：'+(member.can_restrict_members?'有':'无'));}catch{await this.checkIncident('permission-'+chat.id,true,'群：'+chat.title+'\n无法读取机器人权限');}
       }
