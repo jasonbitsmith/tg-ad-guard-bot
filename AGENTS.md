@@ -54,6 +54,6 @@ npm test        # 依赖 dist/，必须在 check 之后跑
 变量在 `wrangler.jsonc`：
 
 - `BROADCAST_TARGETS`：逗号分隔的 `@用户名` 或负数群 ID，1–20 个，校验方式和 `DMIT_NOTIFY_CHATS` 相同。当前是 `@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt`。
-- `BROADCAST_TEST_MODE`：`"true"` 时确认文字和选择列表仍显示全部 `BROADCAST_TARGETS` 的用户名；实际只复制一份给 `5615131413`。结果会写明选了哪些目标，并说明这份复制发给了所有者。现在就是 `"true"`。
+- `BROADCAST_TEST_MODE`：`"true"` 时确认文字和选择列表仍显示全部 `BROADCAST_TARGETS`。每个目标写成「群标题（@用户名）」，标题来自 `getChat` 并缓存约一天，失败或没有标题时只用 @用户名；按钮超过 64 字会截断标题。实际只复制一份给 `5615131413`。结果会写明选了哪些目标（同一套名称），并说明这份复制发给了所有者。现在就是 `"true"`。
 
 上线到真实目标：把 `BROADCAST_TEST_MODE` 改成 `"false"`，合并到 `main`，再从 `main` 部署。不要从功能分支部署，也只有 Jason 明确要求时才部署。

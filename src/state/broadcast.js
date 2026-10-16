@@ -8,6 +8,9 @@ export const BROADCAST_TEST_CHAT = '5615131413';
 const ALBUM_QUIET_MS = 1000;
 const DRAFT_TTL = DAY;
 const DELIVERY_TTL = 30 * DAY;
+// Inline button labels are at most 64 characters, including the checkbox prefix.
+export const BROADCAST_BUTTON_LIMIT = 64;
+const BUTTON_PREFIX = '☐ ';
 
 // id is the canonical send address. label keeps the configured spelling so the
 // confirmation and picker can show @JasonSIMLab rather than a numeric chat id.
@@ -38,6 +41,21 @@ export function broadcastDestinations(env) {
 
 function chatIdOf(target) {
   return /^-?\d{5,16}$/.test(String(target)) ? Number(target) : target;
+}
+
+// '{title}（@username）', shortened so checkbox + label still fits one button.
+// A missing title is just the @username.
+export function broadcastDisplayLabel(title, handle) {
+  const name = String(title || '').replace(/\s+/g, ' ').trim();
+  const who = String(handle || '').trim();
+  const max = BROADCAST_BUTTON_LIMIT - BUTTON_PREFIX.length;
+  const clip = value => value.length <= max ? value : value.slice(0, Math.max(1, max - 1)) + '…';
+  if (!name) return clip(who);
+  const suffix = `（${who}）`;
+  if ((name + suffix).length <= max) return name + suffix;
+  const room = max - suffix.length - 1;
+  if (room < 1) return clip(suffix);
+  return name.slice(0, room) + '…' + suffix;
 }
 
 function copiedIds(op) {
@@ -113,11 +131,32 @@ export class BroadcastMethods {
     }
   }
 
+  async broadcastChatTitle(id) {
+    const key = `broadcast:chat-title:${id}`;
+    const cached = this.read(key);
+    if (cached && typeof cached.title === 'string' && cached.title && Number.isFinite(cached.at) && Date.now() - cached.at < DAY) return cached.title;
+    try {
+      const chat = await telegram(this.env.BOT_TOKEN)('getChat', { chat_id: chatIdOf(id) });
+      const title = String(chat?.title || '').replace(/\s+/g, ' ').trim();
+      if (!title) return '';
+      this.write(key, { title, at: Date.now() }, 2 * DAY);
+      return title;
+    } catch {
+      return '';
+    }
+  }
+
+  async broadcastResolvedLabels(entries) {
+    const labels = [];
+    for (const entry of entries) labels.push(broadcastDisplayLabel(await this.broadcastChatTitle(entry.id), entry.label));
+    return labels;
+  }
+
   async presentBroadcast(message, messageIds) {
     const ids = [...new Set(messageIds.filter(id => Number.isSafeInteger(Number(id)) && Number(id) > 0).map(Number))].sort((a, b) => a - b).slice(0, 10);
     if (!ids.length || !this.owners().includes(String(message.from?.id))) return false;
     const entries = broadcastTargetEntries(this.env);
-    const labels = entries.map(item => item.label);
+    const labels = await this.broadcastResolvedLabels(entries);
     const token = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
     const testing = this.env.BROADCAST_TEST_MODE === 'true';
     const text = [
