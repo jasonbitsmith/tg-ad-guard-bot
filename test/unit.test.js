@@ -280,6 +280,16 @@ test('群防日报：列出只因关键词处理的消息，方便发现误伤',
   assert.match(formatDailyReport({ ...base, keywordCases: Array(10).fill(cases[0]) }), /还有 2 条/);
 });
 
+test('群防日报：列出有点像广告但没处理的消息，方便发现漏网', async () => {
+  const { formatDailyReport } = await import('../src/state/reports.js');
+  const base = { targetDate: '2026-10-15', chats: [], summaries: [], totals: { intercepted: 0, banned: 0, reversals: 0, reports: 0, ocr: 0 }, adUsers: 0, exceptions: [], health: { failed: 0, retries: 0, ocrFailures: 0, latency: 0, completed: 0 }, queues: [], dmit: { enabled: false } };
+  assert.doesNotMatch(formatDailyReport(base), /没处理的消息/);
+  const text = formatDailyReport({ ...base, suspectCases: [{ chat: '甲群', user: '王五', text: '有需要的 联系我 @abc', reason: '包含联系或引流话术' }] });
+  assert.match(text, /👀 有点像广告但没处理的消息/);
+  assert.match(text, /• 「甲群」王五：有需要的 联系我 @abc（包含联系或引流话术）/);
+  assert.match(text, /\/漏拦/);
+});
+
 test('只命中关键词：没有链接和联系方式时可交给 AI 判断，不直接封号', async () => {
   const { classify, DEFAULT_KEYWORDS } = await import('../src/filters.js');
   const { aiReviewCandidate } = await import('../src/ai-review.js');
@@ -340,4 +350,12 @@ test('假钞/色情谐音广告和清单消息会被识别，正常讨论不误�
   const poll = moderationMessage({ chat: { id: -1 }, from: { id: 9 }, poll: { question: '要不要', options: [{ text: '高仿假钞出货' }, { text: '加 @fakecash01' }] } });
   assert.equal(classify(poll, DEFAULT_KEYWORDS).permanentBan, true);
   for (const text of ['收到一张假钞怎么办', '警惕假币骗局 @someone 已被骗', '这个币是假币吗', '验钞机多少钱']) assert.equal(classify(m(text), DEFAULT_KEYWORDS).permanentBan, false, text);
+});
+
+test('可疑提醒门槛：单纯 @某人 不算，AI 也拿不准才算', async () => {
+  const { suspicious } = await import('../src/state/moderation.js');
+  assert.equal(suspicious(1, true), false);
+  assert.equal(suspicious(2, false), false);
+  assert.equal(suspicious(2, true), true);
+  assert.equal(suspicious(3, false), true);
 });

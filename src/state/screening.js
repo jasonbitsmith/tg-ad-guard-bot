@@ -56,7 +56,7 @@ export class ScreeningMethods {
 
   async screenBanPlan(chat, user, screen, messageIds, extra = {}) {
     const ops = messageIds.map(id => ({ method: 'deleteMessage', params: { chat_id: chat.id, message_id: id } }));
-    ops.push({ method: 'banChatMember', params: { chat_id: chat.id, user_id: user.id, until_date: 0 } }, ...(extra.ops || []));
+    ops.push({ method: 'banChatMember', params: { chat_id: chat.id, user_id: user.id, until_date: 0 } }, ...this.purgeOps(chat.id, user.id, messageIds), ...(extra.ops || []));
     const federationTargets = await this.env.GUARD_STATE.getByName('admin').federationTargets(chat.id);
     return { ops, entry: { chatId: chat.id, chatTitle: chat.title || '', userId: String(user.id), userName: [user.first_name, user.last_name].filter(Boolean).join(' '), messageId: messageIds[0], text: (extra.text ?? screen.text ?? '').slice(0, 300), reasons: screen.reasons, action: `${screen.kind}-${federationTargets.length ? 'federated-permanent-ban' : 'permanent-ban'}`, federationTargets } };
   }

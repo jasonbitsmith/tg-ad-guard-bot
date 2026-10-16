@@ -959,6 +959,30 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const quiet=await global.auditSnapshot('quiet',{scope:'all'});assert.ok(quiet['quiet:'+target.id]);assert.deepEqual(Object.keys(quiet['quiet:'+target.id]).sort(),['quietEnabled','quietEnd','quietEndNoticeMinutes','quietNotify','quietStart']);
   });
 
+  await t.test('内联机器人按钮和地点里的广告：读按钮文字和链接、地点名字',async()=>{
+    const buttons=update(-187,'',{from:{id:9301,first_name:'广告号'},via_bot:{id:555,is_bot:true,first_name:'PostBot'},reply_markup:{inline_keyboard:[[{text:'假钞日常出货 包过验钞机',url:'https://t.me/+abcDEF123'}]]}});delete buttons.message.text;
+    await send(buttons);await tick(-187);
+    assert.ok(actions(-187).some(x=>x.method==='deleteMessage'&&x.params.message_id===buttons.message.message_id));
+    assert.ok(actions(-187).some(x=>x.method==='banChatMember'&&x.params.user_id===9301));
+    const place=update(-188,'',{from:{id:9302,first_name:'广告号二'},location:{latitude:31.2,longitude:121.4},venue:{location:{latitude:31.2,longitude:121.4},title:'假币玩妹 楼凤上门',address:'加V看简介 @abcde123'}});delete place.message.text;
+    await send(place);await tick(-188);
+    assert.ok(actions(-188).some(x=>x.method==='banChatMember'&&x.params.user_id===9302));
+    const normal=update(-188,'',{from:{id:9303,first_name:'群友'},location:{latitude:31.2,longitude:121.4},venue:{location:{latitude:31.2,longitude:121.4},title:'人民广场',address:'上海市黄浦区'}});delete normal.message.text;
+    await send(normal);await tick(-188);
+    assert.ok(!actions(-188).some(x=>x.params.user_id===9303||x.params.message_id===normal.message.message_id));
+  });
+  await t.test('日报列出有点像广告但没处理的消息',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
+    await ns.getByName('chat:-189').seedRecordTest('test:ai',{decision:'uncertain',confidence:0.5,reason:'不确定',evidence:[]});
+    await send(update(-189,'出段钞可漂唱 联系我 @abcde123',{from:{id:9401,first_name:'可疑号'}}));await tick(-189);
+    await send(update(-189,'看看这个 https://example.com',{from:{id:9402,first_name:'群友'}}));await tick(-189);
+    const summary=await ns.getByName('chat:-189').dailySummary(0,Date.now()+1000);
+    assert.equal(summary.suspectCases.length,0,'a confirmed ad and a lone link are not listed');
+    await send(update(-189,'有需要的 联系我 @abcde456',{from:{id:9403,first_name:'可疑号二'}}));await tick(-189);
+    const later=await ns.getByName('chat:-189').dailySummary(0,Date.now()+1000);
+    assert.ok(later.suspectCases.some(x=>x.user==='可疑号二'&&x.text.includes('联系我')),JSON.stringify(later.suspectCases));
+    assert.ok(!later.suspectCases.some(x=>x.user==='群友'));
+  });
   await t.test('AI 确认广告永久封禁，正常内容放行，服务失败待审，黑名单不等待 AI',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
     for(const [chatId,mock,expected] of [
@@ -1099,6 +1123,29 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await tick(-403);
     assert.ok(actions(-403).some(x=>x.method==='banChatMember'&&x.params.user_id===670));
     assert.ok(actions(-403).some(x=>x.method==='deleteMessage'&&x.params.message_id===target.message.message_id));
+  });
+  await t.test('可疑但没把握的消息立刻私信所有者，点按钮删除并封禁；同一人 6 小时只提醒一次',async()=>{
+    const first=update(-404,'有需要的 联系我 @abcde777',{from:{id:680,first_name:'可疑号三'}});await send(first);await tick(-404);
+    assert.ok(!actions(-404).some(x=>x.method==='banChatMember'));
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('有点像广告'));
+    assert.ok(notice);assert.match(notice.params.text,/可疑号三/);assert.match(notice.params.text,/联系我/);
+    await send(update(-404,'有需要的 联系我 @abcde888',{from:{id:680,first_name:'可疑号三'}}));await tick(-404);
+    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('有点像广告')&&c.params.text.includes('可疑号三')).length,1);
+    await send(update(-404,'今天天气不错',{from:{id:681,first_name:'普通群友'}}));await tick(-404);
+    assert.ok(!calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('普通群友')));
+    const ban=notice.params.reply_markup.inline_keyboard.flat().find(x=>/:ban$/.test(x.callback_data||''));
+    await send({update_id:++seq,callback_query:{id:'cb-suspect',from:{id:99},data:ban.callback_data,message:{message_id:4,chat:{id:99,type:'private'},text:notice.params.text}}});await tick(-404);
+    assert.ok(actions(-404).some(x=>x.method==='banChatMember'&&x.params.user_id===680));
+    assert.ok(actions(-404).some(x=>x.method==='deleteMessage'&&x.params.message_id===first.message.message_id));
+  });
+  await t.test('封号时一并删除此人当天在本群发过的其他消息',async()=>{
+    const hello=update(-406,'大家好呀',{from:{id:690,first_name:'先潜伏'}});await send(hello);await tick(-406);
+    const ad=update(-406,'兼职日结 私聊我',{from:{id:690,first_name:'先潜伏'}});await send(ad);await tick(-406);
+    assert.ok(actions(-406).some(x=>x.method==='banChatMember'&&x.params.user_id===690));
+    const purge=calls.find(c=>c.method==='deleteMessages'&&c.params.chat_id===-406);
+    assert.ok(purge,'earlier messages are removed');assert.ok(purge.params.message_ids.includes(hello.message.message_id));assert.ok(!purge.params.message_ids.includes(ad.message.message_id));
+    await send(update(-406,'兼职日结 私聊我',{from:{id:691,first_name:'新号'}}));await tick(-406);
+    assert.equal(calls.filter(c=>c.method==='deleteMessages'&&c.params.chat_id===-406).length,1,'nothing extra to remove for a first message');
   });
   await t.test('所有者可以用 /log 切换处理记录的接收位置', async () => {
     const dm=text=>send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99},text}});
