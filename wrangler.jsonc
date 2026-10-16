@@ -80,7 +80,9 @@
     "AI_REVIEW_MAX_PER_CHAT_HOUR": "20",
     "AI_REVIEW_MAX_GLOBAL_HOUR": "100",
     "OCR_ENABLED": "true",
-    "OCR_MAX_PER_CHAT_HOUR": "30"
+    "OCR_MAX_PER_CHAT_HOUR": "30",
+    "BROADCAST_TARGETS": "@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt",
+    "BROADCAST_TEST_MODE": "true"
   },
   "triggers": {
     "crons": ["* * * * *"]
