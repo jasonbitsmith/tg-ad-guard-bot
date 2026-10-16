@@ -31,7 +31,9 @@ export class FederationMethods {
     const record={id:body.id,userId:Number(body.userId),sourceChatId:String(body.chatId),sampleIds:body.sampleIds||[],created:new Date().toISOString(),reversed:false,groups:[String(body.chatId),...(body.federationTargets||[]).map(String)].map(chatId=>({chatId,status:'pending',owned:false}))};
     this.write(key,record,90*DAY);return record;
   }
-  caseStatus(id,chatId,patch){const key=`federation-case:${id}`,record=this.read(key);if(!record)return;const item=record.groups.find(x=>x.chatId===String(chatId));if(item)Object.assign(item,patch);this.write(key,record,90*DAY);}
+  caseStatus(id,chatId,patch){const key=`federation-case:${id}`,record=this.read(key);if(!record)return;const item=record.groups.find(x=>x.chatId===String(chatId));if(item)Object.assign(item,patch);this.write(key,record,90*DAY);
+    // Undone from a ban notice: once every group has a final result, show them on it.
+    if(patch.undoStatus&&record.undoNotice&&record.groups.every(x=>['success','skipped','failed'].includes(x.undoStatus)))return this.noticeUndoResults(record.undoNotice,record.groups).catch(()=>false);}
   caseReversed(id){return this.read(`federation-case:${id}`)?.reversed===true;}
   async dispatchFederation(id){
     const record=this.read(`federation-case:${id}`);if(!record || record.reversed)return;
@@ -44,9 +46,9 @@ export class FederationMethods {
     await this.schedule(Date.now()+100);this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)',id,'{}',JSON.stringify(plan),Date.now(),Date.now());
   }
   async retryCase(id,chatId){const record=this.read(`federation-case:${id}`);if(!record || record.reversed || !record.groups.some(x=>x.chatId===String(chatId)))throw new Error('联防记录无效或已撤销');return this.env.GUARD_STATE.getByName('chat:'+chatId).retryJob(String(chatId)===record.sourceChatId?id.slice(String(chatId).length+1):`federation:${id}:${chatId}`);}
-  async reverseCase(id){
+  async reverseCase(id,noticeId){
     const key=`federation-case:${id}`,record=this.read(key);if(!record)throw new Error('此记录没有可核验的联防封禁信息');
-    record.reversed=true;this.write(key,record,90*DAY);
+    record.reversed=true;if(noticeId)record.undoNotice=noticeId;this.write(key,record,90*DAY);
     for(const sampleId of record.sampleIds){if(this.listSamples().some(x=>x.id===sampleId))await this.editSample('disable',{id:sampleId});}
     const results=await Promise.allSettled(record.groups.map(x=>this.env.GUARD_STATE.getByName('chat:'+x.chatId).queueCaseUndo(id,x.chatId,record.userId)));
     this.log({action:'federation-undo-request',caseId:id,userId:record.userId,actorId:'web-admin',outcome:results.some(x=>x.status==='rejected')?'partial':'success'});
