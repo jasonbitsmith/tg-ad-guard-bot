@@ -141,6 +141,13 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const contactCardAd = contactCard && (
     /(?:头像|币圈|美股|港股|a股|炒股|股票|带单|跟单|合约|理财|投资|私聊|私信|加我|赚|收益|盈利|副业|兼职|日结|导师|老师|项目|usdt|搬砖|客服|代理|福利|资源|招聘)/i.test(cardName)
     || keywords.map(normalize).some(w => keywordIn(cardName, w.replace(/[^\p{L}\p{N}]+/gu, ''))));
+  // Counterfeit cash and sex-service ads ("假币玩妹嫖娼", "出段钞可漂唱包过验糙机
+  // 手感一致 @handle") use homophones for 假钞/嫖娼/验钞机. Cash words alone
+  // can be normal talk, so a sale pitch, link or contact is also required.
+  const counterfeitCash = /(?:假|仿真?|高仿)(?:币|钞|人民币|美金|美元)|钞.{0,12}(?:过验|验.?机|手感一致|手感一样|一比一|1比1)|(?:过验|验.?机).{0,12}钞/.test(compact);
+  const sexService = /(?:嫖娼|漂唱|飘唱|嫖昌|漂娼|飘娼|约炮|玩妹|白嫖妹|楼凤)/.test(compact);
+  const illegalGoodsPitch = (counterfeitCash || sexService) && !caution
+    && (contact || invitation || hasLink || /(?:出货|日常出|出售|批发|包过|交流群|可漂|可嫖|专用)/.test(compact));
   let score = 0;
   const reasons = [];
   const add = (points, reason) => { score += points; reasons.push(reason); };
@@ -168,6 +175,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (resalePitch) add(4, '包含拆词商品分销和收益招揽');
   if (cryptoChartPitch) add(4, '图片附带加密货币收益引流文案');
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
+  if (illegalGoodsPitch) add(7, counterfeitCash ? '包含假钞/假币售卖引流' : '包含色情服务引流');
   if (contactCardAd) add(7, '分享的联系人名片带广告名字');
   else if (contactCard) add(4, '分享了联系人名片（带电话号码）');
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
@@ -175,7 +183,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || contactCardAd;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || contactCardAd || illegalGoodsPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, contact: contact || contactCard, contactCard, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 

@@ -2,6 +2,7 @@
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
 
+const QUIET_SEND_KEYS = ['can_send_messages', 'can_send_audios', 'can_send_documents', 'can_send_photos', 'can_send_videos', 'can_send_video_notes', 'can_send_voice_notes', 'can_send_polls', 'can_send_other_messages', 'can_add_web_page_previews'];
 const keepLabel = minutes => minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
 export function quietStartText(config) {
   return [
@@ -76,7 +77,11 @@ export class QuietMethods {
       const current = await tg('getChat', { chat_id: chat.id });
       const permissions = current.permissions || { can_send_messages: true, can_send_audios: true, can_send_documents: true, can_send_photos: true, can_send_videos: true, can_send_video_notes: true, can_send_voice_notes: true, can_send_polls: true, can_send_other_messages: true, can_add_web_page_previews: true, can_change_info: false, can_invite_users: true, can_pin_messages: false, can_manage_topics: false };
       if(!this.read('quiet:baseline')) this.write('quiet:baseline', permissions);
-      await tg('setChatPermissions', { chat_id: chat.id, permissions: { ...permissions, can_send_messages: false }, use_independent_chat_permissions: true });
+      // With independent permissions, can_send_messages covers text only: photos,
+      // polls, checklists and stickers each have their own switch. Close all of them.
+      const muted = { ...permissions };
+      for (const key of QUIET_SEND_KEYS) muted[key] = false;
+      await tg('setChatPermissions', { chat_id: chat.id, permissions: muted, use_independent_chat_permissions: true });
     } else {
       const permissions = this.read('quiet:baseline');
       if (!permissions) return false;

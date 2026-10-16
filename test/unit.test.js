@@ -327,3 +327,17 @@ test('联系人名片：广告名字直接封禁，普通名字只算可疑', ()
   assert.ok(plain.score >= 4);
   assert.equal(classify({ chat: { id: -1 }, from: { id: 9 }, text: '张伟' }, DEFAULT_KEYWORDS).score, 0);
 });
+
+test('假钞/色情谐音广告和清单消息会被识别，正常讨论不误伤', async () => {
+  const { moderationMessage } = await import('../src/message-content.js');
+  const m = text => ({ chat: { id: -1 }, from: { id: 9 }, text });
+  const homophone = classify(m('😊出段钞可漂唱包过验糙机手感一致⭐ @bbww1998'), DEFAULT_KEYWORDS);
+  assert.equal(homophone.permanentBan, true);
+  const checklist = moderationMessage({ chat: { id: -1 }, from: { id: 9 }, checklist: { title: '假币玩妹嫖娼🔥假钞日常出货都可', tasks: [{ id: 1, text: '假币赌博🔥ktv日常使用' }, { id: 2, text: '⬇️⬇️⬇️下方假币交流群' }, { id: 3, text: 'https://t.me/+t9xrbFouuXQ2ZDlx' }] } });
+  assert.match(checklist.text, /假钞日常出货/);
+  assert.match(checklist.text, /t\.me\/\+/);
+  assert.equal(classify(checklist, DEFAULT_KEYWORDS).permanentBan, true);
+  const poll = moderationMessage({ chat: { id: -1 }, from: { id: 9 }, poll: { question: '要不要', options: [{ text: '高仿假钞出货' }, { text: '加 @fakecash01' }] } });
+  assert.equal(classify(poll, DEFAULT_KEYWORDS).permanentBan, true);
+  for (const text of ['收到一张假钞怎么办', '警惕假币骗局 @someone 已被骗', '这个币是假币吗', '验钞机多少钱']) assert.equal(classify(m(text), DEFAULT_KEYWORDS).permanentBan, false, text);
+});
