@@ -9,16 +9,25 @@ const ALBUM_QUIET_MS = 1000;
 const DRAFT_TTL = DAY;
 const DELIVERY_TTL = 30 * DAY;
 
-export function broadcastTargets(env) {
+// id is the canonical send address. label keeps the configured spelling so the
+// confirmation and picker can show @JasonSIMLab rather than a numeric chat id.
+export function broadcastTargetEntries(env) {
   const values = String(env.BROADCAST_TARGETS || '').split(/[,\s]+/).filter(Boolean);
   const result = [];
+  const seen = new Set();
   for (const raw of values) {
     if (!/^@[a-zA-Z0-9_]{5,32}$|^-\d{5,16}$/.test(raw)) throw new Error('广播目标必须是 @用户名或负数群 ID');
-    const value = raw.startsWith('@') ? raw.toLowerCase() : raw;
-    if (!result.includes(value)) result.push(value);
+    const id = raw.startsWith('@') ? raw.toLowerCase() : raw;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    result.push({ id, label: raw.startsWith('@') ? raw : id });
   }
   if (!result.length || result.length > 20) throw new Error('广播目标须为 1–20 个');
   return result;
+}
+
+export function broadcastTargets(env) {
+  return broadcastTargetEntries(env).map(item => item.id);
 }
 
 // Test mode still validates the real list, then replaces the send set.
@@ -107,25 +116,26 @@ export class BroadcastMethods {
   async presentBroadcast(message, messageIds) {
     const ids = [...new Set(messageIds.filter(id => Number.isSafeInteger(Number(id)) && Number(id) > 0).map(Number))].sort((a, b) => a - b).slice(0, 10);
     if (!ids.length || !this.owners().includes(String(message.from?.id))) return false;
-    const targets = broadcastDestinations(this.env);
+    const entries = broadcastTargetEntries(this.env);
+    const labels = entries.map(item => item.label);
     const token = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
     const testing = this.env.BROADCAST_TEST_MODE === 'true';
     const text = [
       `要把${contentKind(message, ids.length)}发到哪里？`,
       '',
-      '目标：' + targets.join('、'),
-      testing ? '当前是测试模式，只会发给 ' + BROADCAST_TEST_CHAT + '。' : '',
-      '确认后才会发送。',
-    ].filter(Boolean).join('\n').slice(0, 3500);
+      '目标：' + labels.join('、'),
+      testing ? '当前是测试模式。确认后只会复制一份给所有者 ' + BROADCAST_TEST_CHAT + '，不会发到这些目标。' : '确认后才会发送。',
+    ].join('\n').slice(0, 3500);
     const sent = await telegram(this.env.BOT_TOKEN)('sendMessage', {
       chat_id: message.chat.id,
       text,
       disable_web_page_preview: true,
-      reply_markup: { inline_keyboard: this.broadcastKeyboard(token, null, targets) },
+      reply_markup: { inline_keyboard: this.broadcastKeyboard(token, null, labels) },
     });
     if (!Number.isSafeInteger(sent?.message_id)) throw new Error('确认消息没有发出去');
     this.write(`broadcast:draft:${token}`, {
-      token, ownerId: String(message.from.id), chatId: message.chat.id, messageIds: ids, targets, selected: [],
+      token, ownerId: String(message.from.id), chatId: message.chat.id, messageIds: ids,
+      targets: entries.map(item => item.id), labels, selected: [], testing,
       status: 'open', promptMessageId: sent.message_id, created: Date.now(),
     }, DRAFT_TTL);
     return true;
@@ -166,7 +176,7 @@ export class BroadcastMethods {
       if (selected.has(index)) selected.delete(index); else selected.add(index);
       draft.selected = [...selected].sort((a, b) => a - b);
       this.write(`broadcast:draft:${token}`, draft, DRAFT_TTL);
-      await tg('editMessageReplyMarkup', { chat_id: draft.chatId, message_id: draft.promptMessageId, reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.targets) } }).catch(() => {});
+      await tg('editMessageReplyMarkup', { chat_id: draft.chatId, message_id: draft.promptMessageId, reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets) } }).catch(() => {});
       return answer(draft.selected.length ? `已选 ${draft.selected.length} 个` : '未选择目标');
     }
     const kind = action[1];
@@ -179,29 +189,37 @@ export class BroadcastMethods {
     if (kind === 'p') {
       await tg('editMessageText', {
         chat_id: draft.chatId, message_id: draft.promptMessageId,
-        text: `选择要发送的目标（${draft.targets.length} 个），然后点确认发送。`,
-        reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.targets) },
+        text: `选择要发送的目标（${(draft.labels || draft.targets).length} 个），然后点确认发送。`,
+        reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets) },
       }).catch(() => {});
       return answer('请选择目标');
     }
-    const sendTargets = kind === 'a' ? draft.targets.slice() : draft.selected.map(index => draft.targets[index]).filter(Boolean);
-    if (!sendTargets.length) return answer('请至少选择一个目标。', true);
+    const indexes = kind === 'a' ? draft.targets.map((_, index) => index) : draft.selected;
+    const sendIds = indexes.map(index => draft.targets[index]).filter(Boolean);
+    const selectedLabels = indexes.map(index => (draft.labels || draft.targets)[index]).filter(Boolean);
+    if (!sendIds.length) return answer('请至少选择一个目标。', true);
     draft.status = 'sending';
-    draft.sendTargets = sendTargets;
+    draft.sendIds = sendIds;
+    draft.selectedLabels = selectedLabels;
     this.write(`broadcast:draft:${token}`, draft, DRAFT_TTL);
     this.queueBroadcastSends(draft);
     await this.schedule(Date.now() + 200);
-    await tg('editMessageText', { chat_id: draft.chatId, message_id: draft.promptMessageId, text: `正在发送到 ${sendTargets.length} 个目标…` }).catch(() => {});
+    const progress = draft.testing ? '测试模式：正在复制一份给你自己…' : `正在发送到 ${sendIds.length} 个目标…`;
+    await tg('editMessageText', { chat_id: draft.chatId, message_id: draft.promptMessageId, text: progress }).catch(() => {});
     return answer('开始发送');
   }
 
   queueBroadcastSends(draft) {
+    // Test mode records the chosen names, but delivers a single copy to the owner.
+    const targets = draft.testing ? [BROADCAST_TEST_CHAT] : draft.sendIds;
     const delivery = {
       id: draft.token, ownerId: draft.ownerId, ownerChatId: draft.chatId, messageIds: draft.messageIds,
-      targets: draft.sendTargets, results: {}, undoState: 'idle',
+      targets, selectedLabels: draft.selectedLabels || [], testing: draft.testing === true,
+      labelById: Object.fromEntries((draft.sendIds || []).map((id, index) => [id, (draft.selectedLabels || [])[index] || id])),
+      results: {}, undoState: 'idle',
     };
     this.write(`broadcast:delivery:${draft.token}`, delivery, DELIVERY_TTL);
-    for (const target of draft.sendTargets) {
+    for (const target of targets) {
       const chatId = chatIdOf(target);
       const copy = draft.messageIds.length > 1
         ? { method: 'copyMessages', params: { chat_id: chatId, from_chat_id: draft.chatId, message_ids: draft.messageIds } }
@@ -237,9 +255,18 @@ export class BroadcastMethods {
 
   queueBroadcastReport(delivery) {
     const lines = ['广播结果', ''];
-    for (const target of delivery.targets) {
-      const result = delivery.results[target];
-      lines.push(result?.ok ? `✅ ${target}` : `❌ ${target}：${result?.error || '发送失败'}`);
+    if (delivery.testing) {
+      lines.push('选择的目标：' + (delivery.selectedLabels || []).join('、'));
+      const copy = delivery.results[BROADCAST_TEST_CHAT];
+      lines.push(copy?.ok
+        ? `测试模式：已复制一份给所有者 ${BROADCAST_TEST_CHAT}，没有发给上面这些目标。`
+        : `测试模式：复制给所有者 ${BROADCAST_TEST_CHAT} 失败：${copy?.error || '发送失败'}。没有发给上面这些目标。`);
+    } else {
+      for (const target of delivery.targets) {
+        const result = delivery.results[target];
+        const label = delivery.labelById?.[target] || target;
+        lines.push(result?.ok ? `✅ ${label}` : `❌ ${label}：${result?.error || '发送失败'}`);
+      }
     }
     const canUndo = delivery.targets.some(target => delivery.results[target]?.messageIds?.length);
     if (canUndo) lines.push('', '点「撤回」可从已发送的目标删除这条消息。');

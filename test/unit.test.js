@@ -1,5 +1,5 @@
 import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
-import { broadcastTargets, broadcastDestinations, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
+import { broadcastTargets, broadcastTargetEntries, broadcastDestinations, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
@@ -330,6 +330,7 @@ test('补货接收目标支持频道和群 ID，大小写去重及拒绝非法�
 test('广播目标与补货目标使用同一套校验，测试模式只发给所有者',()=>{
  const env={BROADCAST_TARGETS:'@jason_vps_deal,@WPZYZ,@wpzyz,-10055555',BROADCAST_TEST_MODE:'false'};
  assert.deepEqual(broadcastTargets(env),['@jason_vps_deal','@wpzyz','-10055555']);
+ assert.deepEqual(broadcastTargetEntries(env).map(item=>item.label),['@jason_vps_deal','@WPZYZ','-10055555']);
  assert.deepEqual(broadcastDestinations(env),['@jason_vps_deal','@wpzyz','-10055555']);
  assert.deepEqual(broadcastDestinations({...env,BROADCAST_TEST_MODE:'true'}),[BROADCAST_TEST_CHAT]);
  assert.equal(BROADCAST_TEST_CHAT,'5615131413');
