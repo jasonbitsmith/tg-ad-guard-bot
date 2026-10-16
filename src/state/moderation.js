@@ -201,7 +201,7 @@ export class ModerationMethods {
       if(aiReview.decision==='ad'){verdict.permanentBan=true;verdict.score=Math.max(7,verdict.score);verdict.reasons.push('AI 确认广告：'+aiReview.reason);}
       else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];verdict.deleteOnKeyword=false;}
       else if(verdict.keywordOnly){verdict.reasons.push('AI 未确认：'+aiReview.reason);}
-      else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
+      else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,userName:msg.sender_chat?.title||[msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '),messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
     }
     const knowledge = guest ? null : this.findKnowledgeTrigger(text, policy);
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && !emergencyLink && knowledge) {

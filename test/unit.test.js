@@ -280,6 +280,16 @@ test('群防日报：列出只因关键词处理的消息，方便发现误伤',
   assert.match(formatDailyReport({ ...base, keywordCases: Array(10).fill(cases[0]) }), /还有 2 条/);
 });
 
+test('群防日报：列出有点像广告但没处理的消息，方便发现漏网', async () => {
+  const { formatDailyReport } = await import('../src/state/reports.js');
+  const base = { targetDate: '2026-10-15', chats: [], summaries: [], totals: { intercepted: 0, banned: 0, reversals: 0, reports: 0, ocr: 0 }, adUsers: 0, exceptions: [], health: { failed: 0, retries: 0, ocrFailures: 0, latency: 0, completed: 0 }, queues: [], dmit: { enabled: false } };
+  assert.doesNotMatch(formatDailyReport(base), /没处理的消息/);
+  const text = formatDailyReport({ ...base, suspectCases: [{ chat: '甲群', user: '王五', text: '有需要的 联系我 @abc', reason: '包含联系或引流话术' }] });
+  assert.match(text, /👀 有点像广告但没处理的消息/);
+  assert.match(text, /• 「甲群」王五：有需要的 联系我 @abc（包含联系或引流话术）/);
+  assert.match(text, /\/漏拦/);
+});
+
 test('只命中关键词：没有链接和联系方式时可交给 AI 判断，不直接封号', async () => {
   const { classify, DEFAULT_KEYWORDS } = await import('../src/filters.js');
   const { aiReviewCandidate } = await import('../src/ai-review.js');

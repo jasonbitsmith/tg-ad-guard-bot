@@ -1,7 +1,26 @@
 // Bot API RichMessage contains authored content only. Never walk reply/user
 // metadata: names, quoted replies and guest callers are not message evidence.
 export function moderationMessage(message) {
-  return withPollOrChecklist(withContactCard(richMessage(message)));
+  return withButtonsAndVenue(withPollOrChecklist(withContactCard(richMessage(message))));
+}
+
+// Messages sent through an inline bot carry their pitch and link on buttons
+// under the message, and a shared place has its words in the venue title and
+// address. Neither is in text, so both were never read. Expose them as text
+// and keep button links, the same way as checklists and contact cards.
+function withButtonsAndVenue(message) {
+  const rows = message?.reply_markup?.inline_keyboard, venue = message?.venue;
+  if (!Array.isArray(rows) && !venue) return message;
+  const lines = [], links = [];
+  for (const row of (Array.isArray(rows) ? rows : []).slice(0, 20)) for (const button of (Array.isArray(row) ? row : []).slice(0, 8)) {
+    if (typeof button?.text === 'string' && button.text) lines.push(button.text.slice(0, 200));
+    const url = button?.url || button?.login_url?.url;
+    if (typeof url === 'string' && links.length < 50) links.push({ type: 'text_link', url: url.slice(0, 2048) });
+  }
+  if (venue) lines.push(['地点：' + String(venue.title || '').slice(0, 200), String(venue.address || '').slice(0, 300)].filter(Boolean).join(' '));
+  if (!lines.length && !links.length) return message;
+  const base = message.text || message.caption || '';
+  return { ...message, text: [base, ...lines].filter(Boolean).join('\n'), entities: [...(message.entities || message.caption_entities || []), ...links] };
 }
 
 // Polls and checklists carry their words in their own fields, not in text.
