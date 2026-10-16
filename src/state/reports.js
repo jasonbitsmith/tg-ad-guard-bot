@@ -2,6 +2,7 @@
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
 import { DAY } from './shared.js';
+import { suspicious } from './moderation.js';
 
 export class ReportsMethods {
   dailySummary(from, to) {
@@ -33,9 +34,8 @@ export class ReportsMethods {
       // Looked like an ad but was not certain enough to act on, so it is still
       // in the group. Recent misses (homophone fake-cash ad, checklist ad) were
       // all of this kind; listing them lets the owner catch the next one early.
-      // A lone link (score 1) is ordinary chat and is left out, even when AI
-      // was unsure about it.
-      if(action==='review' && Number(log.score)>=2 && result.suspectCases.length<20)result.suspectCases.push({chat:log.chatTitle||'',user:log.userName||String(log.userId||''),text:String(log.text||'').replace(/\s+/g,' ').slice(0,40),reason:String(log.reasons?.[0]||'').slice(0,30)});
+      // Same rule as the live notice (see suspicious in moderation.js).
+      if(action==='review' && suspicious(log.score,log.aiReview?.decision==='uncertain') && result.suspectCases.length<20)result.suspectCases.push({chat:log.chatTitle||'',user:log.userName||String(log.userId||''),text:String(log.text||'').replace(/\s+/g,' ').slice(0,40),reason:String(log.reasons?.[0]||'').slice(0,30)});
       if(action==='federation-undo' && log.steps?.some(x=>x.method==='case-unban' && executed(x) && x.undoOutcome==='success'))result.reversals++;
       if(success && action==='user-report')result.reports++;
       if(success && action==='ocr')result.ocr++;

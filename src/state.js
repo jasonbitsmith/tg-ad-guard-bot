@@ -251,6 +251,7 @@ export class GuardState extends DurableObject {
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
         } else if(op.local==='notice-progress'){await this.env.GUARD_STATE.getByName('admin').noticeProgress(op.noticeId,op.line,true);
         } else if(op.local==='owner-report'){await this.env.GUARD_STATE.getByName('admin').noticeReport(op.body);
+        } else if(op.local==='owner-suspect'){await this.env.GUARD_STATE.getByName('admin').noticeSuspect(op.body).catch(error=>{op.skipped=String(error.message||'通知失败').slice(0,120);});
         } else if (op.local === 'sample') {
           await this.env.GUARD_STATE.getByName('admin').editSample('add',op.sample);
         } else if (op.local === 'warning') {

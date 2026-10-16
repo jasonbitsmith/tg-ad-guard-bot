@@ -351,3 +351,11 @@ test('假钞/色情谐音广告和清单消息会被识别，正常讨论不误�
   assert.equal(classify(poll, DEFAULT_KEYWORDS).permanentBan, true);
   for (const text of ['收到一张假钞怎么办', '警惕假币骗局 @someone 已被骗', '这个币是假币吗', '验钞机多少钱']) assert.equal(classify(m(text), DEFAULT_KEYWORDS).permanentBan, false, text);
 });
+
+test('可疑提醒门槛：单纯 @某人 不算，AI 也拿不准才算', async () => {
+  const { suspicious } = await import('../src/state/moderation.js');
+  assert.equal(suspicious(1, true), false);
+  assert.equal(suspicious(2, false), false);
+  assert.equal(suspicious(2, true), true);
+  assert.equal(suspicious(3, false), true);
+});

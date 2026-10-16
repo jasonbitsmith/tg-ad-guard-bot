@@ -7,6 +7,7 @@ import { classify, normalize, parseCommand, validateWord, validateNewWord } from
 import { sampleMatches } from '../samples.js';
 import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
 
+export const suspicious = (score, aiUnsure) => Number(score) >= 3 || (Number(score) >= 2 && aiUnsure);
 const who = user => `<a href="tg://user?id=${user.id}">${String(user.first_name || '新朋友').slice(0, 40).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</a>`;
 
 export class ModerationMethods {
@@ -117,6 +118,7 @@ export class ModerationMethods {
       if (left) ops.push({ method: 'sendMessage', params: { chat_id: chatId, text: `❌ ${who(msg.from)}，答案不对，还可以再试 <b>${left}</b> 次。`, parse_mode: 'HTML' }, cleanupAfter: 20000, optional: true });
       return { ops, entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'verification-answer-rejected', outcome: 'pending', reasons: [left === null ? '验证期间的非答案消息' : left ? `算术答案不正确，剩余 ${left} 次` : '答错次数用完'] } };
     }
+    if (update.message) this.rememberSent(senderId, msg.message_id);
     if (this.read(`allow:${senderId}`) || this.read(`offence:${msg.message_id}`)) return empty;
     const policy = await this.config();
     if (!guest && !msg.sender_chat && !update.edited_message) {
@@ -132,7 +134,7 @@ export class ModerationMethods {
       const entry = { chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), reasons: [`内容限制：${contentLock.label}`] };
       const ops = [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }];
       if (contentLock.action === 'ban' && !msg.sender_chat) {
-        ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
+        ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } }, ...this.purgeOps(chatId, msg.from.id, [msg.message_id]));
         const federationTargets = guest ? [] : await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
         // Linked groups are dispatched to independent durable jobs by runJob.
         return { ops, entry: { ...entry, action: federationTargets.length ? 'content-lock-delete-and-federated-permanent-ban' : 'content-lock-delete-and-permanent-ban', federationTargets } };
@@ -201,7 +203,7 @@ export class ModerationMethods {
       if(aiReview.decision==='ad'){verdict.permanentBan=true;verdict.score=Math.max(7,verdict.score);verdict.reasons.push('AI 确认广告：'+aiReview.reason);}
       else if(aiReview.decision==='normal'){verdict.score=0;verdict.reasons=[];verdict.deleteOnKeyword=false;}
       else if(verdict.keywordOnly){verdict.reasons.push('AI 未确认：'+aiReview.reason);}
-      else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:[],entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,userName:msg.sender_chat?.title||[msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '),messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
+      else {return {ops:mediaQuarantine||emergencyLink?[{method:'deleteMessage',params:{chat_id:chatId,message_id:msg.message_id}}]:this.suspectOps(msg,update,verdict,text,guest,true),entry:{chatId,chatTitle:msg.chat.title||'',userId:senderId,userName:msg.sender_chat?.title||[msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '),messageId:msg.message_id,text:text.slice(0,300),action:mediaQuarantine?'new-member-media-quarantine':emergencyLink?'emergency-link-quarantine':'review',aiReview,reasons:[aiReview.reason],score:verdict.score}};}
     }
     const knowledge = guest ? null : this.findKnowledgeTrigger(text, policy);
     if (!verdict.score && !verdict.deleteOnKeyword && !mediaQuarantine && !emergencyLink && knowledge) {
@@ -215,7 +217,7 @@ export class ModerationMethods {
     const entry = { aiReview, keywordOnly: verdict.keywordOnly || undefined, sampleIds:[...new Set(verdict.sampleIds||sampleHits.map(x=>x.id))], chatId, chatTitle: msg.chat.title || '', userId: senderId, userName: msg.sender_chat?.title || [msg.from?.first_name,msg.from?.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: text.slice(0, 300), score: verdict.score, reasons: verdict.reasons, keywordHits: verdict.hits, domains: verdict.domains };
     if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, emergencyNewcomer?'应急模式：近两小时加入成员的媒体暂时隔离':`新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (emergencyLink && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'emergency-link-quarantine', reasons: [...entry.reasons, '应急模式：暂时限制新成员链接，不仅凭链接封号'] } };
-    if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [], entry: { ...entry, action: 'review' } };
+    if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: this.suspectOps(msg, update, verdict, text, guest, aiReview?.decision === 'uncertain'), entry: { ...entry, action: 'review' } };
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
     if (verdict.contactCard && !verdict.permanentBan && verdict.score < 7) {
       ops.push({ local: 'processed', messageId: msg.message_id });
@@ -230,11 +232,38 @@ export class ModerationMethods {
       return { ops, entry: { ...entry, action: 'delete-channel-message' } };
     }
     if(verdict.permanentBan || verdict.deleteOnKeyword)await this.observeAdBurst(msg,policy);
-    ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } });
+    ops.push({ method: 'banChatMember', params: { chat_id: chatId, user_id: msg.from.id, until_date: 0 } }, ...this.purgeOps(chatId, msg.from.id, verdict.contextMessageIds || [msg.message_id]));
     const federationTargets = guest ? [] : await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
     // Linked groups are dispatched to independent durable jobs by runJob.
     ops.push({ local: 'processed', messageId: msg.message_id });
     return { ops, entry: { ...entry, action: federationTargets.length ? 'delete-and-federated-permanent-ban' : 'delete-and-permanent-ban', federationTargets } };
+  }
+
+  // A message that looks like an ad but is not certain enough to act on is
+  // sent to the owner at once, with ban / ignore buttons, instead of waiting
+  // for the daily report. At most one notice per member every 6 hours.
+  // A bare @mention scores 2 in normal chat, so score 2 counts only when AI
+  // also could not call it normal.
+  suspectOps(msg, update, verdict, text, guest, aiUnsure = false) {
+    if (guest || msg.sender_chat || update.edited_message || !msg.from?.id || !suspicious(verdict.score, aiUnsure)) return [];
+    const key = `suspect-notice:${msg.from.id}`;
+    if (this.read(key)) return [];
+    this.write(key, true, 6 * 3600000);
+    return [{ local: 'owner-suspect', body: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: msg.from.id, userName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), userUsername: msg.from.username || '', messageId: msg.message_id, text: text.slice(0, 300), reasons: verdict.reasons.slice(0, 3) } }];
+  }
+
+  // Message ids each member sent here in the last day, so a ban can also
+  // remove the ads they posted before the one that was caught.
+  rememberSent(senderId, messageId) {
+    if (!Number.isSafeInteger(messageId)) return;
+    const key = `sent:${senderId}`, cutoff = Date.now() - DAY;
+    const list = this.read(key, []).filter(item => item.at > cutoff && item.id !== messageId);
+    list.push({ id: messageId, at: Date.now() });
+    this.write(key, list.slice(-30), DAY);
+  }
+  purgeOps(chatId, userId, skip = []) {
+    const ids = this.read(`sent:${userId}`, []).filter(item => item.at > Date.now() - DAY).map(item => item.id).filter(id => !skip.includes(id));
+    return ids.length ? [{ method: 'deleteMessages', params: { chat_id: chatId, message_ids: ids.slice(-100) }, optional: true, purge: true }] : [];
   }
 
   contentLock(msg, locks = {}) {
@@ -277,7 +306,7 @@ export class ModerationMethods {
     const member=await this.member(tg,msg.chat.id,target.from.id);
     if(ADMIN_STATUS.includes(member.status) || this.owners().includes(String(target.from.id))) throw new Error('不能处理管理员或机器人所有者');
     const sample=target.photo?.at(-1)?.file_unique_id ? {kind:'photo',value:target.photo.at(-1).file_unique_id} : {kind:'text',value:(target.text || target.caption || '').slice(0,500)};
-    const ops=[{method:'deleteMessage',params:{chat_id:msg.chat.id,message_id:target.message_id}}, {method:'banChatMember',params:{chat_id:msg.chat.id,user_id:target.from.id,until_date:0}}];
+    const ops=[{method:'deleteMessage',params:{chat_id:msg.chat.id,message_id:target.message_id}}, {method:'banChatMember',params:{chat_id:msg.chat.id,user_id:target.from.id,until_date:0}},...this.purgeOps(msg.chat.id,target.from.id,[target.message_id])];
     if(sample.value) ops.push({local:'sample',sample:{...sample,label:'管理员 /spam 待审核',pending:true}});
     ops.push({method:'deleteMessage',params:{chat_id:msg.chat.id,message_id:msg.message_id}});
     return {ops,entry:{chatId:msg.chat.id,actorId:msg.from.id,userId:target.from.id,messageId:target.message_id,action:'spam-delete-and-permanent-ban',text:(target.text||target.caption||'').slice(0,300),reasons:['管理员确认广告；样本待审核']}};

@@ -61,7 +61,7 @@ export class FederationMethods {
     const tg=telegram(this.env.BOT_TOKEN), member=await this.member(tg,Number(chatId),userId);
     if(ADMIN_STATUS.includes(member.status) || this.owners().includes(String(userId))) throw new Error('不能处理群管理员或机器人所有者');
     const targets=await this.env.GUARD_STATE.getByName('admin').federationTargets(chatId);
-    const ops=[{method:'deleteMessage',params:{chat_id:Number(chatId),message_id:messageId}},{method:'banChatMember',params:{chat_id:Number(chatId),user_id:userId,until_date:0}}];
+    const ops=[{method:'deleteMessage',params:{chat_id:Number(chatId),message_id:messageId}},{method:'banChatMember',params:{chat_id:Number(chatId),user_id:userId,until_date:0}},...this.purgeOps(Number(chatId),userId,[messageId])];
     const id=`review:${chatId}:${messageId}:${userId}`;
     await this.schedule(Date.now()+100);
     this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)',id,'{}',JSON.stringify({ops,entry:{chatId,actorId:'web-admin',userId:String(userId),messageId,action:'review-resolve-ban',federationTargets:targets}}),Date.now(),Date.now());

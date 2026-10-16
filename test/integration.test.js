@@ -1124,6 +1124,29 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(actions(-403).some(x=>x.method==='banChatMember'&&x.params.user_id===670));
     assert.ok(actions(-403).some(x=>x.method==='deleteMessage'&&x.params.message_id===target.message.message_id));
   });
+  await t.test('可疑但没把握的消息立刻私信所有者，点按钮删除并封禁；同一人 6 小时只提醒一次',async()=>{
+    const first=update(-404,'有需要的 联系我 @abcde777',{from:{id:680,first_name:'可疑号三'}});await send(first);await tick(-404);
+    assert.ok(!actions(-404).some(x=>x.method==='banChatMember'));
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('有点像广告'));
+    assert.ok(notice);assert.match(notice.params.text,/可疑号三/);assert.match(notice.params.text,/联系我/);
+    await send(update(-404,'有需要的 联系我 @abcde888',{from:{id:680,first_name:'可疑号三'}}));await tick(-404);
+    assert.equal(calls.filter(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('有点像广告')&&c.params.text.includes('可疑号三')).length,1);
+    await send(update(-404,'今天天气不错',{from:{id:681,first_name:'普通群友'}}));await tick(-404);
+    assert.ok(!calls.some(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('普通群友')));
+    const ban=notice.params.reply_markup.inline_keyboard.flat().find(x=>/:ban$/.test(x.callback_data||''));
+    await send({update_id:++seq,callback_query:{id:'cb-suspect',from:{id:99},data:ban.callback_data,message:{message_id:4,chat:{id:99,type:'private'},text:notice.params.text}}});await tick(-404);
+    assert.ok(actions(-404).some(x=>x.method==='banChatMember'&&x.params.user_id===680));
+    assert.ok(actions(-404).some(x=>x.method==='deleteMessage'&&x.params.message_id===first.message.message_id));
+  });
+  await t.test('封号时一并删除此人当天在本群发过的其他消息',async()=>{
+    const hello=update(-406,'大家好呀',{from:{id:690,first_name:'先潜伏'}});await send(hello);await tick(-406);
+    const ad=update(-406,'兼职日结 私聊我',{from:{id:690,first_name:'先潜伏'}});await send(ad);await tick(-406);
+    assert.ok(actions(-406).some(x=>x.method==='banChatMember'&&x.params.user_id===690));
+    const purge=calls.find(c=>c.method==='deleteMessages'&&c.params.chat_id===-406);
+    assert.ok(purge,'earlier messages are removed');assert.ok(purge.params.message_ids.includes(hello.message.message_id));assert.ok(!purge.params.message_ids.includes(ad.message.message_id));
+    await send(update(-406,'兼职日结 私聊我',{from:{id:691,first_name:'新号'}}));await tick(-406);
+    assert.equal(calls.filter(c=>c.method==='deleteMessages'&&c.params.chat_id===-406).length,1,'nothing extra to remove for a first message');
+  });
   await t.test('所有者可以用 /log 切换处理记录的接收位置', async () => {
     const dm=text=>send({update_id:++seq,message:{message_id:++seq,date:Math.floor(Date.now()/1000),chat:{id:99,type:'private'},from:{id:99},text}});
     await dm('/log off');assert.match(calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99).params.text,/已关闭/);

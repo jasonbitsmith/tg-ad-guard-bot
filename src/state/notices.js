@@ -101,6 +101,18 @@ export class NoticesMethods {
     return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null }, null, { userId: entry.userId, username: entry.userUsername });
   }
 
+  // Looked like an ad but was not sure enough to act on. Same buttons as a
+  // member report; capped per hour so a burst cannot flood the owner.
+  async noticeSuspect(item) {
+    const recipients = this.ownerChats();
+    if (!recipients.length || this.logTarget() === 'off') return false;
+    const rateKey = `suspect-rate:${Math.floor(Date.now() / 3600000)}`, count = this.read(rateKey, 0) + 1;
+    this.write(rateKey, count, 2 * 3600000);
+    if (count > 10) return false;
+    const text = ['👀 有点像广告，机器人没把握，先留着没动', `群：${esc(item.chatTitle || item.chatId)}`, `发送人：${person(item.userName, item.userId, item.userUsername)}`, item.reasons?.length ? `可疑点：${esc(item.reasons.join('；'))}` : '', `内容：${esc(String(item.text || '（非文字消息）').slice(0, 300))}`, '是广告就点「删除并封禁」，不是就点「不是广告」。'].filter(Boolean).join('\n');
+    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(item.chatId), userId: String(item.userId), messageId: Number(item.messageId) }, messageLink(item.chatId, item.messageId), { userId: item.userId, username: item.userUsername });
+  }
+
   async noticeReport(report) {
     const recipients = this.ownerChats();
     if (!recipients.length) return false;
@@ -140,7 +152,7 @@ export class NoticesMethods {
   }
   // Owner replies to any older notice (or sends /who <ID>) to get the card.
   async profileLookup(text, replyText, toChatId) {
-    const userId = /^\/who(?:@\w+)?\s+(\d{1,16})\s*$/i.exec(String(text || '').trim())?.[1] || /（(\d{1,16})）/.exec(String(replyText || '').split('\n').find(line => /^(?:🚫|被举报|👤)/.test(line)) || '')?.[1];
+    const userId = /^\/who(?:@\w+)?\s+(\d{1,16})\s*$/i.exec(String(text || '').trim())?.[1] || /（(\d{1,16})）/.exec(String(replyText || '').split('\n').find(line => /^(?:🚫|被举报|发送人|👤)/.test(line)) || '')?.[1];
     if (!userId) {
       await telegram(this.env.BOT_TOKEN)('sendMessage', { chat_id: toChatId, text: '查看某人资料：回复一条封禁或举报通知（随便发个字），或者发送 /who 用户ID。' });
       return false;
