@@ -13,6 +13,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
       seedLogTest(data){this.log(data);}
       readRecordTest(key){return this.read(key);}
+      setDmitEnabledTest(enabled){this.env.DMIT_MONITOR_ENABLED=enabled;this.env.DMIT_RELAY_ENABLED=enabled;}
       setDmitTargetsTest(targets){this.env.DMIT_NOTIFY_CHATS=targets;}
       async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
       async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
@@ -1325,6 +1326,16 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await global.inspectTest(true);assert.equal(copies().filter(x=>x.params.chat_id==='@wpzyz').length,2);await global.queueDmitRelay(message);await global.inspectTest(true);assert.equal(copies().length,4);
     const start=calls.length;assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),3);await global.inspectTest(true);assert.equal(calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text==='DMIT 公开补货消息').length,3);assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),0);
     await global.setDmitTargetsTest('');
+  });
+
+  await t.test('关闭 DMIT 后取消待发送任务，后台检查和重试不会恢复推送，群防照常工作',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    await global.queueDmitNotification('shutdown-test',{text:'关闭前已排队'});await global.setDmitEnabledTest('false');const before=calls.length;
+    await global.inspectTest(true);await global.monitorDmit();await global.monitorDmitRelay();await global.checkDmitRelayPermissions();
+    assert.equal(await global.queueDmitNotification('disabled-test',{text:'不应发送'}),0);assert.equal((await global.retryDmitRelays()).queued,0);
+    assert.equal((await global.queueDmitRelay({chat:{type:'channel',username:'APPKITLIFE'},message_id:999,text:'DMIT LAX.AN5.Pro.MINI 补货'})).accepted,false);
+    assert.equal(calls.length,before);assert.equal((await global.dmitStatus()).enabled,false);assert.equal((await global.relayStatus()).state,'已关闭');
+    await send(update(-99988,'替我收钱 一天7k',{from:{id:9998801}}));await tick(-99988);assert.ok(actions(-99988).some(x=>x.method==='banChatMember'));
   });
 
 });

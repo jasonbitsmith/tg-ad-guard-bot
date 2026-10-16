@@ -202,6 +202,9 @@ export class GuardState extends DurableObject {
     }
   }
   async runJob(job) {
+    const stopped=(job.id.startsWith('dmit-relay:')&&this.env.DMIT_RELAY_ENABLED!=='true')||(job.id.startsWith('dmit-notify:')&&this.env.DMIT_MONITOR_ENABLED!=='true');
+    if(stopped){this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);this.log({action:'dmit-delivery-cancelled',updateId:job.id,outcome:'cancelled',reasons:['用户已关闭补货监控与推送']});return;}
+
     let plan = job.plan ? JSON.parse(job.plan) : null;
     let activeOp;
     if(job.id.startsWith('verification-timeout:') && !plan?.ops?.[0]?.done){
