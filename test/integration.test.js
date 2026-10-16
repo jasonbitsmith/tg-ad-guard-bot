@@ -16,6 +16,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       setDmitEnabledTest(enabled){this.env.DMIT_MONITOR_ENABLED=enabled;this.env.DMIT_RELAY_ENABLED=enabled;}
       setDmitTargetsTest(targets){this.env.DMIT_NOTIFY_CHATS=targets;}
       setBroadcastModeTest(mode){this.env.BROADCAST_TEST_MODE=String(mode);}
+      expireBroadcastJobsTest(){this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending' AND id LIKE 'broadcast:%'");}
       async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
       async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
       async realOcrTest(msg){this.env.AI={run:async()=>({answer:'广告图片测试'})};return super.ocr(msg,async()=>({file_path:'ocr.jpg'}));}
@@ -1476,11 +1477,55 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.deepEqual(deleted.map(call=>call.params.chat_id),broadcastTargets);
     assert.ok(deleted.every(call=>call.params.message_id===444));
     const undo=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
-    assert.ok(broadcastTargets.every(target=>undo.params.text.includes('已从 '+target+' 删除')));
+    assert.ok(broadcastLabels.every(label=>undo.params.text.includes('已从 '+label+' 删除')));
+    const cleared=calls.slice(start).find(call=>call.method==='editMessageReplyMarkup'&&call.params.message_id===444&&call.params.chat_id===99);
+    assert.deepEqual(cleared.params.reply_markup,{inline_keyboard:[]});
     const after=calls.filter(call=>call.method==='deleteMessage').length;
     await press(button(report,'撤回'));
     assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/已经撤回/);
     assert.equal(calls.filter(call=>call.method==='deleteMessage').length,after);
+  });
+
+  await t.test('确认前检查每个目标：机器人发不了的目标带 ⚠️ 提示',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    failures.set('getChatMember:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
+    failures.set('getChatMember:@jason_prompt',{error_code:403,description:'Forbidden: bot is not a member of the channel chat'});
+    const start=calls.length;
+    try{
+      await send(dm(99,{text:'检查目标 https://example.com/check'}));
+      const prompt=promptSince(start);
+      assert.match(prompt.params.text,/⚠️ @wpzyz：找不到，或机器人不在里面/);
+      assert.match(prompt.params.text,/⚠️ @Jason_Prompt：机器人不在里面或没有权限/);
+      assert.match(prompt.params.text,/✅ @jason_vps_deal/);assert.match(prompt.params.text,/✅ @JasonSIMLab/);
+      assert.match(prompt.params.text,/选择目标」跳过/);
+      await press(button(prompt,'选择目标'));
+      const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+      const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:')).map(item=>item.text);
+      assert.deepEqual(toggles,['☐ @jason_vps_deal','☐ ⚠️ @wpzyz','☐ @JasonSIMLab','☐ @jason_Telegramx','☐ @Jason_WiseX','☐ ⚠️ @Jason_Prompt']);
+    }finally{failures.delete('getChatMember:@wpzyz');failures.delete('getChatMember:@jason_prompt');}
+  });
+
+  await t.test('撤回一直失败时按钮会恢复，可以再点一次',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'撤回会失败 https://example.com/undo-fail'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.match(report.params.text,/48 小时/);
+    failures.set('deleteMessage:@wpzyz',Array.from({length:6},()=>({error_code:502,description:'Bad Gateway'})));
+    try{
+      await press(button(report,'撤回'));
+      for(let n=0;n<6;n++){await admin.expireBroadcastJobsTest();await tickAdmin(true);}
+      const notice=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回没有完成'));
+      assert.ok(notice);
+    }finally{failures.delete('deleteMessage:@wpzyz');}
+    const mark=calls.length;
+    await press(button(report,'撤回'));
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/正在撤回/);
+    await tickAdmin(true);
+    const undo=calls.slice(mark).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
+    assert.ok(undo);assert.match(undo.params.text,/✅ 已从 @wpzyz 删除/);
   });
 
   await t.test('取消和失效按钮都不会发送',async()=>{

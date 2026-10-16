@@ -113,17 +113,48 @@ export class BroadcastMethods {
     }
   }
 
+  // Asks Telegram whether the bot can post in each target, so a missing admin
+  // right shows up on the confirmation (also in test mode) instead of as a
+  // failed send. A check that cannot run says so and never blocks sending.
+  async broadcastTargetProblems(targets) {
+    const tg = telegram(this.env.BOT_TOKEN);
+    let me;
+    try { me = await this.me(tg); } catch { return targets.map(() => '暂时检查不了，发送时再看结果'); }
+    return Promise.all(targets.map(async target => {
+      try {
+        const chatId = chatIdOf(target);
+        const [chat, member] = await Promise.all([tg('getChat', { chat_id: chatId }), tg('getChatMember', { chat_id: chatId, user_id: me.id })]);
+        const admin = ['creator', 'administrator'].includes(member.status);
+        if (chat.type === 'channel') {
+          if (member.status === 'creator' || (admin && member.can_post_messages === true)) return '';
+          return admin ? '机器人没有「发布消息」权限' : '机器人不是这个频道的管理员';
+        }
+        if (admin) return '';
+        if (['member', 'restricted'].includes(member.status) && member.can_send_messages !== false && chat.permissions?.can_send_messages !== false) return '';
+        return '机器人在这里不能发言';
+      } catch (error) {
+        if (error.retryable) return '暂时检查不了，发送时再看结果';
+        return /not found/i.test(error.message) ? '找不到，或机器人不在里面' : '机器人不在里面或没有权限';
+      }
+    }));
+  }
+
   async presentBroadcast(message, messageIds) {
     const ids = [...new Set(messageIds.filter(id => Number.isSafeInteger(Number(id)) && Number(id) > 0).map(Number))].sort((a, b) => a - b).slice(0, 10);
     if (!ids.length || !this.owners().includes(String(message.from?.id))) return false;
     const entries = broadcastTargetEntries(this.env);
     const labels = entries.map(item => item.label);
+    const problems = await this.broadcastTargetProblems(entries.map(item => item.id));
+    const warned = problems.flatMap((problem, index) => problem ? [index] : []);
     const token = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
     const testing = this.env.BROADCAST_TEST_MODE === 'true';
     const text = [
       `要把${contentKind(message, ids.length)}发到哪里？`,
       '',
-      '目标：' + labels.join('、'),
+      '目标：',
+      ...labels.map((label, index) => problems[index] ? `⚠️ ${label}：${problems[index]}` : `✅ ${label}`),
+      ...(warned.length ? ['', '带 ⚠️ 的目标现在多半发不出去。可以先去补权限，或用「选择目标」跳过它们。'] : []),
+      '',
       testing ? '当前是测试模式。确认后只会复制一份给所有者 ' + BROADCAST_TEST_CHAT + '，不会发到这些目标。' : '确认后才会发送。',
     ].join('\n').slice(0, 3500);
     const sent = await telegram(this.env.BOT_TOKEN)('sendMessage', {
@@ -135,13 +166,13 @@ export class BroadcastMethods {
     if (!Number.isSafeInteger(sent?.message_id)) throw new Error('确认消息没有发出去');
     this.write(`broadcast:draft:${token}`, {
       token, ownerId: String(message.from.id), chatId: message.chat.id, messageIds: ids,
-      targets: entries.map(item => item.id), labels, selected: [], testing,
+      targets: entries.map(item => item.id), labels, warned, selected: [], testing,
       status: 'open', promptMessageId: sent.message_id, created: Date.now(),
     }, DRAFT_TTL);
     return true;
   }
 
-  broadcastKeyboard(token, selected, targets) {
+  broadcastKeyboard(token, selected, targets, warned = []) {
     if (!selected) return [
       [{ text: '发送到全部目标', callback_data: `bc:a:${token}` }],
       [{ text: '选择目标', callback_data: `bc:p:${token}` }],
@@ -149,7 +180,7 @@ export class BroadcastMethods {
     ];
     const chosen = new Set(selected);
     return [
-      ...targets.map((target, index) => [{ text: `${chosen.has(index) ? '☑' : '☐'} ${target}`, callback_data: `bc:t:${token}:${index}` }]),
+      ...targets.map((target, index) => [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warned.includes(index) ? '⚠️ ' : ''}${target}`, callback_data: `bc:t:${token}:${index}` }]),
       [{ text: '确认发送', callback_data: `bc:g:${token}` }, { text: '取消', callback_data: `bc:c:${token}` }],
     ];
   }
@@ -176,7 +207,7 @@ export class BroadcastMethods {
       if (selected.has(index)) selected.delete(index); else selected.add(index);
       draft.selected = [...selected].sort((a, b) => a - b);
       this.write(`broadcast:draft:${token}`, draft, DRAFT_TTL);
-      await tg('editMessageReplyMarkup', { chat_id: draft.chatId, message_id: draft.promptMessageId, reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets) } }).catch(() => {});
+      await tg('editMessageReplyMarkup', { chat_id: draft.chatId, message_id: draft.promptMessageId, reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets, draft.warned) } }).catch(() => {});
       return answer(draft.selected.length ? `已选 ${draft.selected.length} 个` : '未选择目标');
     }
     const kind = action[1];
@@ -190,7 +221,7 @@ export class BroadcastMethods {
       await tg('editMessageText', {
         chat_id: draft.chatId, message_id: draft.promptMessageId,
         text: `选择要发送的目标（${(draft.labels || draft.targets).length} 个），然后点确认发送。`,
-        reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets) },
+        reply_markup: { inline_keyboard: this.broadcastKeyboard(token, draft.selected, draft.labels || draft.targets, draft.warned) },
       }).catch(() => {});
       return answer('请选择目标');
     }
@@ -237,7 +268,8 @@ export class BroadcastMethods {
 
   // Called only after the queue gives up. A retry leaves the target unsettled
   // so the same job can finish the copy without creating a second one.
-  broadcastJobFailed(job, plan, error) {
+  async broadcastJobFailed(job, plan, error) {
+    if (job.id.startsWith('broadcast:undo:')) return this.broadcastUndoFailed(plan, error);
     if (!job.id.startsWith('broadcast:send:')) return;
     const op = plan?.ops?.find(item => item.local === 'broadcast-copied');
     if (!op) return;
@@ -269,7 +301,7 @@ export class BroadcastMethods {
       }
     }
     const canUndo = delivery.targets.some(target => delivery.results[target]?.messageIds?.length);
-    if (canUndo) lines.push('', '点「撤回」可从已发送的目标删除这条消息。');
+    if (canUndo) lines.push('', '点「撤回」可从已发送的目标删除这条消息。Telegram 只允许删除 48 小时内发出的消息。');
     else lines.push('', '没有发送成功的目标。');
     const params = { chat_id: delivery.ownerChatId, text: lines.join('\n').slice(0, 4000), disable_web_page_preview: true };
     if (canUndo) params.reply_markup = { inline_keyboard: [[{ text: '撤回', callback_data: `bc:u:${delivery.id}` }]] };
@@ -287,12 +319,25 @@ export class BroadcastMethods {
     if (!copies.length) return answer('没有可以撤回的消息。', true);
     delivery.undoState = 'running';
     delivery.undoMessageId = messageId;
+    delivery.undoAttempts = (delivery.undoAttempts || 0) + 1;
     this.write(`broadcast:delivery:${id}`, delivery, DELIVERY_TTL);
     const ops = copies.map(item => ({ method: 'deleteMessage', params: { chat_id: chatIdOf(item.target), message_id: item.message_id }, broadcastTarget: item.target, broadcastContinue: true }));
     ops.push({ local: 'broadcast-undo-report', broadcastId: id });
-    this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', `broadcast:undo:${id}`, '{}', JSON.stringify({ ops, entry: { action: 'broadcast-undo', chatId: String(delivery.ownerChatId), reasons: ['撤回所有者广播'] } }), Date.now(), Date.now());
+    this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)', `broadcast:undo:${id}:${delivery.undoAttempts}`, '{}', JSON.stringify({ ops, entry: { action: 'broadcast-undo', chatId: String(delivery.ownerChatId), reasons: ['撤回所有者广播'] } }), Date.now(), Date.now());
     await this.schedule(Date.now() + 200);
     return answer('正在撤回');
+  }
+
+  // The queue gave up on an undo (e.g. Telegram unreachable for a long time).
+  // Reopen the button instead of leaving it stuck on 正在撤回.
+  async broadcastUndoFailed(plan, error) {
+    const op = plan?.ops?.find(item => item.local === 'broadcast-undo-report');
+    const key = `broadcast:delivery:${op?.broadcastId}`;
+    const delivery = op && this.read(key);
+    if (!delivery || delivery.undoState !== 'running') return;
+    delivery.undoState = 'idle';
+    this.write(key, delivery, DELIVERY_TTL);
+    await telegram(this.env.BOT_TOKEN)('sendMessage', { chat_id: delivery.ownerChatId, text: '撤回没有完成：' + String(error.message || '发送失败').slice(0, 200) + '\n可以稍后再点一次「撤回」。' }).catch(() => {});
   }
 
   broadcastReported(op, plan) {
@@ -317,11 +362,15 @@ export class BroadcastMethods {
     }
     const lines = ['撤回结果', ''];
     for (const [target, item] of byTarget) {
-      if (!item.failed.length) lines.push(`✅ 已从 ${target} 删除`);
-      else lines.push(`❌ ${target}：${item.failed[0]}`);
+      const label = delivery.labelById?.[target] || target;
+      if (!item.failed.length) lines.push(`✅ 已从 ${label} 删除`);
+      else lines.push(`❌ ${label}：${/can.t be deleted/i.test(item.failed[0]) ? '删不掉：可能已超过 48 小时，或机器人没有删除权限，请手动删' : item.failed[0]}`);
     }
     if (!byTarget.size) lines.push('没有已发送的消息需要删除。');
-    await telegram(this.env.BOT_TOKEN)('sendMessage', { chat_id: delivery.ownerChatId, text: lines.join('\n').slice(0, 4000), disable_web_page_preview: true });
+    const tg = telegram(this.env.BOT_TOKEN);
+    await tg('sendMessage', { chat_id: delivery.ownerChatId, text: lines.join('\n').slice(0, 4000), disable_web_page_preview: true });
+    // The 撤回 button has done its job; take it off the result message.
+    if (Number.isSafeInteger(delivery.reportMessageId)) await tg('editMessageReplyMarkup', { chat_id: delivery.ownerChatId, message_id: delivery.reportMessageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
     delivery.undoReported = true;
     delivery.undoState = 'done';
     this.write(key, delivery, DELIVERY_TTL);
