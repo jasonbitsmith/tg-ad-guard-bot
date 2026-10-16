@@ -318,6 +318,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await quietState.fakeQuietClockTest();
     await quietState.editQuiet({ id: -149, title: '静默测试群' }, true, '00:00', '08:00', true);
     await quietState.quietTick('00:00');
+    // Quiet hours close every kind of message, not only text: checklists/polls, photos, stickers.
+    const mute=calls.filter(c=>c.method==='setChatPermissions'&&c.params.chat_id===-149).at(-1).params.permissions;
+    for(const key of ['can_send_messages','can_send_polls','can_send_photos','can_send_other_messages','can_send_documents'])assert.equal(mute[key],false,key);
     failures.set('deleteMessage:-149', { error_code: 500, description: 'temporary failure' });
     await quietState.quietTick('08:00');
     await quietState.forceNoticesTest();
@@ -888,6 +891,12 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const plain=card(9102,'张伟');await send(plain);await tick(-185);
     assert.ok(actions(-185).some(x=>x.method==='deleteMessage'&&x.params.message_id===plain.message.message_id));
     assert.ok(!actions(-185).some(x=>x.method==='banChatMember'&&x.params.user_id===9102));
+  });
+  await t.test('清单消息里的假币广告：删除并封禁',async()=>{
+    const u=update(-186,'',{from:{id:9201,first_name:'Jackson Sarah'},checklist:{title:'假币玩妹嫖娼🔥假钞日常出货都可',tasks:[{id:1,text:'假币日常🔥使用交流群'},{id:2,text:'https://t.me/+t9xrbFouuXQ2ZDlx'}]}});delete u.message.text;
+    await send(u);await tick(-186);
+    assert.ok(actions(-186).some(x=>x.method==='deleteMessage'&&x.params.message_id===u.message.message_id));
+    assert.ok(actions(-186).some(x=>x.method==='banChatMember'&&x.params.user_id===9201));
   });
   await t.test('完整备份可预览恢复、保留回退包和稳定样本 ID；部分失败可续作',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;

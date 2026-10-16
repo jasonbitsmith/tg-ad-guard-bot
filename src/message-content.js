@@ -1,7 +1,31 @@
 // Bot API RichMessage contains authored content only. Never walk reply/user
 // metadata: names, quoted replies and guest callers are not message evidence.
 export function moderationMessage(message) {
-  return withContactCard(richMessage(message));
+  return withPollOrChecklist(withContactCard(richMessage(message)));
+}
+
+// Polls and checklists carry their words in their own fields, not in text.
+// The checklist ad ("假币…" title, a t.me/+ invite as the last task) was never
+// read. Expose title, question, options and tasks as text, and keep hidden links.
+function withPollOrChecklist(message) {
+  const list = message?.checklist, poll = message?.poll;
+  if (!list && !poll) return message;
+  const lines = [], links = [];
+  const add = (value, entities) => {
+    if (typeof value === 'string' && value) lines.push(value.slice(0, 500));
+    for (const e of Array.isArray(entities) ? entities : []) if (e?.type === 'text_link' && typeof e.url === 'string' && links.length < 50) links.push({ type: 'text_link', url: e.url.slice(0, 2048) });
+  };
+  if (list) {
+    add(list.title, list.title_entities);
+    for (const task of (Array.isArray(list.tasks) ? list.tasks : []).slice(0, 50)) add(task?.text, task?.text_entities);
+  }
+  if (poll) {
+    add(poll.question, poll.question_entities);
+    for (const option of (Array.isArray(poll.options) ? poll.options : []).slice(0, 20)) add(option?.text, option?.text_entities);
+    add(poll.explanation, poll.explanation_entities);
+  }
+  const base = message.text || message.caption || '';
+  return { ...message, text: [base, ...lines].filter(Boolean).join('\n'), entities: [...(message.entities || message.caption_entities || []), ...links] };
 }
 
 // A shared contact card has no text at all: the ad is the card's name (for
