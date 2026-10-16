@@ -1,4 +1,5 @@
 import { DmitRelayMethods } from './state/dmit-relay.js';
+import { BroadcastMethods } from './state/broadcast.js';
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
 import { DEFAULT_KEYWORDS, DEFAULT_POLICY } from './filters.js';
@@ -152,12 +153,13 @@ export class GuardState extends DurableObject {
     this.running = true;
     try {
       await this.ctx.storage.setAlarm(Date.now() + 60000);
+      await this.flushBroadcastAlbums().catch(error => this.log({ action: 'broadcast-album', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
       const started = Date.now();
       for(let n=0;n<5;n++){const rescue=this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id LIKE 'verification-release:%' AND due<=? ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];if(!rescue)break;await this.runJob(rescue);}
       for (let n = 0; n < 10 && Date.now() - started < 20000; n++) {
         // Keep each group's processing order across retries. Otherwise a later warning
         // could be overwritten by a previously planned event that was rate-limited.
-        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'dmit-relay:%' AND id NOT LIKE 'dmit-notify:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
+        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'dmit-relay:%' AND id NOT LIKE 'dmit-notify:%' AND id NOT LIKE 'broadcast:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
         if (!job || job.due > Date.now()) break;
         await this.runJob(job);
       }
@@ -192,10 +194,11 @@ export class GuardState extends DurableObject {
       this.pruneActivity();
     } finally {
       this.running = false;
-      const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
-      const timeoutDue=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (id LIKE 'verification-timeout:%' OR id LIKE 'federation:%' OR id LIKE 'undo:%' OR id LIKE 'verification-release:%' OR id LIKE 'cleanup:%')").toArray()[0]?.due;
+      const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'broadcast:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
+      const timeoutDue=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (id LIKE 'verification-timeout:%' OR id LIKE 'federation:%' OR id LIKE 'undo:%' OR id LIKE 'verification-release:%' OR id LIKE 'cleanup:%' OR id LIKE 'broadcast:%')").toArray()[0]?.due;
       const verificationDue = this.sql.exec("SELECT expires FROM verifications WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) ORDER BY expires LIMIT 1").toArray()[0]?.expires;
-      const due = [next, timeoutDue, verificationDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];
+      const albumDue = this.nextBroadcastAlbumDue();
+      const due = [next, timeoutDue, verificationDue, albumDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];
       const config = await this.config();
       const fallback = (config.quietEnabled || this.read('quiet:active',false) || this.quietNotices().length || (config.announcements||[]).some(item=>item.enabled)) ? Date.now() + 60000 : Date.now() + DAY;
       await this.ctx.storage.setAlarm(due === undefined ? fallback : Math.max(Date.now() + 100, due));
@@ -249,6 +252,9 @@ export class GuardState extends DurableObject {
           if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
         } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage'||x.method==='sendMessage')?.result);
+        } else if(op.local==='broadcast-copied'){this.broadcastCopied(op,plan);
+        } else if(op.local==='broadcast-reported'){this.broadcastReported(op,plan);
+        } else if(op.local==='broadcast-undo-report'){await this.broadcastUndoReport(op,plan);
         } else if(op.local==='missed-record'){this.saveMissedRecord(op.body);
         } else if(op.local==='clearVerification'){
           if(this.verification(op.userId)?.expires===op.expires)this.clearVerification(op.userId);
@@ -294,6 +300,7 @@ export class GuardState extends DurableObject {
               // banned in the corresponding channel chat"); retrying never helps.
               else if (op.method === 'banChatMember' && error.code === 400 && /corresponding channel chat/i.test(error.message)) { op.skipped = '频道私信聊天不支持封禁，已跳过'; }
               else if(op.method==='deleteMessage' && plan.ops.some(x=>x.method==='banChatMember')){op.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);deferredDeleteError=error;continue;}
+              else if(op.broadcastContinue && error.retryable===false){op.skipped=String(error.message||'').slice(0,180);}
               else throw error;
             }
           }
@@ -332,12 +339,15 @@ export class GuardState extends DurableObject {
       this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, operationSteps:operationSteps(plan?.ops,retry?'pending':'failed'), steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
-        if(plan?.entry?.action==='dmit-channel-relay')await this.alertOwner('dmit-relay-send','补货同步到 '+plan.entry.channel+' 失败\n消息 '+plan.entry.messageId+'；原因：'+String(error.message).slice(0,160)+'\n请检查机器人是否拥有两个频道的相应权限。').catch(()=>{});
+        if(job.id.startsWith('broadcast:'))this.broadcastJobFailed(job,plan,error);
+        else if(plan?.entry?.action==='dmit-channel-relay')await this.alertOwner('dmit-relay-send','补货同步到 '+plan.entry.channel+' 失败\n消息 '+plan.entry.messageId+'；原因：'+String(error.message).slice(0,160)+'\n请检查机器人是否拥有两个频道的相应权限。').catch(()=>{});
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
-        const alertChatId=String(plan?.entry?.chatId || msg?.chat?.id || '');
-        const alertChatTitle=msg?.chat?.title || plan?.entry?.chatTitle || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
-        await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${alertChatTitle || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
+        if(!job.id.startsWith('broadcast:')){
+          const alertChatId=String(plan?.entry?.chatId || msg?.chat?.id || '');
+          const alertChatTitle=msg?.chat?.title || plan?.entry?.chatTitle || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
+          await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${alertChatTitle || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
+        }
       }
     }
   }
@@ -380,7 +390,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);

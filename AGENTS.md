@@ -44,3 +44,16 @@ npm test        # 依赖 dist/，必须在 check 之后跑
 - 密钥只放在 Cloudflare（`wrangler secret put`），不写进代码、配置、测试或提交信息。
 - `.bookscape-key`、`.dev.vars*`、`bookscape-receipts/` 已在 `.gitignore` 中，不要提交。
 - 这个仓库是公开的。
+
+## 所有者广播
+
+所有者（`ADMIN_IDS`，现为 Telegram 用户 `5615131413`）在私聊里发送文字、图片、视频、文件，或约 1 秒内到齐的相册时，机器人先给出三个按钮：发送到全部目标、选择具体目标后再确认、取消。确认后每个目标一条持久任务，用 `copyMessage`（相册用 `copyMessages`）发送，并沿用队列里的重试和 429 处理。已经成功的目标不会在重试时再发一次。发完后私聊列出成功和失败原因；「撤回」按保存的 `(目标, message_id)` 删除并回报结果。
+
+非所有者的私聊不进入广播。指令、管理后台入口、申诉和成员找回仍按原流程处理，不会被广播确认挡住。
+
+变量在 `wrangler.jsonc`：
+
+- `BROADCAST_TARGETS`：逗号分隔的 `@用户名` 或负数群 ID，1–20 个，校验方式和 `DMIT_NOTIFY_CHATS` 相同。当前是 `@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt`。
+- `BROADCAST_TEST_MODE`：`"true"` 时不发给上面的列表，只发给 `5615131413`。现在就是 `"true"`。
+
+上线到真实目标：把 `BROADCAST_TEST_MODE` 改成 `"false"`，合并到 `main`，再从 `main` 部署。不要从功能分支部署，也只有 Jason 明确要求时才部署。

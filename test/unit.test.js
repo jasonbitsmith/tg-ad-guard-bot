@@ -1,4 +1,5 @@
 import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
+import { broadcastTargets, broadcastDestinations, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
@@ -324,6 +325,17 @@ test('补货同步只识别指定产品补货并解析混合大小写编码',()=
 
 test('补货接收目标支持频道和群 ID，大小写去重及拒绝非法目标',()=>{
  assert.deepEqual(dmitTargets({DMIT_NOTIFY_CHATS:'@wpzyz,@WPZYZ,-10055555'}),['@wpzyz','-10055555']);assert.throws(()=>dmitTargets({DMIT_NOTIFY_CHATS:'https://t.me/test'}));assert.deepEqual(dmitTargets({}),['@jason_vps_deal']);
+});
+
+test('广播目标与补货目标使用同一套校验，测试模式只发给所有者',()=>{
+ const env={BROADCAST_TARGETS:'@jason_vps_deal,@WPZYZ,@wpzyz,-10055555',BROADCAST_TEST_MODE:'false'};
+ assert.deepEqual(broadcastTargets(env),['@jason_vps_deal','@wpzyz','-10055555']);
+ assert.deepEqual(broadcastDestinations(env),['@jason_vps_deal','@wpzyz','-10055555']);
+ assert.deepEqual(broadcastDestinations({...env,BROADCAST_TEST_MODE:'true'}),[BROADCAST_TEST_CHAT]);
+ assert.equal(BROADCAST_TEST_CHAT,'5615131413');
+ assert.throws(()=>broadcastTargets({BROADCAST_TARGETS:'https://t.me/test'}));
+ assert.throws(()=>broadcastTargets({BROADCAST_TARGETS:''}));
+ assert.throws(()=>broadcastDestinations({BROADCAST_TARGETS:'not a chat',BROADCAST_TEST_MODE:'true'}));
 });
 
 test('联系人名片：广告名字直接封禁，普通名字只算可疑', () => {
