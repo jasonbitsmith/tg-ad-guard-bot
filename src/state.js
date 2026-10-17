@@ -156,6 +156,9 @@ export class GuardState extends DurableObject {
       await this.flushBroadcastAlbums().catch(error => this.log({ action: 'broadcast-album', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
       const started = Date.now();
       for(let n=0;n<5;n++){const rescue=this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id LIKE 'verification-release:%' AND due<=? ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];if(!rescue)break;await this.runJob(rescue);}
+      // Button presses jump the queue: Telegram drops the reply after about
+      // 15 seconds, and they never depend on earlier messages being handled.
+      for(let n=0;n<5;n++){const press=this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND attempts=0 AND plan IS NULL AND id LIKE 'u:%' AND json_extract(payload,'$.callback_query.id') IS NOT NULL ORDER BY rowid LIMIT 1").toArray()[0];if(!press)break;await this.runJob(press);}
       for (let n = 0; n < 10 && Date.now() - started < 20000; n++) {
         // Keep each group's processing order across retries. Otherwise a later warning
         // could be overwritten by a previously planned event that was rate-limited.
@@ -299,6 +302,10 @@ export class GuardState extends DurableObject {
               // A channel's direct-messages chat refuses bans ("users must be
               // banned in the corresponding channel chat"); retrying never helps.
               else if (op.method === 'banChatMember' && error.code === 400 && /corresponding channel chat/i.test(error.message)) { op.skipped = '频道私信聊天不支持封禁，已跳过'; }
+              // A button reply only works for about 15 seconds after the click.
+              // A late or repeated reply is refused for good; the real work
+              // (approving a join request, lifting a mute) must still go on.
+              else if (op.method === 'answerCallbackQuery' && error.code === 400) { op.skipped = '按钮回应已过期，已跳过'; }
               else if(op.method==='deleteMessage' && plan.ops.some(x=>x.method==='banChatMember')){op.error=String(error.message).slice(0,200);this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);deferredDeleteError=error;continue;}
               else if(op.broadcastContinue && error.retryable===false){op.skipped=String(error.message||'').slice(0,180);}
               else throw error;
@@ -344,9 +351,10 @@ export class GuardState extends DurableObject {
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
         if(!job.id.startsWith('broadcast:')){
-          const alertChatId=String(plan?.entry?.chatId || msg?.chat?.id || '');
-          const alertChatTitle=msg?.chat?.title || plan?.entry?.chatTitle || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
-          await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${alertChatTitle || '未知'}\n操作：${plan?.entry?.action || '未知'}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
+          // Buttons in a private verification chat run in the group being joined.
+          const alertChatId=String(plan?.entry?.chatId || (msg?.chat?.type==='private'?this.read('chat')?.id:msg?.chat?.id) || '');
+          const alertChatTitle=(msg?.chat?.type==='private'?'':msg?.chat?.title) || plan?.entry?.chatTitle || (alertChatId===String(this.read('chat')?.id||'')?this.read('chat')?.title:'') || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
+          await this.env.GUARD_STATE.getByName('admin').alertOwner('telegram-operation-failure', `Telegram 操作连续失败，已停止重试\n群：${alertChatTitle || '未知'}\n操作：${plan?.entry?.action || (failedUpdate.callback_query?'按钮回应':'未知')}\n原因：${String(error.message || '未知错误').slice(0, 300)}`).catch(() => {});
         }
       }
     }
