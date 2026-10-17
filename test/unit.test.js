@@ -386,6 +386,17 @@ test('假钞/色情谐音广告和清单消息会被识别，正常讨论不误�
   for (const text of ['收到一张假钞怎么办', '警惕假币骗局 @someone 已被骗', '这个币是假币吗', '验钞机多少钱']) assert.equal(classify(m(text), DEFAULT_KEYWORDS).permanentBan, false, text);
 });
 
+test('开盒/查档广告会被封，受害者求助和正常聊天不误伤', () => {
+  const m = (text, first_name = '路人') => ({ chat: { id: -1 }, from: { id: 9, first_name }, text });
+  assert.equal(classify(m('一直在秒 从未停歇专业开盒', '查档秒出'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(m('一直在秒 从未停歇专业开盒'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(m('开盒', '查档秒出'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(m('全网查档 户籍查询 @doxx_seller1'), DEFAULT_KEYWORDS).permanentBan, true);
+  // Join screening passes the name alone as text.
+  assert.equal(classify({ text: '查档秒出' }, DEFAULT_KEYWORDS).permanentBan, true);
+  for (const text of ['我被开盒了怎么办', '小心被开盒，别乱发照片', '开盒是违法的', '今天盲盒开盒开到隐藏款', '这个专业的VPS怎么样']) assert.equal(classify(m(text), DEFAULT_KEYWORDS).permanentBan, false, text);
+});
+
 test('可疑提醒门槛：单纯 @某人 不算，AI 也拿不准才算', async () => {
   const { suspicious } = await import('../src/state/moderation.js');
   assert.equal(suspicious(1, true), false);
