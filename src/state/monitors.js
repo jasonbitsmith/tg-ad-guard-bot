@@ -7,7 +7,7 @@ import { DAY, ADMIN_STATUS } from './shared.js';
 
 export class MonitorsMethods {
   dmitStatus() {
-    return this.read('dmit:status', { enabled: this.env.DMIT_MONITOR_ENABLED === 'true', state: '尚未执行' });
+    return this.env.DMIT_MONITOR_ENABLED!=='true'?{enabled:false,state:'已关闭'}:this.read('dmit:status', { enabled:true, state:'尚未执行' });
   }
   ocrQuota(chatId){
     const limit=Math.max(1,Math.min(100,Number(this.env.OCR_MAX_PER_CHAT_HOUR||30))), key='ocr:quota:'+chatId;
@@ -92,6 +92,7 @@ export class MonitorsMethods {
     catch { return target; }
   }
   async monitorDmit() {
+    if(this.env.DMIT_MONITOR_ENABLED!=='true')return;
     const source = this.env.DMIT_PRICING_URL || 'https://www.dmit.io/pages/pricing';
     const channel = this.env.DMIT_NOTIFY_CHAT || '@jason_vps_deal';
     const affiliateId = this.env.DMIT_AFFILIATE_ID || '';

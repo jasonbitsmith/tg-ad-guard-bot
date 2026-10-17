@@ -21,7 +21,7 @@ export function relayPosts(html,username) {
 }
 export class DmitRelayMethods {
   relayConfig(){return {enabled:this.env.DMIT_RELAY_ENABLED==='true',source:String(this.env.DMIT_RELAY_SOURCE_CHAT||'@APPKITLIFE'),target:String(this.env.DMIT_NOTIFY_CHAT||'@jason_vps_deal'),targets:dmitTargets(this.env)};}
-  relayStatus(){return {...this.relayConfig(),...this.read('dmit-relay:status',{}),lastDelivery:this.read('dmit-relay:last-delivery'),permissions:this.read('dmit-relay:permissions'),queue:this.sql.exec("SELECT status,COUNT(*) AS count FROM jobs WHERE id LIKE 'dmit-relay:%' OR id LIKE 'dmit-notify:%' GROUP BY status").toArray()};}
+  relayStatus(){return {...this.relayConfig(),...this.read('dmit-relay:status',{}),...(this.env.DMIT_RELAY_ENABLED!=='true'?{enabled:false,state:'已关闭'}:{}),lastDelivery:this.read('dmit-relay:last-delivery'),permissions:this.read('dmit-relay:permissions'),queue:this.sql.exec("SELECT status,COUNT(*) AS count FROM jobs WHERE id LIKE 'dmit-relay:%' OR id LIKE 'dmit-notify:%' GROUP BY status").toArray()};}
   async queueDmitRelay(message) {
     const config=this.relayConfig();
     if(!config.enabled||message?.chat?.type!=='channel'||String(message.chat.username||'').toLowerCase()!==config.source.slice(1).toLowerCase()||config.source.toLowerCase()===config.target.toLowerCase()||(!Number.isSafeInteger(message.message_id)||message.message_id<=0)||!isDmitRestock(message.text||message.caption))return {accepted:false};
@@ -37,6 +37,7 @@ export class DmitRelayMethods {
     return {accepted:true,queued,duplicate:queued===0};
   }
   async queueDmitNotification(event,params){
+    if(this.env.DMIT_MONITOR_ENABLED!=='true')return 0;
     await this.schedule(Date.now()+200);let queued=0;
     for(const target of dmitTargets(this.env)){
       const id='dmit-notify:'+event+':'+target;
@@ -50,8 +51,9 @@ export class DmitRelayMethods {
     this.write('delivered:'+op.id,true,180*DAY);
     const delivery={sourceMessageId:op.sourceMessageId,targetMessageId:result?.message_id||null,target:op.target,at:new Date().toISOString()};this.write('dmit-relay:last-delivery',delivery);this.write('dmit-relay:last-delivery:'+op.target,delivery);
   }
-  async retryDmitRelays(){const jobs=this.sql.exec("SELECT id FROM jobs WHERE status='failed' AND (id LIKE 'dmit-relay:%' OR id LIKE 'dmit-notify:%') ORDER BY created DESC LIMIT 50").toArray();for(const row of jobs)await this.retryJob(row.id);return {queued:jobs.length};}
+  async retryDmitRelays(){if(this.env.DMIT_MONITOR_ENABLED!=='true'&&this.env.DMIT_RELAY_ENABLED!=='true')return {queued:0,disabled:true};const jobs=this.sql.exec("SELECT id FROM jobs WHERE status='failed' AND (id LIKE 'dmit-relay:%' OR id LIKE 'dmit-notify:%') ORDER BY created DESC LIMIT 50").toArray();for(const row of jobs)await this.retryJob(row.id);return {queued:jobs.length};}
   async checkDmitRelayPermissions(){
+    if(this.env.DMIT_RELAY_ENABLED!=='true')return {disabled:true};
     const config=this.relayConfig(),tg=telegram(this.env.BOT_TOKEN),me=await this.me(tg);const targets=[];
     for(const target of config.targets){
       try{const chat=await tg('getChat',{chat_id:target}),member=await tg('getChatMember',{chat_id:target,user_id:me.id});const admin=['creator','administrator'].includes(member.status);const canPost=chat.type==='channel'?member.status==='creator'||(admin&&member.can_post_messages===true):admin||(['member','restricted'].includes(member.status)&&member.can_send_messages!==false&&chat.permissions?.can_send_messages!==false);targets.push({target,type:chat.type,status:member.status,canPost,lastDelivery:this.read('dmit-relay:last-delivery:'+target)});}

@@ -2,6 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
+import { broadcastDisplayLabel, broadcastPickerLabel } from '../src/state/broadcast.js';
+
+const BROADCAST_CHAT_TITLES = {
+  '@jason_vps_deal': 'VPS 补货雷达',
+  '@wpzyz': '网盘资源站',
+  '@jasonsimlab': 'SIM 实验室',
+  '@jason_telegramx': 'Telegram 号码',
+  '@jason_wisex': 'Wise 交流',
+  '@jason_prompt': '这是一个用来确认按钮不会超过 Telegram 字数上限的非常非常非常非常非常非常非常非常长的群标题',
+};
 
 test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后台', async t => {
   const calls = [], failures = new Map();let dmitOfficialDown=false,officialPostId=9876,relayPostId=107,botPermissionsHealthy=false,webhookState={url:'https://bot.test/webhook/path',pending_update_count:0};
@@ -13,7 +23,11 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       seedRecordTest(key,value,ttl=86400000){this.write(key,value,ttl);}
       seedLogTest(data){this.log(data);}
       readRecordTest(key){return this.read(key);}
+      setDmitEnabledTest(enabled){this.env.DMIT_MONITOR_ENABLED=enabled;this.env.DMIT_RELAY_ENABLED=enabled;}
       setDmitTargetsTest(targets){this.env.DMIT_NOTIFY_CHATS=targets;}
+      setBroadcastModeTest(mode){this.env.BROADCAST_TEST_MODE=String(mode);}
+      expireBroadcastJobsTest(){this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending' AND id LIKE 'broadcast:%'");}
+      removeRecordTest(key){this.remove(key);}
       async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
       async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
       async realOcrTest(msg){this.env.AI={run:async()=>({answer:'广告图片测试'})};return super.ocr(msg,async()=>({file_path:'ocr.jpg'}));}
@@ -50,7 +64,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     compatibilityDate: '2026-09-22', compatibilityFlags: ['nodejs_compat'],
     modules: [{ type: 'ESModule', path: 'test-wrapper.js', contents: wrapper }, { type: 'ESModule', path: 'index.js', contents: await readFile(new URL('../dist/index.js', import.meta.url), 'utf8') }],
     durableObjects: { GUARD_STATE: { className: 'GuardState', useSQLite: true } },
-    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', DMIT_MONITOR_ENABLED:'true',DMIT_AFFILIATE_ID:'16962',DMIT_NOTIFY_CHAT:'@jason_vps_deal',DMIT_RELAY_ENABLED:'true',DMIT_RELAY_SOURCE_CHAT:'@APPKITLIFE', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30' },
+    kvNamespaces: ['BOT_KV'], bindings: { BOT_TOKEN: 'fake', WEBHOOK_SECRET: 'path', WEBHOOK_VERIFY_TOKEN: 'verify', ADMIN_PASSWORD: 'password-for-test', ADMIN_IDS: '99', DMIT_MONITOR_ENABLED:'true',DMIT_AFFILIATE_ID:'16962',DMIT_NOTIFY_CHAT:'@jason_vps_deal',DMIT_RELAY_ENABLED:'true',DMIT_RELAY_SOURCE_CHAT:'@APPKITLIFE', OCR_ENABLED: 'true', OCR_MAX_PER_CHAT_HOUR: '30', BROADCAST_TARGETS:'@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt', BROADCAST_TEST_MODE:'true' },
     outboundService: async request => {
       const url = new URL(request.url);
       if(url.hostname==='www.dmit.io')return new MFResponse('Forbidden',{status:403});
@@ -75,12 +89,16 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (method === 'getWebhookInfo') result = webhookState;
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
       if (method === 'getChatMember' && params.user_id===555 && botPermissionsHealthy)result={status:'administrator',can_delete_messages:true,can_restrict_members:true,can_post_messages:true};
-      if (method === 'getChat') result = params.chat_id===667 ? { id: 667, type: 'private', bio: '兼职日结 私聊我 @abc12345' } : { permissions: { can_send_messages: true, can_send_photos: false } };
+      if (method === 'getChat') {
+        const title=BROADCAST_CHAT_TITLES[String(params.chat_id).toLowerCase()];
+        result = params.chat_id===667 ? { id: 667, type: 'private', bio: '兼职日结 私聊我 @abc12345' } : { permissions: { can_send_messages: true, can_send_photos: false }, ...(title ? { title } : {}) };
+      }
       if (method === 'getFile') result = { file_path: 'ocr.jpg' };
       if (method === 'getMyDescription') result = { description: 'Jason 的群管家' };
       if (method === 'getMyShortDescription') result = { short_description: '' };
       if (method === 'getMyName') result = { name: 'JASON_BOT' };
       if (method === 'sendMessage' || method === 'sendPhoto' || method === 'copyMessage') result = { message_id: 444 };
+      if (method === 'copyMessages') result = (Array.isArray(params.message_ids) ? params.message_ids : []).map((_, index) => ({ message_id: 9000 + index }));
       return MFResponse.json({ ok: true, result });
     },
   }));
@@ -1342,6 +1360,298 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await global.inspectTest(true);assert.equal(copies().filter(x=>x.params.chat_id==='@wpzyz').length,2);await global.queueDmitRelay(message);await global.inspectTest(true);assert.equal(copies().length,4);
     const start=calls.length;assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),3);await global.inspectTest(true);assert.equal(calls.slice(start).filter(x=>x.method==='sendMessage'&&x.params.text==='DMIT 公开补货消息').length,3);assert.equal(await global.queueDmitNotification('official:multi',{text:'DMIT 公开补货消息'}),0);
     await global.setDmitTargetsTest('');
+  });
+
+  await t.test('关闭 DMIT 后取消待发送任务，后台检查和重试不会恢复推送，群防照常工作',async()=>{
+    const global=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+    await global.queueDmitNotification('shutdown-test',{text:'关闭前已排队'});await global.setDmitEnabledTest('false');const before=calls.length;
+    await global.inspectTest(true);await global.monitorDmit();await global.monitorDmitRelay();await global.checkDmitRelayPermissions();
+    assert.equal(await global.queueDmitNotification('disabled-test',{text:'不应发送'}),0);assert.equal((await global.retryDmitRelays()).queued,0);
+    assert.equal((await global.queueDmitRelay({chat:{type:'channel',username:'APPKITLIFE'},message_id:999,text:'DMIT LAX.AN5.Pro.MINI 补货'})).accepted,false);
+    assert.equal(calls.length,before);assert.equal((await global.dmitStatus()).enabled,false);assert.equal((await global.relayStatus()).state,'已关闭');
+    await send(update(-99988,'替我收钱 一天7k',{from:{id:9998801}}));await tick(-99988);assert.ok(actions(-99988).some(x=>x.method==='banChatMember'));
+  });
+
+  const broadcastHandles=['@jason_vps_deal','@wpzyz','@JasonSIMLab','@jason_Telegramx','@Jason_WiseX','@Jason_Prompt'];
+  const broadcastLabels=broadcastHandles.map(handle => broadcastDisplayLabel(BROADCAST_CHAT_TITLES[handle.toLowerCase()], handle));
+  const broadcastTargets=['@jason_vps_deal','@wpzyz','@jasonsimlab','@jason_telegramx','@jason_wisex','@jason_prompt'];
+  const adminDo=async()=> (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+  const tickAdmin=async(force=false)=>(await adminDo()).inspectTest(force);
+  const dm=(fromId,extra)=>{const id=++seq;return {update_id:id,message:{message_id:id,date:Math.floor(Date.now()/1000),chat:{id:fromId,type:'private'},from:{id:fromId,first_name:'测试'},...extra}};};
+  const press=(data,fromId=99,messageId=444)=>send({update_id:++seq,callback_query:{id:'bc-'+seq,from:{id:fromId,first_name:'测试'},data,message:{message_id:messageId,chat:{id:fromId,type:'private'}}}});
+  const button=(message,text)=>message.params.reply_markup.inline_keyboard.flat().find(item=>item.text===text).callback_data;
+  const promptSince=start=>calls.slice(start).find(call=>call.method==='sendMessage'&&call.params.chat_id===99&&JSON.stringify(call.params.reply_markup||{}).includes('发送到全部目标'));
+
+  await t.test('所有者私聊广播内容时给出三个选择，图片视频文件同样可以',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const start=calls.length;
+    await send(dm(99,{text:'新公告 https://example.com/a',entities:[{type:'url',offset:4,length:21}]}));
+    const prompt=promptSince(start);
+    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,取消');
+    for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
+    assert.match(prompt.params.text,/测试模式/);assert.equal(prompt.params.text.includes('目标：5615131413'),false);
+    for(const extra of [{photo:[{file_id:'photo'}]},{video:{file_id:'video'}},{document:{file_id:'doc',file_name:'a.pdf'}}]){
+      const mark=calls.length;await send(dm(99,extra));
+      assert.ok(promptSince(mark),JSON.stringify(extra));
+    }
+  });
+
+  await t.test('非所有者的私聊不会进入广播',async()=>{
+    const start=calls.length;
+    await send(dm(4242,{text:'大家好 https://example.com/promo'}));
+    await send(dm(4242,{photo:[{file_id:'stranger'}]}));
+    assert.equal(calls.slice(start).some(call=>JSON.stringify(call.params).includes('bc:')),false);
+    assert.equal(calls.slice(start).some(call=>call.method==='copyMessage'||call.method==='copyMessages'),false);
+  });
+
+  await t.test('管理后台、成员查找和申诉仍优先于广播',async()=>{
+    const start=calls.length;
+    await send(dm(99,{text:'/admin'}));
+    const adminReply=calls.slice(start).find(call=>call.method==='sendMessage'&&call.params.chat_id===99);
+    assert.match(adminReply.params.text,/管理后台/);assert.ok(adminReply.params.reply_markup.inline_keyboard[0][0].web_app);
+    assert.equal(JSON.stringify(adminReply.params).includes('bc:'),false);
+    const findStart=calls.length;
+    await send(dm(99,{text:'/findmember @nobody_zzz'}));
+    const found=calls.slice(findStart).find(call=>call.method==='sendMessage'&&call.params.chat_id===99);
+    assert.match(found.params.text,/未找到验证记录/);assert.equal(JSON.stringify(found.params).includes('bc:'),false);
+    const appealStart=calls.length;
+    await send(dm(7302,{text:'/start'}));
+    assert.equal(calls.slice(appealStart).some(call=>JSON.stringify(call.params).includes('bc:')),false);
+    assert.ok(calls.slice(appealStart).some(call=>call.method==='sendMessage'&&call.params.chat_id===7302));
+  });
+
+  await t.test('确认后复制到每一个广播目标',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'全员通知 https://example.com/all'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
+    assert.deepEqual(copies.map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(copies.every(call=>call.params.from_chat_id===99&&Number.isSafeInteger(call.params.message_id)));
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.ok(report);assert.ok(broadcastLabels.every(label=>report.params.text.includes('✅ '+label)));
+  });
+
+  await t.test('测试模式列出全部目标，但每次只复制一份给所有者',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const start=calls.length;
+    await send(dm(99,{text:'测试广播 https://example.com/test'}));
+    const prompt=promptSince(start);
+    for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
+    await press(button(prompt,'选择目标'));
+    const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
+    assert.deepEqual(toggles.map(item=>item.text),broadcastLabels.map(label=>'☐ '+label));
+    assert.ok(toggles.every(item=>item.text.length<=64&&item.text.length>=1));
+    assert.equal(toggles[0].text,'☐ VPS 补货雷达（@jason_vps_deal）');
+    assert.equal(toggles.at(-1).text.length,64);
+    assert.ok(toggles.at(-1).text.endsWith('…（@Jason_Prompt）'));
+    for(const toggle of toggles)assert.ok(prompt.params.text.includes(toggle.text.slice(2)),toggle.text);
+    await press(toggles[1].callback_data);await press(toggles[3].callback_data);
+    await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+    await tickAdmin();
+    const copies=calls.slice(start).filter(call=>call.method==='copyMessage'||call.method==='copyMessages');
+    assert.deepEqual(copies.map(call=>call.params.chat_id),[5615131413]);
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.ok(report.params.text.includes('选择的目标：'+broadcastLabels[1]+'、'+broadcastLabels[3]));
+    assert.match(report.params.text,/测试模式：已复制一份给所有者 5615131413/);
+    assert.match(report.params.text,/没有发给上面这些目标/);
+    const allStart=calls.length;
+    await send(dm(99,{text:'测试全部 https://example.com/all-test'}));
+    await press(button(promptSince(allStart),'发送到全部目标'));
+    await tickAdmin();
+    assert.deepEqual(calls.slice(allStart).filter(call=>call.method==='copyMessage').map(call=>call.params.chat_id),[5615131413]);
+    const allReport=calls.slice(allStart).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.ok(allReport.params.text.includes('选择的目标：'+broadcastLabels.join('、')));
+  });
+
+  await t.test('只复制勾选的目标',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{video:{file_id:'clip'}}));
+    await press(button(promptSince(start),'选择目标'));
+    const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
+    await press(toggles[0].callback_data);await press(toggles[2].callback_data);
+    await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+    await tickAdmin();
+    const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
+    assert.deepEqual(copies.map(call=>call.params.chat_id),[broadcastTargets[0],broadcastTargets[2]]);
+  });
+
+  await t.test('部分失败会写明原因，重试不会再次发给已成功的目标',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    failures.set('copyMessage:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
+    failures.set('copyMessage:@jasonsimlab',[{error_code:429,description:'Too Many Requests',parameters:{retry_after:90}}]);
+    const start=calls.length;
+    try{
+      await send(dm(99,{document:{file_id:'file',file_name:'note.txt'},caption:'请看'}));
+      await press(button(promptSince(start),'发送到全部目标'));
+      await tickAdmin();
+      const count=target=>calls.slice(start).filter(call=>call.method==='copyMessage'&&call.params.chat_id===target).length;
+      assert.equal(count('@jason_vps_deal'),1);assert.equal(count('@wpzyz'),1);assert.equal(count('@jasonsimlab'),1);
+      assert.equal(calls.slice(start).some(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果')),false);
+      await tickAdmin(true);
+      assert.equal(count('@jason_vps_deal'),1);assert.equal(count('@wpzyz'),1);assert.equal(count('@jasonsimlab'),2);
+      assert.equal(count('@jason_telegramx'),1);assert.equal(count('@jason_wisex'),1);assert.equal(count('@jason_prompt'),1);
+      const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+      assert.match(report.params.text,/❌ 网盘资源站（@wpzyz）：[\s\S]*chat not found/);
+      assert.match(report.params.text,/✅ SIM 实验室（@JasonSIMLab）/);assert.match(report.params.text,/✅ VPS 补货雷达（@jason_vps_deal）/);
+    }finally{failures.delete('copyMessage:@wpzyz');failures.delete('copyMessage:@jasonsimlab');}
+  });
+
+  await t.test('撤回会删除每个目标里的广播消息并回报结果',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'这条要撤回 https://example.com/undo'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    await press(button(report,'撤回'));
+    await tickAdmin();
+    const deleted=calls.slice(start).filter(call=>call.method==='deleteMessage');
+    assert.deepEqual(deleted.map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(deleted.every(call=>call.params.message_id===444));
+    const undo=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
+    assert.ok(broadcastLabels.every(label=>undo.params.text.includes('已从 '+label+' 删除')));
+    const cleared=calls.slice(start).find(call=>call.method==='editMessageReplyMarkup'&&call.params.message_id===444&&call.params.chat_id===99);
+    assert.deepEqual(cleared.params.reply_markup,{inline_keyboard:[]});
+    const after=calls.filter(call=>call.method==='deleteMessage').length;
+    await press(button(report,'撤回'));
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/已经撤回/);
+    assert.equal(calls.filter(call=>call.method==='deleteMessage').length,after);
+  });
+
+  await t.test('确认前检查每个目标：机器人发不了的目标带 ⚠️ 提示',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    failures.set('getChatMember:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
+    failures.set('getChatMember:@jason_prompt',{error_code:403,description:'Forbidden: bot is not a member of the channel chat'});
+    const start=calls.length;
+    try{
+      await send(dm(99,{text:'检查目标 https://example.com/check'}));
+      const prompt=promptSince(start);
+      assert.match(prompt.params.text,/⚠️ 网盘资源站（@wpzyz）：找不到，或机器人不在里面/);
+      assert.ok(prompt.params.text.includes('⚠️ '+broadcastLabels[5]+'：机器人不在里面或没有权限'));
+      assert.match(prompt.params.text,/✅ VPS 补货雷达（@jason_vps_deal）/);assert.match(prompt.params.text,/✅ SIM 实验室（@JasonSIMLab）/);
+      assert.match(prompt.params.text,/选择目标」跳过/);
+      await press(button(prompt,'选择目标'));
+      const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+      const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:')).map(item=>item.text);
+      assert.deepEqual(toggles,[
+        '☐ '+broadcastLabels[0],
+        '☐ ⚠️ '+broadcastLabels[1],
+        '☐ '+broadcastLabels[2],
+        '☐ '+broadcastLabels[3],
+        '☐ '+broadcastLabels[4],
+        '☐ ⚠️ '+broadcastPickerLabel(broadcastLabels[5],true),
+      ]);
+      assert.ok(toggles.every(text=>text.length<=64&&text.length>=1));
+      assert.ok(toggles.at(-1).endsWith('（@Jason_Prompt）'));
+    }finally{failures.delete('getChatMember:@wpzyz');failures.delete('getChatMember:@jason_prompt');}
+  });
+
+  await t.test('撤回一直失败时按钮会恢复，可以再点一次',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'撤回会失败 https://example.com/undo-fail'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.match(report.params.text,/48 小时/);
+    failures.set('deleteMessage:@wpzyz',Array.from({length:6},()=>({error_code:502,description:'Bad Gateway'})));
+    try{
+      await press(button(report,'撤回'));
+      for(let n=0;n<6;n++){await admin.expireBroadcastJobsTest();await tickAdmin(true);}
+      const notice=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回没有完成'));
+      assert.ok(notice);
+    }finally{failures.delete('deleteMessage:@wpzyz');}
+    const mark=calls.length;
+    await press(button(report,'撤回'));
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/正在撤回/);
+    await tickAdmin(true);
+    const undo=calls.slice(mark).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
+    assert.ok(undo);assert.match(undo.params.text,/✅ 已从 网盘资源站（@wpzyz） 删除/);
+  });
+
+  await t.test('取消和失效按钮都不会发送',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const copies=()=>calls.filter(call=>call.method==='copyMessage'||call.method==='copyMessages').length;
+    const before=copies();const start=calls.length;
+    await send(dm(99,{text:'先别发 https://example.com/cancel'}));
+    const data=button(promptSince(start),'发送到全部目标');
+    await press(data,5);
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/所有者/);
+    await press('bc:a:not-a-valid-token');
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/无效/);
+    await press(data,99,1);
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/失效/);
+    await press(button(promptSince(start),'取消'));
+    assert.equal(copies(),before);
+    await press(data);
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/失效/);
+    assert.equal(copies(),before);
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('相册收齐后按一组复制，不会拆成单条',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const first=dm(99,{photo:[{file_id:'a'}],media_group_id:'album-1',caption:'一组图'});
+    const second=dm(99,{photo:[{file_id:'b'}],media_group_id:'album-1'});
+    const start=calls.length;
+    await Promise.all([send(first),send(second)]);
+    assert.equal(calls.slice(start).some(call=>JSON.stringify(call.params).includes('发送到全部目标')),false);
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    await tickAdmin();
+    const prompt=promptSince(start);assert.ok(prompt);assert.match(prompt.params.text,/2 条相册/);
+    await press(button(prompt,'发送到全部目标'));
+    await tickAdmin();
+    const copies=calls.slice(start).filter(call=>call.method==='copyMessages');
+    assert.equal(copies.length,1);
+    assert.deepEqual(copies[0].params,{chat_id:5615131413,from_chat_id:99,message_ids:[first.message.message_id,second.message.message_id].sort((a,b)=>a-b)});
+    assert.equal(calls.slice(start).some(call=>call.method==='copyMessage'),false);
+  });
+
+  await t.test('群标题缓存一天，读取失败时按钮退回用户名',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const titleCalls=()=>calls.filter(call=>call.method==='getChat'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
+    const memberCalls=()=>calls.filter(call=>call.method==='getChatMember'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
+    const before=titleCalls();const membersBefore=memberCalls();const start=calls.length;
+    await send(dm(99,{text:'标题已缓存 https://example.com/cached'}));
+    const cached=promptSince(start);
+    assert.ok(cached.params.text.includes('VPS 补货雷达（@jason_vps_deal）'));
+    assert.equal(titleCalls(),before);
+    assert.equal(memberCalls(),membersBefore+broadcastTargets.length);
+    await admin.seedRecordTest('broadcast:chat-title:@wpzyz',{title:'旧标题',at:Date.now()-2*86400000},2*86400000);
+    const refreshStart=calls.length;
+    await send(dm(99,{text:'刷新标题 https://example.com/refresh'}));
+    const refreshed=promptSince(refreshStart);
+    assert.ok(refreshed.params.text.includes('网盘资源站（@wpzyz）'));
+    assert.equal(refreshed.params.text.includes('旧标题'),false);
+    assert.ok(calls.slice(refreshStart).some(call=>call.method==='getChat'&&call.params.chat_id==='@wpzyz'));
+    assert.equal((await admin.readRecordTest('broadcast:chat-title:@wpzyz')).title,'网盘资源站');
+    await admin.removeRecordTest('broadcast:chat-title:@wpzyz');
+    failures.set('getChat:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
+    try{
+      const failStart=calls.length;
+      await send(dm(99,{text:'标题失败 https://example.com/title-fail'}));
+      const failed=promptSince(failStart);
+      assert.match(failed.params.text,/⚠️ @wpzyz：找不到，或机器人不在里面/);
+      assert.equal(failed.params.text.includes('网盘资源站'),false);
+      assert.ok(failed.params.text.includes('VPS 补货雷达（@jason_vps_deal）'));
+      await press(button(failed,'选择目标'));
+      const picker=calls.slice(failStart).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+      const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
+      assert.equal(toggles[1].text,'☐ ⚠️ @wpzyz');
+      assert.ok(toggles.every(item=>item.text.length<=64));
+      await press(toggles[1].callback_data);
+      await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+      await tickAdmin();
+      const report=calls.slice(failStart).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+      assert.ok(report.params.text.includes('选择的目标：@wpzyz'));
+      assert.equal(report.params.text.includes('网盘资源站'),false);
+      assert.equal(await admin.readRecordTest('broadcast:chat-title:@wpzyz'),null);
+    }finally{failures.delete('getChat:@wpzyz');}
   });
 
 });

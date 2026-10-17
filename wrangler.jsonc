@@ -67,11 +67,11 @@
     "ENABLE_PROFILE_HEURISTIC": "true",
     "FLOOD_REPEAT_THRESHOLD": "3",
     "NEW_MEMBER_GUARD_MINUTES": "10",
-    "DMIT_MONITOR_ENABLED": "true",
+    "DMIT_MONITOR_ENABLED": "false",
     "DMIT_PRICING_URL": "https://www.dmit.io/pages/pricing",
     "DMIT_NOTIFY_CHAT": "@jason_vps_deal",
     "DMIT_NOTIFY_CHATS": "@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt",
-    "DMIT_RELAY_ENABLED": "true",
+    "DMIT_RELAY_ENABLED": "false",
     "DMIT_RELAY_SOURCE_CHAT": "@APPKITLIFE",
     "DMIT_RELAY_START_AFTER_MESSAGE_ID": "107",
     "DMIT_AFFILIATE_ID": "16962",
@@ -80,7 +80,9 @@
     "AI_REVIEW_MAX_PER_CHAT_HOUR": "20",
     "AI_REVIEW_MAX_GLOBAL_HOUR": "100",
     "OCR_ENABLED": "true",
-    "OCR_MAX_PER_CHAT_HOUR": "30"
+    "OCR_MAX_PER_CHAT_HOUR": "30",
+    "BROADCAST_TARGETS": "@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt",
+    "BROADCAST_TEST_MODE": "true"
   },
   "triggers": {
     "crons": ["* * * * *"]

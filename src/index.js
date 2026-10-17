@@ -6,7 +6,7 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.28.0';
+export const VERSION = '2.30.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -323,6 +323,10 @@ export default {
       try { await globalState(env).noticeAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'notice_action_failed', updateId: update.update_id })); }
       return new Response('OK');
     }
+    if (/^bc:/.test(String(update.callback_query?.data || ''))) {
+      try { await globalState(env).broadcastAction(update.callback_query); } catch { console.error(JSON.stringify({ event: 'broadcast_action_failed', updateId: update.update_id })); }
+      return new Response('OK');
+    }
     // Join requests and the buttons of private join-request challenges belong
     // to the group being joined.
     if(update.chat_member?.chat && ['group','supergroup'].includes(update.chat_member.chat.type)){try{await group(env,update.chat_member.chat.id).enqueue(update);return new Response('OK');}catch{return new Response('Retry later',{status:503});}}
@@ -383,6 +387,12 @@ export default {
           await telegram(env.BOT_TOKEN)('sendMessage', { chat_id: privateMessage.chat.id, text: `✅ 已登记群：${forwardedChat.title || forwardedChat.id}。现在可在管理后台选择它。` });
           return new Response('OK');
         } catch { return new Response('Retry later', { status: 503 }); }
+      }
+      try {
+        if (await globalState(env).broadcastOffer(privateMessage)) return new Response('OK');
+      } catch (error) {
+        await tg('sendMessage', { chat_id: privateMessage.chat.id, text: '广播未准备好：' + String(error.message || '').slice(0, 300) }).catch(() => {});
+        return new Response('OK');
       }
     }
     const msg = update.message || update.edited_message || update.callback_query?.message;
