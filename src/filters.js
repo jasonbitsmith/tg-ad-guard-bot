@@ -148,11 +148,11 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const sexService = /(?:嫖娼|漂唱|飘唱|嫖昌|漂娼|飘娼|约炮|玩妹|白嫖妹|楼凤)/.test(compact);
   const illegalGoodsPitch = (counterfeitCash || sexService) && !caution
     && (contact || invitation || hasLink || /(?:出货|日常出|出售|批发|包过|交流群|可漂|可嫖|专用)/.test(compact));
-  // Doxxing services ("查档秒出" / "一直在秒 从未停歇专业开盒") sell personal
+  // Doxxing services ("查档秒出" / "一直在秒 从未停歇专业开盒" / "社工最全") sell personal
   // records. A doxxing term must sit next to a service word, or come with a
   // contact/link, or also appear in the sender's name. Victims asking for help
   // ("我被开盒了") and warnings are left alone.
-  const doxxTerm = '(?:开盒|查档|社工库|社工(?:查询|数据)|户籍(?:查询|信息)|查户籍|查开房|开房记录|机主(?:信息|查询)|轨迹查询|身份证查询|查身份证|人肉(?:搜索|查询)|定位查人|手机号?定位)';
+  const doxxTerm = '(?:开盒|查档|社工(?:库|查询|数据|机器人|最全|群)|sgk(?:bot|库)|户籍(?:查询|信息)|查户籍|查开房|开房记录|机主(?:信息|查询)|轨迹查询|身份证查询|查身份证|人肉(?:搜索|查询)|定位查人|手机号?定位)';
   const doxxService = '(?:专业|秒出|秒查|秒开|速查|代查|包查|精准|全网|接单|承接|渠道|一手|出结果|价格|从未停歇|一直在秒|24小时|全天)';
   const doxxVictim = /(?:被开盒|被人肉|被查档|防开盒|防止开盒|小心|举报|违法|犯法|报警)/.test(compact) || caution;
   const doxxInBody = new RegExp(doxxTerm, 'u').test(compact);
