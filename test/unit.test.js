@@ -1,5 +1,5 @@
 import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
-import { broadcastTargets, broadcastTargetEntries, broadcastDestinations, broadcastDisplayLabel, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
+import { broadcastTargets, broadcastTargetEntries, broadcastDestinations, broadcastDisplayLabel, broadcastPickerLabel, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
 import { test } from 'node:test';
@@ -353,6 +353,11 @@ test('广播标签是群标题加用户名，超长标题会截断到按钮上�
  const huge=broadcastDisplayLabel('标题','@'+'a'.repeat(80));
  assert.ok(('☐ '+huge).length<=64);
  assert.ok(huge.endsWith('…'));
+ const warned=broadcastPickerLabel(label,true);
+ assert.equal(('☐ ⚠️ '+warned).length,64);
+ assert.ok(warned.endsWith('（@Jason_Prompt）'));
+ assert.equal(broadcastPickerLabel(label,false),label);
+ assert.equal(broadcastPickerLabel('网盘资源站（@wpzyz）',true),'网盘资源站（@wpzyz）');
 });
 
 test('联系人名片：广告名字直接封禁，普通名字只算可疑', () => {

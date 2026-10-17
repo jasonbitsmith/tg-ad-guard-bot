@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
-import { broadcastDisplayLabel } from '../src/state/broadcast.js';
+import { broadcastDisplayLabel, broadcastPickerLabel } from '../src/state/broadcast.js';
 
 const BROADCAST_CHAT_TITLES = {
   '@jason_vps_deal': 'VPS 补货雷达',
@@ -26,6 +26,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       setDmitEnabledTest(enabled){this.env.DMIT_MONITOR_ENABLED=enabled;this.env.DMIT_RELAY_ENABLED=enabled;}
       setDmitTargetsTest(targets){this.env.DMIT_NOTIFY_CHATS=targets;}
       setBroadcastModeTest(mode){this.env.BROADCAST_TEST_MODE=String(mode);}
+      expireBroadcastJobsTest(){this.sql.exec("UPDATE jobs SET due=0 WHERE status='pending' AND id LIKE 'broadcast:%'");}
       removeRecordTest(key){this.remove(key);}
       async exportBackup(){if(this.read('test:backup-fail'))throw Error('模拟存储错误');return super.exportBackup();}
       async reviewWithAi(msg,text){const mock=this.read('test:ai');if(mock)this.env.AI={run:async(model,input)=>{this.write('test:ai-input',input);this.write('test:ai-calls',this.read('test:ai-calls',0)+1);if(mock.fail)throw Error('模拟 AI 失败');return {response:JSON.stringify(mock)};}};return super.reviewWithAi(msg,text);}
@@ -1496,11 +1497,64 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.deepEqual(deleted.map(call=>call.params.chat_id),broadcastTargets);
     assert.ok(deleted.every(call=>call.params.message_id===444));
     const undo=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
-    assert.ok(broadcastTargets.every(target=>undo.params.text.includes('已从 '+target+' 删除')));
+    assert.ok(broadcastLabels.every(label=>undo.params.text.includes('已从 '+label+' 删除')));
+    const cleared=calls.slice(start).find(call=>call.method==='editMessageReplyMarkup'&&call.params.message_id===444&&call.params.chat_id===99);
+    assert.deepEqual(cleared.params.reply_markup,{inline_keyboard:[]});
     const after=calls.filter(call=>call.method==='deleteMessage').length;
     await press(button(report,'撤回'));
     assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/已经撤回/);
     assert.equal(calls.filter(call=>call.method==='deleteMessage').length,after);
+  });
+
+  await t.test('确认前检查每个目标：机器人发不了的目标带 ⚠️ 提示',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    failures.set('getChatMember:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
+    failures.set('getChatMember:@jason_prompt',{error_code:403,description:'Forbidden: bot is not a member of the channel chat'});
+    const start=calls.length;
+    try{
+      await send(dm(99,{text:'检查目标 https://example.com/check'}));
+      const prompt=promptSince(start);
+      assert.match(prompt.params.text,/⚠️ 网盘资源站（@wpzyz）：找不到，或机器人不在里面/);
+      assert.ok(prompt.params.text.includes('⚠️ '+broadcastLabels[5]+'：机器人不在里面或没有权限'));
+      assert.match(prompt.params.text,/✅ VPS 补货雷达（@jason_vps_deal）/);assert.match(prompt.params.text,/✅ SIM 实验室（@JasonSIMLab）/);
+      assert.match(prompt.params.text,/选择目标」跳过/);
+      await press(button(prompt,'选择目标'));
+      const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+      const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:')).map(item=>item.text);
+      assert.deepEqual(toggles,[
+        '☐ '+broadcastLabels[0],
+        '☐ ⚠️ '+broadcastLabels[1],
+        '☐ '+broadcastLabels[2],
+        '☐ '+broadcastLabels[3],
+        '☐ '+broadcastLabels[4],
+        '☐ ⚠️ '+broadcastPickerLabel(broadcastLabels[5],true),
+      ]);
+      assert.ok(toggles.every(text=>text.length<=64&&text.length>=1));
+      assert.ok(toggles.at(-1).endsWith('（@Jason_Prompt）'));
+    }finally{failures.delete('getChatMember:@wpzyz');failures.delete('getChatMember:@jason_prompt');}
+  });
+
+  await t.test('撤回一直失败时按钮会恢复，可以再点一次',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'撤回会失败 https://example.com/undo-fail'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
+    assert.match(report.params.text,/48 小时/);
+    failures.set('deleteMessage:@wpzyz',Array.from({length:6},()=>({error_code:502,description:'Bad Gateway'})));
+    try{
+      await press(button(report,'撤回'));
+      for(let n=0;n<6;n++){await admin.expireBroadcastJobsTest();await tickAdmin(true);}
+      const notice=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回没有完成'));
+      assert.ok(notice);
+    }finally{failures.delete('deleteMessage:@wpzyz');}
+    const mark=calls.length;
+    await press(button(report,'撤回'));
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/正在撤回/);
+    await tickAdmin(true);
+    const undo=calls.slice(mark).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('撤回结果'));
+    assert.ok(undo);assert.match(undo.params.text,/✅ 已从 网盘资源站（@wpzyz） 删除/);
   });
 
   await t.test('取消和失效按钮都不会发送',async()=>{
@@ -1544,11 +1598,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('群标题缓存一天，读取失败时按钮退回用户名',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('true');
     const titleCalls=()=>calls.filter(call=>call.method==='getChat'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
-    const before=titleCalls();const start=calls.length;
+    const memberCalls=()=>calls.filter(call=>call.method==='getChatMember'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
+    const before=titleCalls();const membersBefore=memberCalls();const start=calls.length;
     await send(dm(99,{text:'标题已缓存 https://example.com/cached'}));
     const cached=promptSince(start);
     assert.ok(cached.params.text.includes('VPS 补货雷达（@jason_vps_deal）'));
     assert.equal(titleCalls(),before);
+    assert.equal(memberCalls(),membersBefore+broadcastTargets.length);
     await admin.seedRecordTest('broadcast:chat-title:@wpzyz',{title:'旧标题',at:Date.now()-2*86400000},2*86400000);
     const refreshStart=calls.length;
     await send(dm(99,{text:'刷新标题 https://example.com/refresh'}));
@@ -1563,13 +1619,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const failStart=calls.length;
       await send(dm(99,{text:'标题失败 https://example.com/title-fail'}));
       const failed=promptSince(failStart);
-      assert.match(failed.params.text,/、@wpzyz、/);
+      assert.match(failed.params.text,/⚠️ @wpzyz：找不到，或机器人不在里面/);
       assert.equal(failed.params.text.includes('网盘资源站'),false);
       assert.ok(failed.params.text.includes('VPS 补货雷达（@jason_vps_deal）'));
       await press(button(failed,'选择目标'));
       const picker=calls.slice(failStart).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
       const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
-      assert.equal(toggles[1].text,'☐ @wpzyz');
+      assert.equal(toggles[1].text,'☐ ⚠️ @wpzyz');
       assert.ok(toggles.every(item=>item.text.length<=64));
       await press(toggles[1].callback_data);
       await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);

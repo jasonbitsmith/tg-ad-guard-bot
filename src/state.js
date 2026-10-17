@@ -339,7 +339,7 @@ export class GuardState extends DurableObject {
       this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, operationSteps:operationSteps(plan?.ops,retry?'pending':'failed'), steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
-        if(job.id.startsWith('broadcast:'))this.broadcastJobFailed(job,plan,error);
+        if(job.id.startsWith('broadcast:'))await this.broadcastJobFailed(job,plan,error).catch(()=>{});
         else if(plan?.entry?.action==='dmit-channel-relay')await this.alertOwner('dmit-relay-send','补货同步到 '+plan.entry.channel+' 失败\n消息 '+plan.entry.messageId+'；原因：'+String(error.message).slice(0,160)+'\n请检查机器人是否拥有两个频道的相应权限。').catch(()=>{});
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
