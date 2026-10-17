@@ -22,6 +22,8 @@ const actionName = action => ACTION_NAMES.find(([key]) => String(action).include
 const profileLink = profile => /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(String(profile?.username || '')) ? `https://t.me/${profile.username}` : /^\d{1,16}$/.test(String(profile?.userId || '')) ? `tg://user?id=${profile.userId}` : null;
 const messageLink = (chatId, messageId) => /^-100\d+$/.test(String(chatId)) && Number.isSafeInteger(Number(messageId)) && Number(messageId) > 0 ? `https://t.me/c/${String(chatId).slice(4)}/${messageId}` : null;
 
+const UNDO_RESULTS = '📋 各群解封结果';
+
 export class NoticesMethods {
   logTarget() { return this.read('log-target', 'owners'); }
   async setLogTarget(value) {
@@ -84,6 +86,23 @@ export class NoticesMethods {
     this.write(key, record, 14 * DAY);
     return this.renderNotice(id);
   }
+  // A wrongly banned message is a confirmed normal message: keep it so new
+  // rules are previewed against it. Best effort, never blocks the undo.
+  saveUndoExample(record) {
+    const text = String(record.adText || '').trim();
+    if ([...text].length < 6) return false;
+    try { this.editReviewExample('add', { text, verdict: 'normal', confirmed: true }); return true; } catch { return false; }
+  }
+  // Called once every group of an undone federation case has a final result.
+  async noticeUndoResults(id, groups) {
+    const key = `notice:${id}`, record = this.read(key);
+    if (!record) return false;
+    const names = { success: '✅ 已解封', skipped: '➖ 没动（不是这次封的，保留原封禁）', failed: '❌ 解封失败，请到管理后台“联防记录”重试' };
+    const lines = groups.map(group => `· ${this.sql.exec('SELECT title FROM chats WHERE id=?', String(group.chatId)).toArray()[0]?.title || group.chatId}：${names[group.undoStatus] || group.undoStatus}`);
+    record.status = [...(record.status || []).filter(line => !line.startsWith('⏳') && !line.startsWith(UNDO_RESULTS)), [UNDO_RESULTS, ...lines].join('\n')];
+    this.write(key, record, 14 * DAY);
+    return this.renderNotice(id);
+  }
   ownerChats() { return this.owners().filter(id => /^\d{1,16}$/.test(id)).map(Number); }
 
   async noticeBan(entry) {
@@ -98,7 +117,7 @@ export class NoticesMethods {
       return false;
     }
     const text = [`🚫 已封禁：${person(entry.userName, entry.userId, entry.userUsername)}`, `群：${esc(entry.chatTitle || entry.chatId)}`, `原因：${esc(label(entry.action))}${entry.reasons?.length ? ' · ' + esc(entry.reasons.slice(0, 3).join('；')) : ''}`, entry.federationTargets?.length ? `联防：已同步到另外 ${entry.federationTargets.length} 个群` : '', entry.text ? `内容：${esc(String(entry.text).slice(0, 200))}` : ''].filter(Boolean).join('\n');
-    return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null }, null, { userId: entry.userId, username: entry.userUsername });
+    return this.sendNotice(recipients, text, [['↩️ 误封，解封并信任', 'undo']], { kind: 'ban', chatId: String(entry.chatId), userId: String(entry.userId), caseId: entry.caseId || null, adText: entry.text ? String(entry.text).slice(0, 4000) : null }, null, { userId: entry.userId, username: entry.userUsername });
   }
 
   // Looked like an ad but was not sure enough to act on. Same buttons as a
@@ -208,23 +227,24 @@ export class NoticesMethods {
     await answer('⏳ 正在处理，结果会写在这条通知下面');
     const group = record.chatId ? this.env.GUARD_STATE.getByName('chat:' + record.chatId) : null;
     const who = [callback.from.first_name, callback.from.last_name].filter(Boolean).join(' ') || String(callback.from.id), when = this.noticeTime();
-    let result, pending;
+    let result, pending, saved = false;
     try {
       if (record.kind === 'appeal' && ['accept', 'reject'].includes(match[2])) ({ result, pending } = await this.resolveAppeal(record, match[2] === 'accept', 'telegram:' + callback.from.id));
       else if (record.kind === 'report' && match[2] === 'ignore') result = '已忽略，不做处理';
       else if (record.kind === 'report' && match[2] === 'ban') { await group.queueReview(record.chatId, Number(record.userId), record.messageId); result = '已提交删除消息并永久封禁，执行结果可在管理后台查看'; }
       else if (record.kind === 'ban' && match[2] === 'undo') {
         if (record.caseId && this.read(`federation-case:${record.caseId}`)) {
-          const reversed = await this.reverseCase(record.caseId);
+          const reversed = await this.reverseCase(record.caseId, id);
           await Promise.allSettled(reversed.record.groups.map(item => this.env.GUARD_STATE.getByName('chat:' + item.chatId).allowMember(record.userId)));
           result = `已撤销封禁并信任此人（联防的 ${reversed.record.groups.length} 个群）`;
-          pending = reversed.failed ? `⚠️ 有 ${reversed.failed} 个群没能提交解封，请到管理后台“联防记录”重试` : 'ℹ️ 各群正在解封，结果可在管理后台“联防记录”查看';
+          pending = reversed.failed ? `⚠️ 有 ${reversed.failed} 个群没能提交解封，请到管理后台“联防记录”重试` : '⏳ 各群正在解封，每个群的结果会写在这里';
         } else {
           await group.queueManualUnban(record.userId, 'telegram:' + callback.from.id, id);
           result = '已撤销封禁并信任此人';
           pending = '⏳ 正在解封…';
         }
       } else return answer('操作无效。', true);
+      if (record.kind === 'ban' && match[2] === 'undo') saved = this.saveUndoExample(record);
     } catch (error) {
       const reason = String(error.message || '未知错误').slice(0, 150);
       record.status = [...(record.status || []), `❌ 操作失败（${when}）：${reason}`];
@@ -232,8 +252,11 @@ export class NoticesMethods {
       await this.renderNotice(id, callback.message);
       return answer('操作失败：' + reason, true);
     }
+    // Per-group results can land while this tap was still awaiting; keep them
+    // and show them after the result line.
+    const latest = this.read(key)?.status || record.status || [], results = latest.filter(line => line.startsWith(UNDO_RESULTS));
     record.done = result;
-    record.status = [...(record.status || []), `✅ ${result}（${who} · ${when}）`, ...(pending ? [pending] : [])];
+    record.status = [...latest.filter(line => !line.startsWith(UNDO_RESULTS)), `✅ ${result}（${who} · ${when}）`, ...(saved ? ['📝 已把这条内容存为「正常消息」案例，以后加规则时会拿它检查会不会误伤'] : []), ...(results.length ? results : pending ? [pending] : [])];
     this.write(key, record, 14 * DAY);
     this.log({ action: `notice-${record.kind}-${match[2]}`, chatId: record.chatId, userId: record.userId, actorId: 'telegram:' + callback.from.id, outcome: 'success' });
     await this.renderNotice(id, callback.message);

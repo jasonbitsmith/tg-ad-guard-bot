@@ -798,6 +798,23 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(actions(-181).filter(x=>x.method==='banChatMember'&&x.params.user_id===87).length,1);
     await global.reverseCase(record.id);await tick(-180,true);assert.equal(actions(-180).filter(x=>x.method==='unbanChatMember'&&x.params.user_id===87).length,1);
   });
+  await t.test('通知上撤销联防封禁：写出每个群的解封结果，并把内容存为正常案例',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
+    for(const id of [-186,-187])await global.setFederation(id,true);
+    await send(update(-186,'兼职日结 私聊我 稳赚 https://ad.example',{from:{id:86,first_name:'误封用户'}}));await tick(-186);await tick(-187);
+    const notice=calls.findLast(c=>c.method==='sendMessage'&&c.params.chat_id===99&&c.params.text.includes('已封禁')&&c.params.text.includes('86'));assert.ok(notice);
+    const data=JSON.stringify(notice.params.reply_markup).match(/n:[a-f0-9]{16}:undo/)[0];
+    const before=calls.length;
+    await send({update_id:++seq,callback_query:{id:'cb-fed-undo',from:{id:99,first_name:'主人'},data,message:{message_id:3,chat:{id:99,type:'private'},text:notice.params.text}}});
+    const rec=(await global.listCases()).find(x=>x.sourceChatId==='-186');assert.ok(rec.undoNotice);
+    for(const group of rec.groups)await tick(Number(group.chatId),true);
+    const last=calls.slice(before).filter(c=>c.method==='editMessageText'&&c.params.chat_id===99).at(-1).params.text;
+    assert.ok(last.includes('各群解封结果')&&!last.includes('正在解封'),last);
+    assert.equal(last.split('\n').filter(line=>line.startsWith('· ')).length,rec.groups.length,last);
+    assert.ok(last.includes('测试群：✅ 已解封')&&last.includes('正常消息'),last);
+    const example=(await global.listReviewExamples()).find(x=>x.verdict==='normal'&&x.text.includes('兼职日结'));assert.ok(example);
+    await global.editReviewExample('remove',{id:example.id});
+  });
   await t.test('已有独立封禁不能被联防纠错解封',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');
     await global.setFederation(-183,true);
