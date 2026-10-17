@@ -8,6 +8,9 @@ export const BROADCAST_TEST_CHAT = '5615131413';
 const ALBUM_QUIET_MS = 1000;
 const DRAFT_TTL = DAY;
 const DELIVERY_TTL = 30 * DAY;
+// Inline button labels are at most 64 characters, including the checkbox prefix.
+export const BROADCAST_BUTTON_LIMIT = 64;
+const BUTTON_PREFIX = '☐ ';
 
 // id is the canonical send address. label keeps the configured spelling so the
 // confirmation and picker can show @JasonSIMLab rather than a numeric chat id.
@@ -38,6 +41,35 @@ export function broadcastDestinations(env) {
 
 function chatIdOf(target) {
   return /^-?\d{5,16}$/.test(String(target)) ? Number(target) : target;
+}
+
+// '{title}（@username）', shortened so checkbox + label still fits one button.
+// A missing title is just the @username.
+export function broadcastDisplayLabel(title, handle) {
+  const name = String(title || '').replace(/\s+/g, ' ').trim();
+  const who = String(handle || '').trim();
+  const max = BROADCAST_BUTTON_LIMIT - BUTTON_PREFIX.length;
+  const clip = value => value.length <= max ? value : value.slice(0, Math.max(1, max - 1)) + '…';
+  if (!name) return clip(who);
+  const suffix = `（${who}）`;
+  if ((name + suffix).length <= max) return name + suffix;
+  const room = max - suffix.length - 1;
+  if (room < 1) return clip(suffix);
+  return name.slice(0, room) + '…' + suffix;
+}
+
+// Picker rows add ⚠️ in front of a target the bot cannot post to. Shorten that
+// label again so checkbox + warning + name still fit Telegram's 64-character button.
+const WARN_MARK = '⚠️ ';
+export function broadcastPickerLabel(label, warned) {
+  const text = String(label || '');
+  if (!warned) return text;
+  const max = BROADCAST_BUTTON_LIMIT - BUTTON_PREFIX.length - WARN_MARK.length;
+  if (text.length <= max) return text;
+  const suffix = /（[^）]*）$/.exec(text)?.[0] || '';
+  const room = max - suffix.length - 1;
+  if (suffix && room >= 1) return text.slice(0, room) + '…' + suffix;
+  return text.slice(0, Math.max(1, max - 1)) + '…';
 }
 
 function copiedIds(op) {
@@ -113,28 +145,66 @@ export class BroadcastMethods {
     }
   }
 
-  // Asks Telegram whether the bot can post in each target, so a missing admin
-  // right shows up on the confirmation (also in test mode) instead of as a
-  // failed send. A check that cannot run says so and never blocks sending.
-  async broadcastTargetProblems(targets) {
+  // Title plus chat type and the default send permission. A fresh snapshot skips
+  // getChat; membership is still checked live. One getChat serves both the title
+  // and the permission check, so a failed lookup is not reported twice.
+  freshBroadcastChat(id) {
+    const cached = this.read(`broadcast:chat-title:${id}`);
+    if (!cached || typeof cached.title !== 'string' || !cached.title || typeof cached.type !== 'string' || !Number.isFinite(cached.at) || Date.now() - cached.at >= DAY) return null;
+    return cached;
+  }
+
+  broadcastPostingProblem(chat, member) {
+    const admin = ['creator', 'administrator'].includes(member.status);
+    if (chat.type === 'channel') {
+      if (member.status === 'creator' || (admin && member.can_post_messages === true)) return '';
+      return admin ? '机器人没有「发布消息」权限' : '机器人不是这个频道的管理员';
+    }
+    if (admin) return '';
+    if (['member', 'restricted'].includes(member.status) && member.can_send_messages !== false && chat.permissions?.can_send_messages !== false) return '';
+    return '机器人在这里不能发言';
+  }
+
+  problemFromError(error) {
+    if (error.retryable) return '暂时检查不了，发送时再看结果';
+    return /not found/i.test(error.message) ? '找不到，或机器人不在里面' : '机器人不在里面或没有权限';
+  }
+
+  // Labels use 「群标题（@用户名）」. Problems say whether the bot can post.
+  // A check that cannot run says so and never blocks sending. Test mode checks
+  // the real targets too.
+  async broadcastTargetView(entries) {
     const tg = telegram(this.env.BOT_TOKEN);
     let me;
-    try { me = await this.me(tg); } catch { return targets.map(() => '暂时检查不了，发送时再看结果'); }
-    return Promise.all(targets.map(async target => {
-      try {
-        const chatId = chatIdOf(target);
-        const [chat, member] = await Promise.all([tg('getChat', { chat_id: chatId }), tg('getChatMember', { chat_id: chatId, user_id: me.id })]);
-        const admin = ['creator', 'administrator'].includes(member.status);
-        if (chat.type === 'channel') {
-          if (member.status === 'creator' || (admin && member.can_post_messages === true)) return '';
-          return admin ? '机器人没有「发布消息」权限' : '机器人不是这个频道的管理员';
+    try { me = await this.me(tg); } catch { me = null; }
+    return Promise.all(entries.map(async entry => {
+      const cached = this.freshBroadcastChat(entry.id);
+      let chat = cached ? { type: cached.type, title: cached.title, permissions: { can_send_messages: cached.canSendMessages !== false } } : null;
+      let chatError = null;
+      if (!cached) {
+        try {
+          const loaded = await tg('getChat', { chat_id: chatIdOf(entry.id) });
+          const title = String(loaded?.title || '').replace(/\s+/g, ' ').trim();
+          if (title) this.write(`broadcast:chat-title:${entry.id}`, {
+            title,
+            type: String(loaded?.type || ''),
+            canSendMessages: loaded?.permissions?.can_send_messages !== false,
+            at: Date.now(),
+          }, 2 * DAY);
+          chat = loaded;
+        } catch (error) {
+          chatError = error;
         }
-        if (admin) return '';
-        if (['member', 'restricted'].includes(member.status) && member.can_send_messages !== false && chat.permissions?.can_send_messages !== false) return '';
-        return '机器人在这里不能发言';
+      }
+      const title = String((cached ? cached.title : chat?.title) || '').replace(/\s+/g, ' ').trim();
+      const label = broadcastDisplayLabel(title, entry.label);
+      if (!me) return { label, problem: '暂时检查不了，发送时再看结果' };
+      if (chatError) return { label, problem: this.problemFromError(chatError) };
+      try {
+        const member = await tg('getChatMember', { chat_id: chatIdOf(entry.id), user_id: me.id });
+        return { label, problem: this.broadcastPostingProblem(chat, member) };
       } catch (error) {
-        if (error.retryable) return '暂时检查不了，发送时再看结果';
-        return /not found/i.test(error.message) ? '找不到，或机器人不在里面' : '机器人不在里面或没有权限';
+        return { label, problem: this.problemFromError(error) };
       }
     }));
   }
@@ -143,8 +213,9 @@ export class BroadcastMethods {
     const ids = [...new Set(messageIds.filter(id => Number.isSafeInteger(Number(id)) && Number(id) > 0).map(Number))].sort((a, b) => a - b).slice(0, 10);
     if (!ids.length || !this.owners().includes(String(message.from?.id))) return false;
     const entries = broadcastTargetEntries(this.env);
-    const labels = entries.map(item => item.label);
-    const problems = await this.broadcastTargetProblems(entries.map(item => item.id));
+    const view = await this.broadcastTargetView(entries);
+    const labels = view.map(item => item.label);
+    const problems = view.map(item => item.problem);
     const warned = problems.flatMap((problem, index) => problem ? [index] : []);
     const token = crypto.randomUUID().replaceAll('-', '').slice(0, 16);
     const testing = this.env.BROADCAST_TEST_MODE === 'true';
@@ -180,7 +251,10 @@ export class BroadcastMethods {
     ];
     const chosen = new Set(selected);
     return [
-      ...targets.map((target, index) => [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warned.includes(index) ? '⚠️ ' : ''}${target}`, callback_data: `bc:t:${token}:${index}` }]),
+      ...targets.map((target, index) => {
+        const warn = warned.includes(index);
+        return [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warn ? WARN_MARK : ''}${broadcastPickerLabel(target, warn)}`, callback_data: `bc:t:${token}:${index}` }];
+      }),
       [{ text: '确认发送', callback_data: `bc:g:${token}` }, { text: '取消', callback_data: `bc:c:${token}` }],
     ];
   }
