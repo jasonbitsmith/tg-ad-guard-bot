@@ -653,8 +653,13 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(dm.params.text.includes('入群验证：申请群'));
     assert.equal((await g.verification(96)).via,'request');
     const answer=(await g.verification(96)).answer;
+    // The button reply comes too late: Telegram refuses it, but the join request is still approved.
+    failures.set('answerCallbackQuery:undefined',{error_code:400,description:'Bad Request: query is too old and response timeout expired or query ID is invalid'});
     await send({update_id:++seq,callback_query:{id:'dm-ok',from:{id:96,first_name:'申请人'},data:`vj:-504:p:${answer}`,message:{message_id:444,chat:{id:96,type:'private',first_name:'申请人'}}}});await tick(-504);
     assert.ok(calls.some(c=>c.method==='approveChatJoinRequest'&&c.params.chat_id===-504&&c.params.user_id===96));
+    assert.ok(calls.some(c=>c.method==='answerCallbackQuery'&&c.params.callback_query_id==='dm-ok'));
+    assert.equal((await g.healthSummary()).failed,0);
+    assert.ok(!calls.some(c=>c.method==='sendMessage'&&String(c.params.text||'').includes('query is too old')));
     // Approved members are not asked again when they actually join.
     await send(update(-504,'',{new_chat_members:[{id:96,first_name:'申请人'}]}));await tick(-504);
     assert.equal(await g.verification(96),undefined);
