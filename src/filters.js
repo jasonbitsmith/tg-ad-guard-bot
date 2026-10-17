@@ -148,6 +148,18 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const sexService = /(?:嫖娼|漂唱|飘唱|嫖昌|漂娼|飘娼|约炮|玩妹|白嫖妹|楼凤)/.test(compact);
   const illegalGoodsPitch = (counterfeitCash || sexService) && !caution
     && (contact || invitation || hasLink || /(?:出货|日常出|出售|批发|包过|交流群|可漂|可嫖|专用)/.test(compact));
+  // Doxxing services ("查档秒出" / "一直在秒 从未停歇专业开盒" / "社工最全") sell personal
+  // records. A doxxing term must sit next to a service word, or come with a
+  // contact/link, or also appear in the sender's name. Victims asking for help
+  // ("我被开盒了") and warnings are left alone.
+  const doxxTerm = '(?:开盒|查档|社工(?:库|查询|数据|机器人|最全|群)|sgk(?:bot|库)|户籍(?:查询|信息)|查户籍|查开房|开房记录|机主(?:信息|查询)|轨迹查询|身份证查询|查身份证|人肉(?:搜索|查询)|定位查人|手机号?定位)';
+  const doxxService = '(?:专业|秒出|秒查|秒开|速查|代查|包查|精准|全网|接单|承接|渠道|一手|出结果|价格|从未停歇|一直在秒|24小时|全天)';
+  const doxxVictim = /(?:被开盒|被人肉|被查档|防开盒|防止开盒|小心|举报|违法|犯法|报警)/.test(compact) || caution;
+  const doxxInBody = new RegExp(doxxTerm, 'u').test(compact);
+  const doxxPitch = !doxxVictim && (
+    new RegExp(`${doxxService}.{0,12}${doxxTerm}|${doxxTerm}.{0,12}${doxxService}`, 'u').test(compact)
+    || (doxxInBody && (contact || hasLink))
+    || (new RegExp(doxxTerm, 'u').test(compactName) && (doxxInBody || contact || hasLink)));
   let score = 0;
   const reasons = [];
   const add = (points, reason) => { score += points; reasons.push(reason); };
@@ -176,6 +188,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (cryptoChartPitch) add(4, '图片附带加密货币收益引流文案');
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (illegalGoodsPitch) add(7, counterfeitCash ? '包含假钞/假币售卖引流' : '包含色情服务引流');
+  if (doxxPitch) add(7, '包含开盒/查档（个人信息查询）引流');
   if (contactCardAd) add(7, '分享的联系人名片带广告名字');
   else if (contactCard) add(4, '分享了联系人名片（带电话号码）');
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
@@ -183,7 +196,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || contactCardAd || illegalGoodsPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || contactCardAd || illegalGoodsPitch || doxxPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, contact: contact || contactCard, contactCard, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
