@@ -16,6 +16,22 @@ const BEIJING = 8 * 3600000;
 // Inline button labels are at most 64 characters, including the checkbox prefix.
 export const BROADCAST_BUTTON_LIMIT = 64;
 const BUTTON_PREFIX = '☐ ';
+const HISTORY_SIZE = 10;
+const LAST_TTL = 90 * DAY;
+
+// Accepts what people paste: @name, name, t.me/name, https://t.me/name and
+// even @https://t.me/name. Numeric group ids pass through unchanged.
+export function normalizeBroadcastTarget(raw) {
+  const value = String(raw || '').trim();
+  if (/^-\d+$/.test(value)) return value;
+  if (/(?:t|telegram)\.(?:me|dog)\/(?:\+|joinchat)/i.test(value)) throw new Error('私密邀请链接用不了，请改成 @用户名或负数群 ID：' + value.slice(0, 40));
+  const link = /^@?(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.(?:me|dog)\/@?([a-zA-Z0-9_]+)\/?(?:[?#].*)?$/i.exec(value);
+  if (link) return '@' + link[1];
+  if (/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(value)) return '@' + value;
+  return value;
+}
+
+const targetId = raw => raw.startsWith('@') ? raw.toLowerCase() : raw;
 
 // id is the canonical send address. label keeps the configured spelling so the
 // confirmation and picker can show @JasonSIMLab rather than a numeric chat id.
@@ -23,15 +39,44 @@ export function broadcastTargetEntries(env) {
   const values = String(env.BROADCAST_TARGETS || '').split(/[,\s，]+/).filter(Boolean);
   const result = [];
   const seen = new Set();
-  for (const raw of values) {
-    if (!/^@[a-zA-Z0-9_]{5,32}$|^-\d{5,16}$/.test(raw)) throw new Error('广播目标必须是 @用户名或负数群 ID：' + raw.slice(0, 40));
-    const id = raw.startsWith('@') ? raw.toLowerCase() : raw;
+  for (const value of values) {
+    const raw = normalizeBroadcastTarget(value);
+    if (!/^@[a-zA-Z0-9_]{5,32}$|^-\d{5,16}$/.test(raw)) throw new Error('广播目标必须是 @用户名或负数群 ID：' + value.slice(0, 40));
+    const id = targetId(raw);
     if (seen.has(id)) continue;
     seen.add(id);
     result.push({ id, label: raw.startsWith('@') ? raw : id });
   }
   if (!result.length || result.length > 20) throw new Error('广播目标须为 1–20 个');
   return result;
+}
+
+// One group per line: 「组名：@频道1 @频道2」. Strict mode (saving in the
+// admin panel) rejects members that are not targets; the picker drops them.
+export function parseBroadcastGroups(text, entries, strict = true) {
+  const known = new Set(entries.map(entry => entry.id));
+  const groups = [];
+  const fail = message => { if (strict) throw new Error(message); };
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const value = line.trim();
+    if (!value) continue;
+    const match = /^([^:：]+)[:：](.*)$/.exec(value);
+    if (!match) { fail('分组要写成「组名：@频道1 @频道2」：' + value.slice(0, 40)); continue; }
+    const name = match[1].trim();
+    if (!name || name.length > 10) { fail('组名要 1–10 个字：' + name.slice(0, 20)); continue; }
+    if (groups.some(group => group.name === name)) { fail('分组名重复了：' + name); continue; }
+    const ids = [];
+    for (const item of match[2].split(/[,\s，、]+/).filter(Boolean)) {
+      let id;
+      try { id = targetId(normalizeBroadcastTarget(item)); } catch (error) { fail(error.message); continue; }
+      if (!known.has(id)) { fail(`分组「${name}」里的 ${item.slice(0, 40)} 不在上面的群发目标里`); continue; }
+      if (!ids.includes(id)) ids.push(id);
+    }
+    if (!ids.length) { fail(`分组「${name}」里没有目标`); continue; }
+    groups.push({ name, ids });
+  }
+  if (groups.length > 10) { fail('分组最多 10 个'); return groups.slice(0, 10); }
+  return groups;
 }
 
 export function broadcastTargets(env) {
@@ -75,6 +120,16 @@ export function broadcastPickerLabel(label, warned) {
   const room = max - suffix.length - 1;
   if (suffix && room >= 1) return text.slice(0, room) + '…' + suffix;
   return text.slice(0, Math.max(1, max - 1)) + '…';
+}
+
+// Short name for a picker button: the chat title with the spaces around
+// separators squeezed out, cut to fit one phone-width button. The full
+// 「群标题（@用户名）」 stays in the confirmation text above the buttons.
+const BUTTON_NAME_MAX = 20;
+export function broadcastButtonName(title, handle) {
+  const name = String(title || '').replace(/\s*([｜|—–·•\/])\s*/g, '$1').replace(/\s+/g, ' ').trim();
+  if (!name) return String(handle || '').trim();
+  return name.length <= BUTTON_NAME_MAX ? name : name.slice(0, BUTTON_NAME_MAX - 1) + '…';
 }
 
 // 「群发 内容」: returns the content after the prefix with its entities moved
@@ -160,6 +215,13 @@ function contentKind(message, count) {
   return '这条消息';
 }
 
+// Short line for 群发记录: the start of the text or caption, else the kind.
+function broadcastPreview(message, override, kind) {
+  const raw = String(override?.text ?? override?.caption ?? message?.text ?? message?.caption ?? '').replace(/\s+/g, ' ').trim();
+  if (raw) return raw.length > 24 ? raw.slice(0, 23) + '…' : raw;
+  return String(kind || '').replace(/^这[组张段个条]\s*/, '') || '消息';
+}
+
 export class BroadcastMethods {
   // Targets set in the admin panel replace BROADCAST_TARGETS from wrangler.jsonc.
   broadcastEntries() {
@@ -167,13 +229,19 @@ export class BroadcastMethods {
     return broadcastTargetEntries({ BROADCAST_TARGETS: custom || this.env.BROADCAST_TARGETS });
   }
 
+  broadcastGroups(entries) {
+    try { return parseBroadcastGroups(this.read('broadcast:groups-config') || '', entries, false); } catch { return []; }
+  }
+
   async broadcastSettings() {
     const custom = this.read('broadcast:targets-config');
     let entries = [], error = null;
     try { entries = this.broadcastEntries(); } catch (problem) { error = problem.message; }
     const view = entries.length ? await this.broadcastTargetView(entries) : [];
+    const labelOf = new Map(entries.map(entry => [entry.id, entry.label]));
     return {
       custom: !!custom, testMode: this.env.BROADCAST_TEST_MODE === 'true', error,
+      groups: this.broadcastGroups(entries).map(group => ({ name: group.name, members: group.ids.map(id => labelOf.get(id) || id) })),
       defaultTargets: String(this.env.BROADCAST_TARGETS || ''),
       targets: entries.map((entry, index) => ({ id: entry.id, handle: entry.label, label: view[index]?.label || entry.label, problem: view[index]?.problem || '' })),
     };
@@ -181,10 +249,20 @@ export class BroadcastMethods {
 
   // Empty or reset goes back to the wrangler.jsonc list. Invalid input throws
   // before anything is saved.
-  async saveBroadcastTargets(raw, reset = false) {
+  // Groups are optional; undefined leaves the saved groups alone.
+  async saveBroadcastTargets(raw, reset = false, groupsRaw = undefined) {
     const text = String(raw || '').slice(0, 2000);
-    if (reset || !text.trim()) this.remove('broadcast:targets-config');
-    else this.write('broadcast:targets-config', broadcastTargetEntries({ BROADCAST_TARGETS: text }).map(entry => entry.label).join(','));
+    const custom = !reset && text.trim() ? broadcastTargetEntries({ BROADCAST_TARGETS: text }) : null;
+    let groups = null;
+    if (groupsRaw !== undefined) {
+      const entries = custom || broadcastTargetEntries(this.env);
+      groups = parseBroadcastGroups(String(groupsRaw || '').slice(0, 2000), entries);
+      const labelOf = new Map(entries.map(entry => [entry.id, entry.label]));
+      groups = groups.map(group => group.name + '：' + group.ids.map(id => labelOf.get(id)).join(' ')).join('\n');
+    }
+    if (!custom) this.remove('broadcast:targets-config');
+    else this.write('broadcast:targets-config', custom.map(entry => entry.label).join(','));
+    if (groups !== null) { if (groups) this.write('broadcast:groups-config', groups); else this.remove('broadcast:groups-config'); }
     return this.broadcastSettings();
   }
 
@@ -215,6 +293,7 @@ export class BroadcastMethods {
       await say('已退出群发，没有发送任何内容。');
       return true;
     }
+    if (/^\/?群发记录$/.test(text)) return this.broadcastHistory(message.chat.id, owner);
     if (/^\/?群发$/.test(text)) {
       waits.forEach(key => this.remove(key));
       this.write(`broadcast:armed:${owner}`, true, WAIT_TTL);
@@ -337,14 +416,14 @@ export class BroadcastMethods {
         }
       }
       const title = String((cached ? cached.title : chat?.title) || '').replace(/\s+/g, ' ').trim();
-      const label = broadcastDisplayLabel(title, entry.label);
-      if (!me) return { label, problem: '暂时检查不了，发送时再看结果' };
-      if (chatError) return { label, problem: this.problemFromError(chatError) };
+      const label = broadcastDisplayLabel(title, entry.label), name = broadcastButtonName(title, entry.label);
+      if (!me) return { label, name, problem: '暂时检查不了，发送时再看结果' };
+      if (chatError) return { label, name, problem: this.problemFromError(chatError) };
       try {
         const member = await tg('getChatMember', { chat_id: chatIdOf(entry.id), user_id: me.id });
-        return { label, problem: this.broadcastPostingProblem(chat, member) };
+        return { label, name, problem: this.broadcastPostingProblem(chat, member) };
       } catch (error) {
-        return { label, problem: this.problemFromError(error) };
+        return { label, name, problem: this.problemFromError(error) };
       }
     }));
   }
@@ -358,10 +437,16 @@ export class BroadcastMethods {
       token: crypto.randomUUID().replaceAll('-', '').slice(0, 16), ownerId: String(message.from.id), chatId: message.chat.id, messageIds: ids,
       kind: contentKind(message, ids.length), isText: ids.length === 1 && (typeof message.text === 'string' || typeof override?.text === 'string'), override,
       targets: entries.map(item => item.id), labels: view.map(item => item.label), problems: view.map(item => item.problem),
+      // Two targets with the same short title fall back to the full label so they stay distinguishable.
+      names: view.map((item, index) => view.some((other, at) => at !== index && other.name === item.name) ? item.label : item.name),
       selected: [], silent: false, pin: false, screen: 'main', testing: this.env.BROADCAST_TEST_MODE === 'true',
+      preview: broadcastPreview(message, override, contentKind(message, ids.length)),
       status: 'open', created: Date.now(),
     };
     draft.warned = draft.problems.flatMap((problem, index) => problem ? [index] : []);
+    const indexOf = new Map(draft.targets.map((id, index) => [id, index]));
+    draft.groups = this.broadcastGroups(entries).map(group => ({ name: group.name, indexes: group.ids.map(id => indexOf.get(id)) }));
+    draft.last = [...new Set(this.read(`broadcast:last-targets:${draft.ownerId}`, []).map(id => indexOf.get(id)).filter(Number.isInteger))].sort((a, b) => a - b);
     const sent = await telegram(this.env.BOT_TOKEN)('sendMessage', {
       chat_id: message.chat.id,
       text: this.broadcastScreenText(draft),
@@ -376,7 +461,11 @@ export class BroadcastMethods {
 
   broadcastScreenText(draft) {
     const labels = draft.labels || draft.targets;
-    if (draft.screen === 'pick') return `选择要发送的目标（${labels.length} 个），然后点确认发送。`;
+    if (draft.screen === 'pick') return [
+      `选择要发送的目标（已选 ${draft.selected?.length || 0}/${labels.length}），然后点「确认发送」。`,
+      '',
+      ...labels.map((label, index) => `${index + 1}. ${label}${draft.problems?.[index] ? ' ⚠️ ' + draft.problems[index] : ''}`),
+    ].join('\n').slice(0, 3500);
     if (draft.screen === 'time') return [
       '什么时候发？（北京时间）',
       `发到：${draft.scope === 'selected' ? `所选的 ${draft.selected.length} 个目标` : `全部 ${labels.length} 个目标`}`,
@@ -397,8 +486,8 @@ export class BroadcastMethods {
   broadcastKeyboard(draft) {
     const token = draft.token;
     const options = [
-      { text: draft.silent ? '🔕 静音发送：开' : '🔔 静音发送：关', callback_data: `bc:s:${token}` },
-      { text: draft.pin ? '📌 发完置顶：开' : '📌 发完置顶：关', callback_data: `bc:n:${token}` },
+      { text: draft.silent ? '🔕 静音：开' : '🔔 静音：关', callback_data: `bc:s:${token}` },
+      { text: draft.pin ? '📌 置顶：开' : '📌 置顶：关', callback_data: `bc:n:${token}` },
     ];
     if (draft.screen === 'time') {
       const now = Date.now();
@@ -411,14 +500,22 @@ export class BroadcastMethods {
     }
     if (draft.screen === 'pick') {
       const chosen = new Set(draft.selected || []), warned = draft.warned || [];
+      const names = draft.names || draft.labels || draft.targets;
+      const quick = [{ text: '全选', callback_data: `bc:l:${token}` }, { text: '全不选', callback_data: `bc:o:${token}` }];
+      if (draft.last?.length) quick.push({ text: `↩️ 上次（${draft.last.length}）`, callback_data: `bc:r:${token}` });
+      const groups = (draft.groups || []).map((group, index) => ({ text: `📁 ${group.name}${group.indexes.every(item => chosen.has(item)) ? ' ✓' : ''}`, callback_data: `bc:k:${token}:${index}` }));
+      const groupRows = [];
+      for (let at = 0; at < groups.length; at += 2) groupRows.push(groups.slice(at, at + 2));
       return [
-        ...(draft.labels || draft.targets).map((target, index) => {
+        quick,
+        ...groupRows,
+        ...names.map((name, index) => {
           const warn = warned.includes(index);
-          return [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warn ? WARN_MARK : ''}${broadcastPickerLabel(target, warn)}`, callback_data: `bc:t:${token}:${index}` }];
+          return [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warn ? WARN_MARK : ''}${broadcastPickerLabel(name, warn)}`, callback_data: `bc:t:${token}:${index}` }];
         }),
         options,
-        [{ text: '确认发送', callback_data: `bc:g:${token}` }, { text: '⏰ 定时发送所选', callback_data: `bc:w:${token}` }],
-        [{ text: '取消', callback_data: `bc:c:${token}` }],
+        [{ text: `✅ 确认发送（${chosen.size}）`, callback_data: `bc:g:${token}` }],
+        [{ text: '⏰ 定时发送', callback_data: `bc:w:${token}` }, { text: '取消', callback_data: `bc:c:${token}` }],
       ];
     }
     return [
@@ -439,12 +536,12 @@ export class BroadcastMethods {
     const delivered = /^bc:([ue]):([0-9a-f]{16})$/.exec(data);
     if (delivered?.[1] === 'u') return this.broadcastUndo(callback, delivered[2], answer);
     if (delivered?.[1] === 'e') return this.broadcastEditStart(callback, delivered[2], answer);
-    const toggle = /^bc:t:([0-9a-f]{16}):(\d{1,2})$/.exec(data);
+    const toggle = /^bc:([tk]):([0-9a-f]{16}):(\d{1,2})$/.exec(data);
     const hour = /^bc:h:([0-9a-f]{16}):(m30|h1|h3|e20|m09|cu)$/.exec(data);
-    const action = /^bc:([apcgsnwbz]):([0-9a-f]{16})$/.exec(data);
+    const action = /^bc:([apcgsnwbzlor]):([0-9a-f]{16})$/.exec(data);
     if (!toggle && !hour && !action) return answer('无效操作。', true);
-    const kind = toggle ? 't' : hour ? 'h' : action[1];
-    const token = (toggle || hour || action)[1 + (action ? 1 : 0)];
+    const kind = toggle ? toggle[1] : hour ? 'h' : action[1];
+    const token = toggle ? toggle[2] : hour ? hour[1] : action[2];
     const key = `broadcast:draft:${token}`;
     const draft = this.read(key);
     const messageId = callback.message?.message_id;
@@ -457,13 +554,35 @@ export class BroadcastMethods {
       else await tg('editMessageReplyMarkup', params).catch(() => {});
     };
     if (kind === 't') {
-      const index = Number(toggle[2]);
+      const index = Number(toggle[3]);
       if (!Number.isSafeInteger(index) || index < 0 || index >= draft.targets.length) return answer('无效操作。', true);
       const selected = new Set(draft.selected || []);
       if (selected.has(index)) selected.delete(index); else selected.add(index);
       draft.selected = [...selected].sort((a, b) => a - b);
-      await redraw();
+      await redraw(true);
       return answer(draft.selected.length ? `已选 ${draft.selected.length} 个` : '未选择目标');
+    }
+    // A group button adds the whole group, or removes it when it is all ticked already.
+    if (kind === 'k') {
+      const group = draft.groups?.[Number(toggle[3])];
+      if (!group) return answer('无效操作。', true);
+      const selected = new Set(draft.selected || []);
+      const all = group.indexes.every(index => selected.has(index));
+      group.indexes.forEach(index => all ? selected.delete(index) : selected.add(index));
+      draft.selected = [...selected].sort((a, b) => a - b);
+      await redraw(true);
+      return answer(all ? `已取消「${group.name}」` : `已选上「${group.name}」`);
+    }
+    if (kind === 'r') {
+      if (!draft.last?.length) return answer('没有上次的记录。', true);
+      draft.selected = [...draft.last];
+      await redraw(true);
+      return answer(`已选上次的 ${draft.last.length} 个目标`);
+    }
+    if (kind === 'l' || kind === 'o') {
+      draft.selected = kind === 'l' ? draft.targets.map((_, index) => index) : [];
+      await redraw(true);
+      return answer(kind === 'l' ? '已全选' : '已全部取消');
     }
     if (kind === 's') { draft.silent = !draft.silent; await redraw(); return answer(draft.silent ? '静音发送：订阅者不会收到提醒' : '正常发送，会有提醒'); }
     if (kind === 'n') { draft.pin = !draft.pin; await redraw(); return answer(draft.pin ? '发完会自动置顶' : '发完不置顶'); }
@@ -512,6 +631,7 @@ export class BroadcastMethods {
     if (due && (due < Date.now() + 60000 || due > Date.now() + MAX_SCHEDULE)) return { error: '时间要在 1 分钟以后、7 天以内。' };
     draft.status = due ? 'scheduled' : 'sending';
     this.remove(`broadcast:timing:${draft.ownerId}`);
+    this.write(`broadcast:last-targets:${draft.ownerId}`, sendIds, LAST_TTL);
     draft.sendIds = sendIds;
     draft.selectedLabels = selectedLabels;
     draft.scheduledAt = due || null;
@@ -572,9 +692,12 @@ export class BroadcastMethods {
       targets, selectedLabels: draft.selectedLabels || [], testing: draft.testing === true,
       labelById: Object.fromEntries((draft.sendIds || []).map((id, index) => [id, (draft.selectedLabels || [])[index] || id])),
       isText: draft.isText === true, silent: draft.silent === true, pin: draft.pin === true, scheduledAt: draft.scheduledAt || null,
+      preview: draft.preview || '', created: Date.now(),
       results: {}, undoState: 'idle',
     };
     this.write(`broadcast:delivery:${draft.token}`, delivery, Math.max(DELIVERY_TTL, due - Date.now() + DELIVERY_TTL));
+    const historyKey = `broadcast:history:${draft.ownerId}`;
+    this.write(historyKey, [draft.token, ...this.read(historyKey, []).filter(id => id !== draft.token)].slice(0, HISTORY_SIZE), Math.max(DELIVERY_TTL, due - Date.now() + DELIVERY_TTL));
     const override = draft.override;
     for (const target of targets) {
       const chatId = chatIdOf(target);
@@ -657,8 +780,47 @@ export class BroadcastMethods {
   broadcastDeliveryFor(callback, id) {
     const delivery = this.read(`broadcast:delivery:${id}`);
     const messageId = callback.message?.message_id;
-    if (!delivery || String(delivery.ownerId) !== String(callback.from?.id) || !Number.isSafeInteger(messageId) || messageId !== delivery.reportMessageId) return null;
+    if (!delivery || String(delivery.ownerId) !== String(callback.from?.id) || !Number.isSafeInteger(messageId)) return null;
+    if (messageId !== delivery.reportMessageId && messageId !== this.read(`broadcast:history-message:${delivery.ownerId}`)) return null;
     return delivery;
+  }
+
+  broadcastHistoryState(delivery) {
+    const total = delivery.testing ? (delivery.selectedLabels || []).length : delivery.targets.length;
+    const settled = delivery.targets.filter(target => delivery.results[target]);
+    const ok = settled.filter(target => delivery.results[target].ok).length;
+    if (delivery.undoState === 'done') return `已撤回（原本发到 ${total} 个目标）`;
+    if (delivery.undoState === 'running') return '正在撤回…';
+    if (settled.length < delivery.targets.length) {
+      if (!settled.length && delivery.scheduledAt > Date.now()) return `⏰ 定时发送到 ${total} 个目标，还没到时间`;
+      return `正在发送：${settled.length}/${delivery.targets.length}`;
+    }
+    if (delivery.testing) return ok ? `测试模式：选了 ${total} 个目标，只复制给了你` : '测试模式：复制给你失败了';
+    return ok === total ? `发到 ${total} 个目标，全部成功` : `发到 ${total} 个目标，成功 ${ok} 个，失败 ${total - ok} 个`;
+  }
+
+  // 「群发记录」: the owner's last broadcasts with 修改文字 / 撤回 buttons, so an
+  // old result message does not have to be found by scrolling.
+  async broadcastHistory(chatId, owner) {
+    const tg = telegram(this.env.BOT_TOKEN);
+    const rows = this.read(`broadcast:history:${owner}`, []).map(id => [id, this.read(`broadcast:delivery:${id}`)]).filter(([, delivery]) => delivery);
+    if (!rows.length) {
+      await tg('sendMessage', { chat_id: chatId, text: '还没有群发记录。记录保留 30 天。' }).catch(() => {});
+      return true;
+    }
+    const lines = ['最近的群发（最新的在上面）', ''], keyboard = [];
+    rows.forEach(([id, delivery], index) => {
+      const number = index + 1;
+      lines.push(`${number}. ${formatBeijing(delivery.scheduledAt || delivery.created || Date.now())}　${delivery.preview ? '「' + delivery.preview + '」' : ''}`);
+      lines.push(`　 ${this.broadcastHistoryState(delivery)}`);
+      if (delivery.undoState === 'idle' && delivery.targets.some(target => delivery.results[target]?.messageIds?.length)) {
+        keyboard.push([{ text: `${number}. ✏️ 修改文字`, callback_data: `bc:e:${id}` }, { text: `${number}. 撤回`, callback_data: `bc:u:${id}` }]);
+      }
+    });
+    lines.push('', keyboard.length ? '用下面的按钮修改或撤回对应编号的群发。Telegram 只允许删除 48 小时内发出的消息。' : '这些群发现在都不能修改或撤回了。');
+    const sent = await tg('sendMessage', { chat_id: chatId, text: lines.join('\n').slice(0, 4000), disable_web_page_preview: true, ...(keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {}) });
+    if (Number.isSafeInteger(sent?.message_id)) this.write(`broadcast:history-message:${owner}`, sent.message_id, DELIVERY_TTL);
+    return true;
   }
 
   async broadcastEditStart(callback, id, answer) {

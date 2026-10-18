@@ -25,7 +25,7 @@ export class BackupMethods {
     if(path.startsWith('review-examples/'))return {examples:this.listReviewExamples().map(x=>({id:x.id,verdict:x.verdict}))};
     if(path.startsWith('federation/'))return {case:this.read('federation-case:'+String(body.id))};
     if(path==='federation')return {federation:this.federation()};
-    if(path==='broadcast/targets')return {broadcastTargets:this.read('broadcast:targets-config')||'(默认) '+String(this.env.BROADCAST_TARGETS||'')};
+    if(path==='broadcast/targets')return {broadcastTargets:this.read('broadcast:targets-config')||'(默认) '+String(this.env.BROADCAST_TARGETS||''),broadcastGroups:this.read('broadcast:groups-config')||''};
     if(path.startsWith('links/'))return {links:this.listLinks().links.map(x=>({slug:x.slug,target:x.target,note:x.note}))};
     if(path==='quiet' || path==='backup/restore'){const backup=await this.exportBackup();delete backup.created;return {backup};}
     return {};
