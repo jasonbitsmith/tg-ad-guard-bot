@@ -1,4 +1,5 @@
 import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
+import { parseBroadcastTime, stripBroadcastPrefix, formatBeijing } from '../src/state/broadcast.js';
 import { broadcastTargets, broadcastTargetEntries, broadcastDestinations, broadcastDisplayLabel, broadcastPickerLabel, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
@@ -405,4 +406,20 @@ test('可疑提醒门槛：单纯 @某人 不算，AI 也拿不准才算', async
   assert.equal(suspicious(2, false), false);
   assert.equal(suspicious(2, true), true);
   assert.equal(suspicious(3, false), true);
+});
+
+test('群发前缀和定时时间解析',()=>{
+  assert.equal(stripBroadcastPrefix('群发'),null);assert.equal(stripBroadcastPrefix('群发功能怎么用'),null);assert.equal(stripBroadcastPrefix('你好'),null);
+  assert.deepEqual(stripBroadcastPrefix('群发：看 https://a.co',[{type:'url',offset:5,length:14},{type:'bold',offset:0,length:2}]),{text:'看 https://a.co',entities:[{type:'url',offset:2,length:14}]});
+  assert.deepEqual(stripBroadcastPrefix('群发\n第一行',[{type:'bold',offset:1,length:5}]),{text:'第一行',entities:[{type:'bold',offset:0,length:3}]});
+  const now=Date.UTC(2026,9,18,5,0);// 13:00 北京时间
+  const bj=(m,d,h,min)=>Date.UTC(2026,m-1,d,h,min)-8*3600000;
+  assert.equal(parseBroadcastTime('21:30',now),bj(10,18,21,30));
+  assert.equal(parseBroadcastTime('9:00',now),bj(10,19,9,0));
+  assert.equal(parseBroadcastTime('明天 9:00',now),bj(10,19,9,0));
+  assert.equal(parseBroadcastTime('今晚8点',now),bj(10,18,20,0));
+  assert.equal(parseBroadcastTime('10-20 21:30',now),bj(10,20,21,30));
+  assert.equal(parseBroadcastTime('10月20日 21:30',now),bj(10,20,21,30));
+  assert.equal(parseBroadcastTime('2-30 10:00',now),null);assert.equal(parseBroadcastTime('25:00',now),null);assert.equal(parseBroadcastTime('随便',now),null);
+  assert.equal(formatBeijing(bj(10,19,9,0),now),'明天 09:00');assert.equal(formatBeijing(bj(10,25,9,5),now),'10月25日 09:05');
 });

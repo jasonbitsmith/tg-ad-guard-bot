@@ -1386,17 +1386,19 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   const press=(data,fromId=99,messageId=444)=>send({update_id:++seq,callback_query:{id:'bc-'+seq,from:{id:fromId,first_name:'测试'},data,message:{message_id:messageId,chat:{id:fromId,type:'private'}}}});
   const button=(message,text)=>message.params.reply_markup.inline_keyboard.flat().find(item=>item.text===text).callback_data;
   const promptSince=start=>calls.slice(start).find(call=>call.method==='sendMessage'&&call.params.chat_id===99&&JSON.stringify(call.params.reply_markup||{}).includes('发送到全部目标'));
+  // The owner sends 「群发」 first; the next message is the broadcast content.
+  const armSend=async update=>{await send(dm(99,{text:'群发'}));return send(update);};
 
   await t.test('所有者私聊广播内容时给出三个选择，图片视频文件同样可以',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('true');
     const start=calls.length;
-    await send(dm(99,{text:'新公告 https://example.com/a',entities:[{type:'url',offset:4,length:21}]}));
+    await armSend(dm(99,{text:'新公告 https://example.com/a',entities:[{type:'url',offset:4,length:21}]}));
     const prompt=promptSince(start);
-    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,取消');
+    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,🔔 静音发送：关,📌 发完置顶：关,⏰ 定时发送,取消');
     for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
     assert.match(prompt.params.text,/测试模式/);assert.equal(prompt.params.text.includes('目标：5615131413'),false);
     for(const extra of [{photo:[{file_id:'photo'}]},{video:{file_id:'video'}},{document:{file_id:'doc',file_name:'a.pdf'}}]){
-      const mark=calls.length;await send(dm(99,extra));
+      const mark=calls.length;await armSend(dm(99,extra));
       assert.ok(promptSince(mark),JSON.stringify(extra));
     }
   });
@@ -1428,7 +1430,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('确认后复制到每一个广播目标',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('false');
     const start=calls.length;
-    await send(dm(99,{text:'全员通知 https://example.com/all'}));
+    await armSend(dm(99,{text:'全员通知 https://example.com/all'}));
     await press(button(promptSince(start),'发送到全部目标'));
     await tickAdmin();
     const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
@@ -1441,7 +1443,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('测试模式列出全部目标，但每次只复制一份给所有者',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('true');
     const start=calls.length;
-    await send(dm(99,{text:'测试广播 https://example.com/test'}));
+    await armSend(dm(99,{text:'测试广播 https://example.com/test'}));
     const prompt=promptSince(start);
     for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
     await press(button(prompt,'选择目标'));
@@ -1463,7 +1465,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.match(report.params.text,/测试模式：已复制一份给所有者 5615131413/);
     assert.match(report.params.text,/没有发给上面这些目标/);
     const allStart=calls.length;
-    await send(dm(99,{text:'测试全部 https://example.com/all-test'}));
+    await armSend(dm(99,{text:'测试全部 https://example.com/all-test'}));
     await press(button(promptSince(allStart),'发送到全部目标'));
     await tickAdmin();
     assert.deepEqual(calls.slice(allStart).filter(call=>call.method==='copyMessage').map(call=>call.params.chat_id),[5615131413]);
@@ -1474,7 +1476,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('只复制勾选的目标',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('false');
     const start=calls.length;
-    await send(dm(99,{video:{file_id:'clip'}}));
+    await armSend(dm(99,{video:{file_id:'clip'}}));
     await press(button(promptSince(start),'选择目标'));
     const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
     const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
@@ -1491,7 +1493,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     failures.set('copyMessage:@jasonsimlab',[{error_code:429,description:'Too Many Requests',parameters:{retry_after:90}}]);
     const start=calls.length;
     try{
-      await send(dm(99,{document:{file_id:'file',file_name:'note.txt'},caption:'请看'}));
+      await armSend(dm(99,{document:{file_id:'file',file_name:'note.txt'},caption:'请看'}));
       await press(button(promptSince(start),'发送到全部目标'));
       await tickAdmin();
       const count=target=>calls.slice(start).filter(call=>call.method==='copyMessage'&&call.params.chat_id===target).length;
@@ -1509,7 +1511,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('撤回会删除每个目标里的广播消息并回报结果',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('false');
     const start=calls.length;
-    await send(dm(99,{text:'这条要撤回 https://example.com/undo'}));
+    await armSend(dm(99,{text:'这条要撤回 https://example.com/undo'}));
     await press(button(promptSince(start),'发送到全部目标'));
     await tickAdmin();
     const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
@@ -1534,7 +1536,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     failures.set('getChatMember:@jason_prompt',{error_code:403,description:'Forbidden: bot is not a member of the channel chat'});
     const start=calls.length;
     try{
-      await send(dm(99,{text:'检查目标 https://example.com/check'}));
+      await armSend(dm(99,{text:'检查目标 https://example.com/check'}));
       const prompt=promptSince(start);
       assert.match(prompt.params.text,/⚠️ 网盘资源站（@wpzyz）：找不到，或机器人不在里面/);
       assert.ok(prompt.params.text.includes('⚠️ '+broadcastLabels[5]+'：机器人不在里面或没有权限'));
@@ -1559,7 +1561,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
   await t.test('撤回一直失败时按钮会恢复，可以再点一次',async()=>{
     const admin=await adminDo();await admin.setBroadcastModeTest('false');
     const start=calls.length;
-    await send(dm(99,{text:'撤回会失败 https://example.com/undo-fail'}));
+    await armSend(dm(99,{text:'撤回会失败 https://example.com/undo-fail'}));
     await press(button(promptSince(start),'发送到全部目标'));
     await tickAdmin();
     const report=calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
@@ -1583,7 +1585,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const admin=await adminDo();await admin.setBroadcastModeTest('true');
     const copies=()=>calls.filter(call=>call.method==='copyMessage'||call.method==='copyMessages').length;
     const before=copies();const start=calls.length;
-    await send(dm(99,{text:'先别发 https://example.com/cancel'}));
+    await armSend(dm(99,{text:'先别发 https://example.com/cancel'}));
     const data=button(promptSince(start),'发送到全部目标');
     await press(data,5);
     assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/所有者/);
@@ -1604,6 +1606,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const first=dm(99,{photo:[{file_id:'a'}],media_group_id:'album-1',caption:'一组图'});
     const second=dm(99,{photo:[{file_id:'b'}],media_group_id:'album-1'});
     const start=calls.length;
+    await send(dm(99,{text:'群发'}));
     await Promise.all([send(first),send(second)]);
     assert.equal(calls.slice(start).some(call=>JSON.stringify(call.params).includes('发送到全部目标')),false);
     await new Promise(resolve=>setTimeout(resolve,1200));
@@ -1622,14 +1625,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const titleCalls=()=>calls.filter(call=>call.method==='getChat'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
     const memberCalls=()=>calls.filter(call=>call.method==='getChatMember'&&broadcastTargets.includes(String(call.params.chat_id).toLowerCase())).length;
     const before=titleCalls();const membersBefore=memberCalls();const start=calls.length;
-    await send(dm(99,{text:'标题已缓存 https://example.com/cached'}));
+    await armSend(dm(99,{text:'标题已缓存 https://example.com/cached'}));
     const cached=promptSince(start);
     assert.ok(cached.params.text.includes('VPS 补货雷达（@jason_vps_deal）'));
     assert.equal(titleCalls(),before);
     assert.equal(memberCalls(),membersBefore+broadcastTargets.length);
     await admin.seedRecordTest('broadcast:chat-title:@wpzyz',{title:'旧标题',at:Date.now()-2*86400000},2*86400000);
     const refreshStart=calls.length;
-    await send(dm(99,{text:'刷新标题 https://example.com/refresh'}));
+    await armSend(dm(99,{text:'刷新标题 https://example.com/refresh'}));
     const refreshed=promptSince(refreshStart);
     assert.ok(refreshed.params.text.includes('网盘资源站（@wpzyz）'));
     assert.equal(refreshed.params.text.includes('旧标题'),false);
@@ -1639,7 +1642,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     failures.set('getChat:@wpzyz',{error_code:400,description:'Bad Request: chat not found'});
     try{
       const failStart=calls.length;
-      await send(dm(99,{text:'标题失败 https://example.com/title-fail'}));
+      await armSend(dm(99,{text:'标题失败 https://example.com/title-fail'}));
       const failed=promptSince(failStart);
       assert.match(failed.params.text,/⚠️ @wpzyz：找不到，或机器人不在里面/);
       assert.equal(failed.params.text.includes('网盘资源站'),false);
@@ -1657,6 +1660,165 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       assert.equal(report.params.text.includes('网盘资源站'),false);
       assert.equal(await admin.readRecordTest('broadcast:chat-title:@wpzyz'),null);
     }finally{failures.delete('getChat:@wpzyz');}
+  });
+
+
+  const lastText=start=>calls.slice(start).filter(call=>call.method==='sendMessage'&&call.params.chat_id===99).map(call=>String(call.params.text||''));
+  const reportSince=(start,head='广播结果')=>calls.slice(start).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith(head));
+
+  await t.test('没有先发「群发」的私聊不会弹出群发确认，「取消」可以退出',async()=>{
+    const start=calls.length;
+    await send(dm(99,{text:'随手记一下 https://example.com/note'}));
+    await send(dm(99,{photo:[{file_id:'casual'}]}));
+    assert.equal(calls.slice(start).some(call=>JSON.stringify(call.params).includes('bc:')),false);
+    const exitStart=calls.length;
+    await send(dm(99,{text:'群发'}));
+    assert.ok(lastText(exitStart).some(text=>text.includes('请发送要群发的内容')));
+    await send(dm(99,{text:'取消'}));
+    assert.ok(lastText(exitStart).some(text=>text.includes('已退出群发')));
+    await send(dm(99,{text:'退出后这条不算 https://example.com/after'}));
+    assert.equal(promptSince(exitStart),undefined);
+  });
+
+  await t.test('「群发 内容」会去掉前缀再发，链接位置跟着移动',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await send(dm(99,{text:'群发 看这里 https://example.com/p',entities:[{type:'url',offset:7,length:21}]}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const sends=calls.slice(start).filter(call=>call.method==='sendMessage'&&broadcastTargets.includes(call.params.chat_id));
+    assert.deepEqual(sends.map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(sends.every(call=>call.params.text==='看这里 https://example.com/p'));
+    assert.deepEqual(sends[0].params.entities,[{type:'url',offset:4,length:21}]);
+    assert.ok(reportSince(start).params.text.includes('✅'));
+    const photoStart=calls.length;
+    await send(dm(99,{photo:[{file_id:'p'}],caption:'群发：图片说明'}));
+    await press(button(promptSince(photoStart),'发送到全部目标'));
+    await tickAdmin();
+    const copies=calls.slice(photoStart).filter(call=>call.method==='copyMessage');
+    assert.equal(copies.length,broadcastTargets.length);
+    assert.ok(copies.every(call=>call.params.caption==='图片说明'));
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('静音发送和发完置顶',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await armSend(dm(99,{text:'静音置顶 https://example.com/pin'}));
+    const prompt=promptSince(start);
+    await press(button(prompt,'🔔 静音发送：关'));await press(button(prompt,'📌 发完置顶：关'));
+    const markup=calls.slice(start).findLast(call=>call.method==='editMessageReplyMarkup').params.reply_markup.inline_keyboard.flat().map(item=>item.text);
+    assert.ok(markup.includes('🔕 静音发送：开')&&markup.includes('📌 发完置顶：开'));
+    await press(button(prompt,'发送到全部目标'));
+    await tickAdmin();
+    const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
+    assert.ok(copies.length===broadcastTargets.length&&copies.every(call=>call.params.disable_notification===true));
+    const pins=calls.slice(start).filter(call=>call.method==='pinChatMessage');
+    assert.deepEqual(pins.map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(pins.every(call=>call.params.message_id===444));
+    assert.match(reportSince(start).params.text,/（已置顶）/);
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('发出后点「修改文字」，各目标里的那条会一起改掉',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await armSend(dm(99,{text:'有错字 https://example.com/typo'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    const report=reportSince(start);
+    await press(button(report,'✏️ 修改文字'));
+    assert.ok(lastText(start).some(text=>text.includes('请发送改好的完整文字')));
+    const editStart=calls.length;
+    await send(dm(99,{text:'没有错字了 https://example.com/fixed'}));
+    await tickAdmin();
+    const edits=calls.slice(start).filter(call=>call.method==='editMessageText'&&broadcastTargets.includes(call.params.chat_id));
+    assert.deepEqual(edits.map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(edits.every(call=>call.params.text==='没有错字了 https://example.com/fixed'&&call.params.message_id===444));
+    const result=reportSince(start,'修改结果');
+    assert.ok(broadcastLabels.every(label=>result.params.text.includes(label)));
+    assert.equal(promptSince(editStart),undefined);
+    const photoStart=calls.length;
+    await armSend(dm(99,{photo:[{file_id:'x'}],caption:'旧说明'}));
+    await press(button(promptSince(photoStart),'发送到全部目标'));
+    await tickAdmin();
+    await press(button(reportSince(photoStart),'✏️ 修改文字'));
+    await send(dm(99,{text:'新说明'}));
+    await tickAdmin();
+    const captions=calls.slice(photoStart).filter(call=>call.method==='editMessageCaption');
+    assert.equal(captions.length,broadcastTargets.length);assert.ok(captions.every(call=>call.params.caption==='新说明'));
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('定时发送：到点才发，到点前可以取消',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const copies=start=>calls.slice(start).filter(call=>call.method==='copyMessage');
+    const start=calls.length;
+    await armSend(dm(99,{text:'晚点再发 https://example.com/later'}));
+    const prompt=promptSince(start);
+    await press(button(prompt,'⏰ 定时发送'));
+    const screen=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('什么时候发'));
+    assert.ok(screen);assert.match(screen.params.text,/全部 6 个目标/);
+    await press(button(screen,'1 小时后'));
+    const scheduled=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('⏰ 已定好'));
+    assert.ok(scheduled);
+    await tickAdmin();
+    assert.equal(copies(start).length,0);
+    await press(button(scheduled,'取消定时'));
+    assert.ok(calls.slice(start).some(call=>call.method==='editMessageText'&&call.params.text==='已取消定时，没有发送。'));
+    await admin.expireBroadcastJobsTest();await tickAdmin(true);
+    assert.equal(copies(start).length,0);
+
+    const due=calls.length;
+    await armSend(dm(99,{text:'到点发送 https://example.com/due'}));
+    await press(button(promptSince(due),'⏰ 定时发送'));
+    const dueScreen=calls.slice(due).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('什么时候发'));
+    await press(button(dueScreen,'30 分钟后'));
+    await tickAdmin();
+    assert.equal(copies(due).length,0);
+    await admin.expireBroadcastJobsTest();await tickAdmin(true);
+    assert.deepEqual(copies(due).map(call=>call.params.chat_id),broadcastTargets);
+    assert.ok(reportSince(due));
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('定时发送可以自己输入时间',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const start=calls.length;
+    await armSend(dm(99,{text:'自己定时间 https://example.com/custom'}));
+    const prompt=promptSince(start);
+    await press(button(prompt,'选择目标'));
+    const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
+    await press(button(picker,'⏰ 定时发送所选'));
+    assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/至少一个/);
+    await press(toggles[0].callback_data);
+    await press(button(picker,'⏰ 定时发送所选'));
+    const screen=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('什么时候发'));
+    assert.match(screen.params.text,/所选的 1 个目标/);
+    await press(button(screen,'自己输入时间'));
+    await send(dm(99,{text:'随便写写'}));
+    assert.ok(lastText(start).some(text=>text.startsWith('没看懂这个时间')));
+    await send(dm(99,{text:'明天 9:00'}));
+    assert.ok(lastText(start).some(text=>text.startsWith('⏰ 已定好：明天 09:00')));
+    await tickAdmin();
+    assert.equal(calls.slice(start).some(call=>call.method==='copyMessage'),false);
+    const scheduled=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('⏰ 已定好'));
+    await press(button(scheduled,'取消定时'));
+  });
+
+  await t.test('后台可以改群发目标，也能恢复默认',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('true');
+    const saved=await admin.saveBroadcastTargets('@new_channel1\n@another_one2');
+    assert.equal(saved.custom,true);assert.deepEqual(saved.targets.map(item=>item.handle),['@new_channel1','@another_one2']);
+    const start=calls.length;
+    await armSend(dm(99,{text:'新目标 https://example.com/new'}));
+    const prompt=promptSince(start);
+    assert.match(prompt.params.text,/@new_channel1/);assert.equal(prompt.params.text.includes('@wpzyz'),false);
+    await assert.rejects(admin.saveBroadcastTargets('https://t.me/bad'));
+    assert.equal((await admin.broadcastSettings()).targets.length,2);
+    const reset=await admin.saveBroadcastTargets('',true);
+    assert.equal(reset.custom,false);assert.deepEqual(reset.targets.map(item=>item.handle),['@jason_vps_deal','@wpzyz','@JasonSIMLab','@jason_Telegramx','@Jason_WiseX','@Jason_Prompt']);
   });
 
 });

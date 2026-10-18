@@ -255,7 +255,8 @@ export class GuardState extends DurableObject {
           if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
         } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage'||x.method==='sendMessage')?.result);
-        } else if(op.local==='broadcast-copied'){this.broadcastCopied(op,plan);
+        } else if(op.local==='broadcast-copied'){await this.broadcastCopied(op,plan);
+        } else if(op.local==='broadcast-edit-report'){await this.broadcastEditReport(op,plan);
         } else if(op.local==='broadcast-reported'){this.broadcastReported(op,plan);
         } else if(op.local==='broadcast-undo-report'){await this.broadcastUndoReport(op,plan);
         } else if(op.local==='missed-record'){this.saveMissedRecord(op.body);

@@ -6,7 +6,7 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.30.2';
+export const VERSION = '2.31.0';
 const COOKIE = '__Host-guard_session';
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
@@ -99,6 +99,7 @@ async function admin(request, env, url) {
     if(path==='members/recovery')return json(await state.memberRecovery(url.searchParams.get('query')));
     if(path==='verification/members')return json(await state.findVerificationMembers(url.searchParams.get('query')||''));
     if (path === 'links') return json(await state.listLinks());
+    if (path === 'broadcast') return json(await state.broadcastSettings());
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'samples') return json({ samples: await state.listSamples() });
     if (path === 'federation') return json({ chats: await state.federation() });
@@ -157,6 +158,7 @@ async function admin(request, env, url) {
 async function mutateAdmin(request,env,url,state,path){
   if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
   if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
+  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true));}
   if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
