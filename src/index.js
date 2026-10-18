@@ -158,7 +158,7 @@ async function admin(request, env, url) {
 async function mutateAdmin(request,env,url,state,path){
   if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
   if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
-  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true));}
+  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true,body.groups));}
   if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
