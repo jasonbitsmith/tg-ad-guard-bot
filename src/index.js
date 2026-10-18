@@ -1,3 +1,4 @@
+import { adminPwaResponse } from './admin-pwa.js';
 import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram, verifyWebAppData } from './telegram.js';
@@ -6,9 +7,9 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.31.1';
+export const VERSION = '2.32.0';
 const COOKIE = '__Host-guard_session';
-const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
+const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
 async function bookscapeState(state, path, body) {
@@ -53,6 +54,8 @@ async function readJson(request, limit = 262144) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 async function admin(request, env, url) {
+  const pwa = adminPwaResponse(request,url,headers,VERSION);
+  if(pwa)return pwa;
   if (request.method === 'GET' && ['/admin','/admin/'].includes(url.pathname)) return new Response(ADMIN_PAGE, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   if (request.method === 'GET' && url.pathname === '/admin/app.js') return new Response(ADMIN_JS, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   if (!url.pathname.startsWith('/admin/api/')) return json({ error: 'Not found' }, 404);
