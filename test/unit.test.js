@@ -1,5 +1,5 @@
 import { isDmitRestock,relayPosts,dmitTargets } from '../src/state/dmit-relay.js';
-import { parseBroadcastTime, stripBroadcastPrefix, formatBeijing } from '../src/state/broadcast.js';
+import { parseBroadcastTime, stripBroadcastPrefix, formatBeijing, broadcastButtonName } from '../src/state/broadcast.js';
 import { broadcastTargets, broadcastTargetEntries, broadcastDestinations, broadcastDisplayLabel, broadcastPickerLabel, BROADCAST_TEST_CHAT } from '../src/state/broadcast.js';
 import { validateBackup, validateConfig, diffValues } from '../src/operations.js';
 import { DEFAULT_POLICY } from '../src/filters.js';
@@ -422,4 +422,11 @@ test('群发前缀和定时时间解析',()=>{
   assert.equal(parseBroadcastTime('10月20日 21:30',now),bj(10,20,21,30));
   assert.equal(parseBroadcastTime('2-30 10:00',now),null);assert.equal(parseBroadcastTime('25:00',now),null);assert.equal(parseBroadcastTime('随便',now),null);
   assert.equal(formatBeijing(bj(10,19,9,0),now),'明天 09:00');assert.equal(formatBeijing(bj(10,25,9,5),now),'10月25日 09:05');
+});
+
+test('群发选择按钮用短标题',()=>{
+  assert.equal(broadcastButtonName('搬瓦工 ｜ DMIT ｜ 补货雷达','@jason_vps_deal'),'搬瓦工｜DMIT｜补货雷达');
+  assert.equal(broadcastButtonName('精选网盘资源库 — 图书 | 电影 | 软件 | 工具 | 破解','@wpzyz'),'精选网盘资源库—图书|电影|软件|工具…');
+  assert.equal(broadcastButtonName('','@wpzyz'),'@wpzyz');
+  assert.equal(broadcastButtonName('Jason - 数字生活指南','@x'),'Jason - 数字生活指南');
 });

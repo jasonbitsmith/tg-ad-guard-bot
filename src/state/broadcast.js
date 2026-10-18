@@ -77,6 +77,16 @@ export function broadcastPickerLabel(label, warned) {
   return text.slice(0, Math.max(1, max - 1)) + '…';
 }
 
+// Short name for a picker button: the chat title with the spaces around
+// separators squeezed out, cut to fit one phone-width button. The full
+// 「群标题（@用户名）」 stays in the confirmation text above the buttons.
+const BUTTON_NAME_MAX = 20;
+export function broadcastButtonName(title, handle) {
+  const name = String(title || '').replace(/\s*([｜|—–·•\/])\s*/g, '$1').replace(/\s+/g, ' ').trim();
+  if (!name) return String(handle || '').trim();
+  return name.length <= BUTTON_NAME_MAX ? name : name.slice(0, BUTTON_NAME_MAX - 1) + '…';
+}
+
 // 「群发 内容」: returns the content after the prefix with its entities moved
 // left, or null when the text does not start with the prefix. Offsets are
 // UTF-16 units, the same as JavaScript string indexes.
@@ -337,14 +347,14 @@ export class BroadcastMethods {
         }
       }
       const title = String((cached ? cached.title : chat?.title) || '').replace(/\s+/g, ' ').trim();
-      const label = broadcastDisplayLabel(title, entry.label);
-      if (!me) return { label, problem: '暂时检查不了，发送时再看结果' };
-      if (chatError) return { label, problem: this.problemFromError(chatError) };
+      const label = broadcastDisplayLabel(title, entry.label), name = broadcastButtonName(title, entry.label);
+      if (!me) return { label, name, problem: '暂时检查不了，发送时再看结果' };
+      if (chatError) return { label, name, problem: this.problemFromError(chatError) };
       try {
         const member = await tg('getChatMember', { chat_id: chatIdOf(entry.id), user_id: me.id });
-        return { label, problem: this.broadcastPostingProblem(chat, member) };
+        return { label, name, problem: this.broadcastPostingProblem(chat, member) };
       } catch (error) {
-        return { label, problem: this.problemFromError(error) };
+        return { label, name, problem: this.problemFromError(error) };
       }
     }));
   }
@@ -358,6 +368,8 @@ export class BroadcastMethods {
       token: crypto.randomUUID().replaceAll('-', '').slice(0, 16), ownerId: String(message.from.id), chatId: message.chat.id, messageIds: ids,
       kind: contentKind(message, ids.length), isText: ids.length === 1 && (typeof message.text === 'string' || typeof override?.text === 'string'), override,
       targets: entries.map(item => item.id), labels: view.map(item => item.label), problems: view.map(item => item.problem),
+      // Two targets with the same short title fall back to the full label so they stay distinguishable.
+      names: view.map((item, index) => view.some((other, at) => at !== index && other.name === item.name) ? item.label : item.name),
       selected: [], silent: false, pin: false, screen: 'main', testing: this.env.BROADCAST_TEST_MODE === 'true',
       status: 'open', created: Date.now(),
     };
@@ -376,7 +388,11 @@ export class BroadcastMethods {
 
   broadcastScreenText(draft) {
     const labels = draft.labels || draft.targets;
-    if (draft.screen === 'pick') return `选择要发送的目标（${labels.length} 个），然后点确认发送。`;
+    if (draft.screen === 'pick') return [
+      `选择要发送的目标（已选 ${draft.selected?.length || 0}/${labels.length}），然后点「确认发送」。`,
+      '',
+      ...labels.map((label, index) => `${index + 1}. ${label}${draft.problems?.[index] ? ' ⚠️ ' + draft.problems[index] : ''}`),
+    ].join('\n').slice(0, 3500);
     if (draft.screen === 'time') return [
       '什么时候发？（北京时间）',
       `发到：${draft.scope === 'selected' ? `所选的 ${draft.selected.length} 个目标` : `全部 ${labels.length} 个目标`}`,
@@ -397,8 +413,8 @@ export class BroadcastMethods {
   broadcastKeyboard(draft) {
     const token = draft.token;
     const options = [
-      { text: draft.silent ? '🔕 静音发送：开' : '🔔 静音发送：关', callback_data: `bc:s:${token}` },
-      { text: draft.pin ? '📌 发完置顶：开' : '📌 发完置顶：关', callback_data: `bc:n:${token}` },
+      { text: draft.silent ? '🔕 静音：开' : '🔔 静音：关', callback_data: `bc:s:${token}` },
+      { text: draft.pin ? '📌 置顶：开' : '📌 置顶：关', callback_data: `bc:n:${token}` },
     ];
     if (draft.screen === 'time') {
       const now = Date.now();
@@ -411,14 +427,16 @@ export class BroadcastMethods {
     }
     if (draft.screen === 'pick') {
       const chosen = new Set(draft.selected || []), warned = draft.warned || [];
+      const names = draft.names || draft.labels || draft.targets;
       return [
-        ...(draft.labels || draft.targets).map((target, index) => {
+        [{ text: '全选', callback_data: `bc:l:${token}` }, { text: '全不选', callback_data: `bc:o:${token}` }],
+        ...names.map((name, index) => {
           const warn = warned.includes(index);
-          return [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warn ? WARN_MARK : ''}${broadcastPickerLabel(target, warn)}`, callback_data: `bc:t:${token}:${index}` }];
+          return [{ text: `${chosen.has(index) ? '☑' : '☐'} ${warn ? WARN_MARK : ''}${broadcastPickerLabel(name, warn)}`, callback_data: `bc:t:${token}:${index}` }];
         }),
         options,
-        [{ text: '确认发送', callback_data: `bc:g:${token}` }, { text: '⏰ 定时发送所选', callback_data: `bc:w:${token}` }],
-        [{ text: '取消', callback_data: `bc:c:${token}` }],
+        [{ text: `✅ 确认发送（${chosen.size}）`, callback_data: `bc:g:${token}` }],
+        [{ text: '⏰ 定时发送', callback_data: `bc:w:${token}` }, { text: '取消', callback_data: `bc:c:${token}` }],
       ];
     }
     return [
@@ -441,7 +459,7 @@ export class BroadcastMethods {
     if (delivered?.[1] === 'e') return this.broadcastEditStart(callback, delivered[2], answer);
     const toggle = /^bc:t:([0-9a-f]{16}):(\d{1,2})$/.exec(data);
     const hour = /^bc:h:([0-9a-f]{16}):(m30|h1|h3|e20|m09|cu)$/.exec(data);
-    const action = /^bc:([apcgsnwbz]):([0-9a-f]{16})$/.exec(data);
+    const action = /^bc:([apcgsnwbzlo]):([0-9a-f]{16})$/.exec(data);
     if (!toggle && !hour && !action) return answer('无效操作。', true);
     const kind = toggle ? 't' : hour ? 'h' : action[1];
     const token = (toggle || hour || action)[1 + (action ? 1 : 0)];
@@ -462,8 +480,13 @@ export class BroadcastMethods {
       const selected = new Set(draft.selected || []);
       if (selected.has(index)) selected.delete(index); else selected.add(index);
       draft.selected = [...selected].sort((a, b) => a - b);
-      await redraw();
+      await redraw(true);
       return answer(draft.selected.length ? `已选 ${draft.selected.length} 个` : '未选择目标');
+    }
+    if (kind === 'l' || kind === 'o') {
+      draft.selected = kind === 'l' ? draft.targets.map((_, index) => index) : [];
+      await redraw(true);
+      return answer(kind === 'l' ? '已全选' : '已全部取消');
     }
     if (kind === 's') { draft.silent = !draft.silent; await redraw(); return answer(draft.silent ? '静音发送：订阅者不会收到提醒' : '正常发送，会有提醒'); }
     if (kind === 'n') { draft.pin = !draft.pin; await redraw(); return answer(draft.pin ? '发完会自动置顶' : '发完不置顶'); }
