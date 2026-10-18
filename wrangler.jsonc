@@ -82,7 +82,7 @@
     "OCR_ENABLED": "true",
     "OCR_MAX_PER_CHAT_HOUR": "30",
     "BROADCAST_TARGETS": "@jason_vps_deal,@wpzyz,@JasonSIMLab,@jason_Telegramx,@Jason_WiseX,@Jason_Prompt",
-    "BROADCAST_TEST_MODE": "true"
+    "BROADCAST_TEST_MODE": "false"
   },
   "triggers": {
     "crons": ["* * * * *"]
