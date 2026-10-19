@@ -7,8 +7,9 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.33.0';
+export const VERSION = '2.34.0';
 const COOKIE = '__Host-guard_session';
+const REMEMBER_SECONDS = 30 * 86400;
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
@@ -56,7 +57,7 @@ async function readJson(request, limit = 262144) {
 async function admin(request, env, url) {
   const pwa = adminPwaResponse(request,url,headers,VERSION);
   if(pwa)return pwa;
-  if (request.method === 'GET' && ['/admin','/admin/'].includes(url.pathname)) return new Response(ADMIN_PAGE, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
+  if (request.method === 'GET' && ['/admin','/admin/'].includes(url.pathname)) return new Response(ADMIN_PAGE.replace('__ADMIN_VERSION__', VERSION), { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   if (request.method === 'GET' && url.pathname === '/admin/app.js') return new Response(ADMIN_JS, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   if (!url.pathname.startsWith('/admin/api/')) return json({ error: 'Not found' }, 404);
   if (!env.ADMIN_PASSWORD || !env.GUARD_STATE) return json({ error: '服务配置缺失' }, 503);
@@ -71,9 +72,12 @@ async function admin(request, env, url) {
     let body;
     try { body = await readJson(request, 4096); } catch { return json({ error: '无效请求' }, 400); }
     if (!await secureEqual(body.password, env.ADMIN_PASSWORD)) { await state.recordLoginFailure(ip); return json({ error: '密码错误' }, 401); }
+    // "Remember this computer" keeps the session for 30 days instead of 8 hours.
+    // Changing ADMIN_PASSWORD still signs every device out at once.
+    const ttl = body.remember === true ? REMEMBER_SECONDS : 28800;
     const session = crypto.randomUUID() + crypto.randomUUID();
-    await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD));
-    return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800` });
+    await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD), ttl * 1000);
+    return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${ttl}` });
   }
   // Opened from the bot chat as a Telegram Mini App: Telegram signs who opened
   // it, so the owner gets in without typing the password. Anyone else is refused.

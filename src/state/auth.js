@@ -12,7 +12,7 @@ export class AuthMethods {
     return count < 10;
   }
   async recordLoginFailure(ip) { const key = `login:${ip}:${Math.floor(Date.now() / 900000)}`; this.write(key, this.read(key, 0) + 1, 900000); }
-  createSession(hash, passwordHash) { this.write(`session:${hash}`, passwordHash, 8 * 3600000); }
+  createSession(hash, passwordHash, ttl = 8 * 3600000) { this.write(`session:${hash}`, passwordHash, ttl); }
   hasSession(hash, passwordHash) { return this.read(`session:${hash}`) === passwordHash; }
   deleteSession(hash) { this.remove(`session:${hash}`); }
 }
