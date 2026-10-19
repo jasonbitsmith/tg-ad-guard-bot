@@ -131,6 +131,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await send('left')).status,200);
     assert.ok(!(await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567891'));
   });
+  await t.test('后台登录：勾选「保持登录」保留 30 天，不勾选仍是 8 小时', async () => {
+    const login=remember=>mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test',remember})});
+    const kept=await login(true),short=await login(false);
+    assert.match(kept.headers.get('set-cookie'),/Max-Age=2592000/);assert.match(short.headers.get('set-cookie'),/Max-Age=28800/);
+    const cookie=kept.headers.get('set-cookie').split(';')[0];
+    assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/chats',{headers:{Cookie:cookie}})).status,200);
+    const page=await (await mf.dispatchFetch('https://bot.test/admin/')).text();
+    assert.ok(!page.includes('__ADMIN_VERSION__'));assert.match(page,/name="sentinel-version" content="\d+\.\d+\.\d+"/);
+  });
   await t.test('后台「退出并移除」让机器人退群并从列表移除', async () => {
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
     await state.getByName('admin').register({id:-1001234567892,title:'要移除的群'});
