@@ -2,9 +2,10 @@ export const DEFAULT_KEYWORDS = ['日结','急招','兼职','看我简介','看�
 export const CONTENT_LOCK_TYPES = Object.freeze(['link', 'invite', 'forward', 'inline', 'photo', 'video', 'gif', 'file', 'audio', 'sticker']);
 export const DEFAULT_POLICY = Object.freeze({ aiReviewEnabled: true, casEnabled: true, profileCheckEnabled: true, deleteServiceMessages: true, announcements: [], warnThreshold: 3, muteMinutes: 10, repeatThreshold: 3, floodThreshold: 8, newMemberMinutes: 10, newMemberLinkGuard: true, newMemberLinkMinutes: 30, newMemberMediaGuard: true, newMemberMediaMinutes: 30, contentLocks: {}, knowledgeBase: [], welcomeMessage: '', rulesMessage: '', welcomeEnabled: true, welcomeButtons: [], welcomeDeleteMinutes: 10, welcomeKeepLatest: true, welcomeShowCount: true, welcomeBanner: 'default', domainAllowlist: [], domainDenylist: [], verificationMode: 'off', verificationMinutes: 10, verificationChannel: '', verificationTimeoutAction: 'ban', raidEnabled: true, raidJoinLimit: 4, raidMinutes: 30, quietEnabled: false, quietStart: '00:00', quietEnd: '08:00', quietNotify: true, quietEndNoticeMinutes: 30 });
 
-const AD_TRADITIONAL={廣:'广',機:'机',號:'号',錢:'钱',帳:'账',戶:'户',純:'纯',風:'风',險:'险',錄:'录',應:'应',貨:'货',結:'结',賺:'赚',萬:'万',張:'张',來:'来',購:'购',營:'营',銷:'销',聯:'联',繫:'系',穩:'稳',無:'无',經:'经',驗:'验',註:'注',冊:'册',務:'务',售:'售',單:'单',轉:'转',碼:'码',領:'领'};
+const AD_TRADITIONAL={廣:'广',機:'机',號:'号',錢:'钱',帳:'账',戶:'户',純:'纯',風:'风',險:'险',錄:'录',應:'应',貨:'货',結:'结',賺:'赚',萬:'万',張:'张',來:'来',購:'购',營:'营',銷:'销',聯:'联',繫:'系',穩:'稳',無:'无',經:'经',驗:'验',註:'注',冊:'册',務:'务',售:'售',單:'单',轉:'转',碼:'码',領:'领',幣:'币',約:'约',軌:'轨',跡:'迹',請:'请',帶:'带',盤:'盘',損:'损',進:'进',倉:'仓',續:'续',槓:'杠',桿:'杆',點:'点',個:'个',實:'实',訊:'讯'};
+const AD_TRADITIONAL_RE=new RegExp(`[${Object.keys(AD_TRADITIONAL).join('')}]`,'g');
 export function normalize(text) {
-  return String(text || '').normalize('NFKC').replace(/[廣機號錢帳戶純風險錄應貨結賺萬張來購營銷聯繫穩無經驗註冊務單轉碼領]/g,c=>AD_TRADITIONAL[c]).replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(text || '').normalize('NFKC').replace(AD_TRADITIONAL_RE,c=>AD_TRADITIONAL[c]).replace(/[\u200b-\u200f\u2060\ufeff\u00ad·•・∙‧]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 export function normalizeDomain(value) {
@@ -126,6 +127,23 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const commerceCardPitch = /(?:新\s*卡头|卡头|(?:电商|跨境)\s*(?:ai\s*)?专用卡|(?:电商|跨境).{0,12}(?:收款卡|支付卡|专用卡))/.test(body);
   const commercePlatforms = [...new Set((body.match(/(?:希音|shein|亚马逊|amazon|速卖通|aliexpress|ebay|temu|tiktok\s*shop|shopify)/g) || []).map(normalize))];
   const caution = /(?:警惕|谨防|骗局|诈骗|不要转账|别转账|风险|反诈)/.test(body);
+  // Contract "call" channels forward their posts into groups: a profit
+  // screenshot, a chart and a short target such as "#SNDK 12%-14%📈", from a
+  // channel like "King的幣圈合約交易軌跡". The channel name gives it away, so a
+  // forward from a channel named for contract/call trading is banned on its
+  // own (each album photo is a separate message, often without caption). A
+  // forward from a channel that is only crypto-themed (news, price alerts) is
+  // banned only when the post itself pitches calls or VIP, otherwise it is
+  // reported to the owner.
+  const forwardChannel = msg.forward_origin?.type === 'channel' ? msg.forward_origin.chat : msg.forward_from_chat?.type === 'channel' ? msg.forward_from_chat : null;
+  const forwardTitle = forwardChannel ? normalize([forwardChannel.title, forwardChannel.username].filter(Boolean).join(' ')).replace(/[^\p{L}\p{N}]+/gu, '') : '';
+  const callTitle = /(?:合约|带单|喊单|跟单|交易信号|交易轨迹|操盘|实盘|策略|信号|vip|signals?)/i.test(forwardTitle);
+  const cryptoTitle = /(?:币圈|炒币|加密|crypto|btc|eth|usdt|比特|以太|期货|永续|现货|trading|trader)/i.test(forwardTitle);
+  const callChannelForward = !caution && ((callTitle && cryptoTitle) || (cryptoTitle && /(?:vip|移步|带单|喊单|跟单|止盈|止损|入场|做多|做空|多单|空单)/i.test(body)));
+  const cryptoChannelForward = !callChannelForward && cryptoTitle && !caution;
+  // The same posts copied rather than forwarded: a media message whose text
+  // (caption or OCR of the screenshot) shows a contract trade and a VIP lure.
+  const contractCallPitch = hasMedia && /\d+(?:\.\d+)?\s*%/.test(body) && /(?:合约|永续|做多|做空|杠杆|\d+\s*x\b)/i.test(body) && /(?:vip|移步|带单|喊单|跟单|进群)/i.test(body) && !caution;
   // Regional sex-group lures such as “有没有人进上海4T群”: a join verb, a city
   // name, then a short digit+letter code (4T, 3P) and 群. Requiring the code
   // keeps normal questions like “有没有人进上海VPS群/搬瓦工群” out.
@@ -186,6 +204,9 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (codeMoneyPitch) add(4, '包含“码多来”收益刷屏模板');
   if (resalePitch) add(4, '包含拆词商品分销和收益招揽');
   if (cryptoChartPitch) add(4, '图片附带加密货币收益引流文案');
+  if (callChannelForward) add(7, `转发自合约喊单频道：${forwardChannel.title || forwardChannel.username || ''}`);
+  else if (cryptoChannelForward) add(3, `转发自币圈频道：${forwardChannel.title || forwardChannel.username || ''}`);
+  if (contractCallPitch && !callChannelForward) add(7, '图片带合约收益和 VIP 引流');
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (illegalGoodsPitch) add(7, counterfeitCash ? '包含假钞/假币售卖引流' : '包含色情服务引流');
   if (doxxPitch) add(7, '包含开盒/查档（个人信息查询）引流');
@@ -196,7 +217,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || contactCardAd || illegalGoodsPitch || doxxPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || callChannelForward || contractCallPitch || contactCardAd || illegalGoodsPitch || doxxPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, contact: contact || contactCard, contactCard, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 
