@@ -1,4 +1,6 @@
 import { DmitRelayMethods } from './state/dmit-relay.js';
+import { WaffoMethods } from './state/waffo.js';
+import { waffoRecipient } from './waffo.js';
 import { BroadcastMethods } from './state/broadcast.js';
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
@@ -208,6 +210,13 @@ export class GuardState extends DurableObject {
     }
   }
   async runJob(job) {
+    if(job.id.startsWith('waffo:')) {
+      const plan=job.plan?JSON.parse(job.plan):null;
+      if(this.env.WAFFO_NOTIFY_ENABLED!=='true'||!waffoRecipient(this.env)||plan?.ops?.some(op=>String(op.params?.chat_id)!==waffoRecipient(this.env))){
+        this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
+        this.log({action:'waffo-payment-notification',outcome:'cancelled'});return;
+      }
+    }
     const stopped=(job.id.startsWith('dmit-relay:')&&this.env.DMIT_RELAY_ENABLED!=='true')||(job.id.startsWith('dmit-notify:')&&this.env.DMIT_MONITOR_ENABLED!=='true');
     if(stopped){this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);this.log({action:'dmit-delivery-cancelled',updateId:job.id,outcome:'cancelled',reasons:['用户已关闭补货监控与推送']});return;}
 
@@ -399,7 +408,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods, WaffoMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);
