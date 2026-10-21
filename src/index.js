@@ -1,3 +1,4 @@
+import { waffoWebhook } from './waffo.js';
 import { adminPwaResponse } from './admin-pwa.js';
 import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
@@ -7,7 +8,7 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.34.1';
+export const VERSION = '2.35.0';
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
@@ -265,6 +266,7 @@ async function mutateAdmin(request,env,url,state,path){
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/webhooks/waffo') return waffoWebhook(request, env);
     if (url.pathname.startsWith('/bookscape/api/')) {
       if (!env.BOOKSCAPE_PUBLISH_KEY || env.BOOKSCAPE_PUBLISH_KEY.length < 32) return json({ error: '发布入口未启用' }, 503);
       if (!await secureEqual(request.headers.get('Authorization'), 'Bearer ' + env.BOOKSCAPE_PUBLISH_KEY)) return json({ error: '发布凭据无效' }, 401);
