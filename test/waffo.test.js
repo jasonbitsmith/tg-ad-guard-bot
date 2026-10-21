@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
-import { waffoPayment, waffoMessage, waffoRecipient } from '../src/waffo.js';
+import { waffoPayment, waffoMessage, waffoRecipient, waffoBotToken } from '../src/waffo.js';
 
 const payment = (data = {}) => ({ eventType: 'order.completed', eventId: 'pay-1', mode: 'prod', storeId: 'STO_test', data: { orderId: 'ORD_test', paymentId: 'PAY_test', currency: 'USD', chargedAmount: '12.90', ...data } });
 
@@ -19,6 +19,8 @@ test('Waffo 收款金额使用实收，不将标价或零元验卡当成到账�
   assert.equal(waffoRecipient({ADMIN_IDS:'99',WAFFO_NOTIFY_USER_ID:'-100123'}),null);
   assert.equal(waffoRecipient({ADMIN_IDS:'99',WAFFO_NOTIFY_USER_ID:'88'}),null);
   assert.equal(waffoRecipient({ADMIN_IDS:'99',WAFFO_NOTIFY_USER_ID:'99'}),'99');
+  assert.equal(waffoBotToken({BOT_TOKEN:'guard',WAFFO_BOT_TOKEN:'orders'}),'orders');
+  assert.equal(waffoBotToken({BOT_TOKEN:'guard'}),'guard');
   const a=waffoPayment({...payment(),eventType:'subscription.payment_succeeded'});
   const b=waffoPayment({...payment({paymentId:'PAY_renewal'}),eventType:'subscription.payment_succeeded'});
   assert.notEqual(a.identity,b.identity,'同一订阅的后续扣款仍通知');
@@ -39,9 +41,10 @@ test('Waffo 真实 RSA 验签、持久队列、重复回调与 Telegram 重试',
     compatibilityDate:'2026-09-22',compatibilityFlags:['nodejs_compat'],
     modules:[{type:'ESModule',path:'wrapper.js',contents:wrapper},{type:'ESModule',path:'index.js',contents:await readFile(new URL('../dist/index.js',import.meta.url),'utf8')}],
     durableObjects:{GUARD_STATE:{className:'GuardState',useSQLite:true}},kvNamespaces:['BOT_KV'],
-    bindings:{BOT_TOKEN:'fake',ADMIN_IDS:'99',WAFFO_NOTIFY_ENABLED:'true',WAFFO_NOTIFY_USER_ID:'99',WAFFO_STORE_ID:'STO_test',WAFFO_WEBHOOK_PUBLIC_KEY:publicKey.export({type:'spki',format:'pem'}).toString()},
+    bindings:{BOT_TOKEN:'fake',WAFFO_BOT_TOKEN:'orderfake',ADMIN_IDS:'99',WAFFO_NOTIFY_ENABLED:'true',WAFFO_NOTIFY_USER_ID:'99',WAFFO_STORE_ID:'STO_test',WAFFO_WEBHOOK_PUBLIC_KEY:publicKey.export({type:'spki',format:'pem'}).toString()},
     outboundService:async request=>{
       assert.equal(new URL(request.url).hostname,'api.telegram.org');
+      if(new URL(request.url).pathname!=='/botorderfake/sendMessage') throw Error('收款通知错误地使用群管 Token');
       const params=await request.json();calls.push(params);
       if(fail){fail=false;return MFResponse.json({ok:false,error_code:429,description:'rate limit',parameters:{retry_after:1}},{status:429});}
       return MFResponse.json({ok:true,result:{message_id:77}});

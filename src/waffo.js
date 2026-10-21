@@ -4,6 +4,10 @@ const PAYMENT_EVENTS = new Set(['order.completed', 'subscription.payment_succeed
 const clean = (value, max = 160) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().slice(0, max) : '';
 
+// Dedicated order bot when configured; preserve existing delivery until its
+// secret is installed. Never replace the moderation bot's BOT_TOKEN.
+export function waffoBotToken(env) { return env.WAFFO_BOT_TOKEN || env.BOT_TOKEN; }
+
 export function waffoRecipient(env) {
   const id = String(env.WAFFO_NOTIFY_USER_ID || '').trim();
   return /^[1-9]\d{0,15}$/.test(id) && Number.isSafeInteger(Number(id))
@@ -66,7 +70,7 @@ async function rawBody(request) {
 export async function waffoWebhook(request, env) {
   const response = (text, status = 200) => new Response(text, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
   if (request.method !== 'POST') return response('Method not allowed', 405);
-  if (env.WAFFO_NOTIFY_ENABLED !== 'true' || !env.WAFFO_STORE_ID || !waffoRecipient(env) || !env.BOT_TOKEN) return response('Not configured', 503);
+  if (env.WAFFO_NOTIFY_ENABLED !== 'true' || !env.WAFFO_STORE_ID || !waffoRecipient(env) || !waffoBotToken(env)) return response('Not configured', 503);
   let raw;
   try { raw = await rawBody(request); } catch { return response('Invalid body', 400); }
   let event;

@@ -6,6 +6,7 @@
 
 合并 PR 后由 Jason 授权部署到现有 Worker。Cloudflare 中配置：
 
+- `WAFFO_BOT_TOKEN`：可选独立订单机器人 Token，作为 Secret 保存；配置后收款提醒由该机器人发送，群管继续使用原 `BOT_TOKEN`。不配置时保持原群管机器人发送，不中断现有提醒。先在 Telegram 打开订单机器人发送 `/start`。
 - `WAFFO_NOTIFY_ENABLED=true`：总开关；未配置默认关闭。
 - `WAFFO_STORE_ID`：目标商店的真实 ID，作为 Cloudflare Secret 保存。
 - `WAFFO_NOTIFY_USER_ID`：唯一接收人的正数 Telegram ID，须同时属于 `ADMIN_IDS`，作为 Secret 保存。不能配置群或频道。
