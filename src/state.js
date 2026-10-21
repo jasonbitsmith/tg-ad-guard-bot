@@ -1,6 +1,6 @@
 import { DmitRelayMethods } from './state/dmit-relay.js';
 import { WaffoMethods } from './state/waffo.js';
-import { waffoRecipient } from './waffo.js';
+import { waffoRecipient, waffoBotToken } from './waffo.js';
 import { BroadcastMethods } from './state/broadcast.js';
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
@@ -244,7 +244,7 @@ export class GuardState extends DurableObject {
         plan.ops.unshift({local:'case-register',body:{...plan.entry,id:caseId}});plan.ops.push({local:'federation-dispatch',caseId});
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);
       }
-      const tg = telegram(this.env.BOT_TOKEN);
+      const tg = telegram(job.id.startsWith('waffo:') ? waffoBotToken(this.env) : this.env.BOT_TOKEN);
       let deferredDeleteError;
       if(job.id.startsWith('federation:') && await this.env.GUARD_STATE.getByName('admin').caseReversed(plan.entry.caseId)){
         this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
