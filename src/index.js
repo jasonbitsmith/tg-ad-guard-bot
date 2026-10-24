@@ -8,7 +8,7 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.35.1';
+export const VERSION = '2.35.2';
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
