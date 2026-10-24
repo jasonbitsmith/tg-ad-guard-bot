@@ -12,6 +12,49 @@ const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<'
 const verificationMinutes = config => Math.max(1, Math.min(60, Number(config.verificationMinutes || 10)));
 
 export class VerificationMethods {
+  async recoverVerificationFailures() {
+    const now=Date.now(), chat=this.read('chat');
+    if(!chat?.id)return {queued:0};
+    const jobs=this.sql.exec("SELECT * FROM jobs WHERE status='failed' AND id LIKE 'verification-timeout:%' AND created>? ORDER BY due LIMIT 10",now-DAY).toArray();
+    let queued=0;
+    for(const job of jobs){
+      const plan=JSON.parse(job.plan||'{}'),op=plan.ops?.find(x=>!x.done&&!x.skipped);
+      const clear=plan.ops?.find(x=>x.local==='clearVerification');
+      // Retry only a previously authorized request rejection after network failure.
+      // Never automatically retry bans, unbans or permission errors.
+      if(plan.entry?.action!=='join-request-declined'||op?.method!=='declineChatJoinRequest'||!clear||String(op.params?.chat_id)!==String(chat.id))continue;
+      if(!/network timeout or connection failure|connection timed out|invalid upstream response/.test(op.error||''))continue;
+      if(now-job.due<15*60000)continue;
+      const key='verification:network-recovery:'+job.id,history=this.read(key,{rounds:0,next:0});
+      if(history.rounds>=2||history.next>now)continue;
+      const current=this.verification(clear.userId);
+      if(!current||current.expires!==clear.expires){
+        this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=? AND status='failed'",job.id);continue;
+      }
+      if(current.via!=='request'||current.expires>now||String(op.params?.user_id)!==String(clear.userId))continue;
+      // A durable lease also bounds repeated failing membership probes.
+      this.write(key,{rounds:history.rounds+1,next:now+15*60000},2*DAY);
+      let member;
+      try{member=await telegram(this.env.BOT_TOKEN)('getChatMember',{chat_id:Number(chat.id),user_id:Number(clear.userId)});}catch{continue;}
+      const fresh=this.verification(clear.userId);
+      if(!fresh||fresh.expires!==clear.expires)continue;
+      const row=this.sql.exec('SELECT status FROM jobs WHERE id=?',job.id).toArray()[0];
+      if(row?.status!=='failed')continue;
+      if(['member','administrator','creator','restricted'].includes(member.status)){
+        this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
+        this.clearVerification(clear.userId);
+        this.log({action:'verification-network-recovery',outcome:'cancelled',chatId:chat.id,updateId:job.id,reasons:['成员已入群，取消旧申请拒绝任务']});continue;
+      }
+      if(!['left','kicked'].includes(member.status))continue;
+      await this.schedule(now+200);
+      // Recheck after scheduling yields, so manual release/new verification wins.
+      if(this.verification(clear.userId)?.expires!==clear.expires)continue;
+      this.sql.exec("UPDATE jobs SET status='pending',attempts=0,due=? WHERE id=? AND status='failed'",now,job.id);
+      this.log({action:'verification-network-recovery',outcome:'queued',chatId:chat.id,updateId:job.id,round:history.rounds+1});queued++;
+    }
+    return {queued};
+  }
+
   // Math answers are typed into the group, so only that mode keeps text;
   // button and channel modes are answered with buttons and need no sending.
   verificationPermissions(mode = 'math') {

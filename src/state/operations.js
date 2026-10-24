@@ -57,7 +57,7 @@ export class OperationsMethods {
       let permissions={},details={},error='';
       try{const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});permissions={deleteMessages:member.status==='creator'||!!member.can_delete_messages,restrictMembers:member.status==='creator'||!!member.can_restrict_members,inviteUsers:member.status==='creator'||!!member.can_invite_users};}catch{error='无法读取权限，请稍后重试';}
       try{details=await this.env.GUARD_STATE.getByName('chat:'+chat.id).groupOverview();}catch{error+=(error?'；':'')+'无法读取本群状态';}
-      return {...chat,...details,permissions,federation:federation.includes(chat.id),error,attention:!!error||!permissions.deleteMessages||!permissions.restrictMembers||!!details.health?.failed||!!details.health?.overdueSeconds};
+      return {...chat,...details,permissions,federation:federation.includes(chat.id),error,attention:!!error||!permissions.deleteMessages||!permissions.restrictMembers||!!details.health?.recentFailed||(details.health?.overdueSeconds||0)>300};
     })));
     return {groups:groups.sort((a,b)=>Number(b.attention)-Number(a.attention)),checked:new Date().toISOString()};
   }
