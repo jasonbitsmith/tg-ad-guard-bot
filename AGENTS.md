@@ -34,10 +34,10 @@ npm test        # 依赖 dist/，必须在 check 之后跑
 
 ## 部署
 
-- 只从已合并的 `main` 部署：`git checkout main && git pull && npx wrangler deploy`。
-- 部署前先访问线上 `/health`，确认线上版本号不高于 `main` 的版本号；如果线上更高，说明有人从别的地方部署过，先停下来告诉 Jason。
-- 不要从功能分支部署，也不要部署未合并的代码。
-- 只有 Jason 明确要求时才部署。
+- Cloudflare 已连接 GitHub（Workers Builds）：**合并进 `main` 就会自动部署上线**，不需要也不要手动运行 `wrangler deploy`。
+- 合并前确认 PR 上的 `test` 检查是绿色的；合并后在提交上看 `Workers Builds: tg-ad-guard-bot` 检查是否成功。
+- 不要从功能分支或本地目录部署，否则会覆盖 `main` 上别人的改动。
+- 只有 Jason 明确要求时才合并进 `main`。
 
 ## 密钥
 
