@@ -88,10 +88,13 @@ export class NoticesMethods {
   }
   // A wrongly banned message is a confirmed normal message: keep it so new
   // rules are previewed against it. Best effort, never blocks the undo.
-  saveUndoExample(record) {
+  // Every button the owner taps teaches the bot: the message is kept as a
+  // confirmed normal or ad example. Ad examples are matched by similarity on
+  // later messages; normal ones are checked before new keywords are added.
+  saveExample(record, verdict) {
     const text = String(record.adText || '').trim();
     if ([...text].length < 6) return false;
-    try { this.editReviewExample('add', { text, verdict: 'normal', confirmed: true }); return true; } catch { return false; }
+    try { this.editReviewExample('add', { text, verdict, confirmed: true }); return verdict; } catch { return false; }
   }
   // Called once every group of an undone federation case has a final result.
   async noticeUndoResults(id, groups) {
@@ -146,14 +149,14 @@ export class NoticesMethods {
     this.write(rateKey, count, 2 * 3600000);
     if (count > 10) return false;
     const text = [esc(item.title || '👀 有点像广告，机器人没把握，先留着没动'), `群：${esc(item.chatTitle || item.chatId)}`, `发送人：${person(item.userName, item.userId, item.userUsername)}`, item.reasons?.length ? `可疑点：${esc(item.reasons.join('；'))}` : '', `内容：${esc(String(item.text || '（非文字消息）').slice(0, 300))}`, '是广告就点「删除并封禁」，不是就点「不是广告」。'].filter(Boolean).join('\n');
-    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(item.chatId), userId: String(item.userId), messageId: Number(item.messageId) }, messageLink(item.chatId, item.messageId), { userId: item.userId, username: item.userUsername });
+    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(item.chatId), userId: String(item.userId), messageId: Number(item.messageId), adText: item.title ? null : String(item.text || '').slice(0, 4000) || null }, messageLink(item.chatId, item.messageId), { userId: item.userId, username: item.userUsername });
   }
 
   async noticeReport(report) {
     const recipients = this.ownerChats();
     if (!recipients.length) return false;
     const text = [`📣 群友举报`, `群：${esc(report.chatTitle || report.chatId)}`, `被举报：${person(report.userName, report.userId, report.userUsername)}`, `举报人：${person(report.reporterName, report.reporterId, report.reporterUsername)}`, report.reason ? `理由：${esc(report.reason)}` : '', `内容：${esc(String(report.text || '（非文字消息）').slice(0, 300))}`].filter(Boolean).join('\n');
-    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId), { userId: report.userId, username: report.userUsername });
+    return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(report.chatId), userId: String(report.userId), adText: report.text ? String(report.text).slice(0, 4000) : null, messageId: Number(report.messageId) }, messageLink(report.chatId, report.messageId), { userId: report.userId, username: report.userUsername });
   }
 
   // Buttons only work if Telegram delivers callback_query updates. A webhook
@@ -261,7 +264,8 @@ export class NoticesMethods {
           pending = '⏳ 正在解封…';
         }
       } else return answer('操作无效。', true);
-      if (record.kind === 'ban' && match[2] === 'undo') saved = this.saveUndoExample(record);
+      if (record.kind === 'ban' && match[2] === 'undo') saved = this.saveExample(record, 'normal');
+      if (record.kind === 'report') saved = this.saveExample(record, match[2] === 'ban' ? 'advertisement' : 'normal');
     } catch (error) {
       const reason = String(error.message || '未知错误').slice(0, 150);
       record.status = [...(record.status || []), `❌ 操作失败（${when}）：${reason}`];
@@ -273,7 +277,7 @@ export class NoticesMethods {
     // and show them after the result line.
     const latest = this.read(key)?.status || record.status || [], results = latest.filter(line => line.startsWith(UNDO_RESULTS));
     record.done = result;
-    record.status = [...latest.filter(line => !line.startsWith(UNDO_RESULTS)), `✅ ${result}（${who} · ${when}）`, ...(saved ? ['📝 已把这条内容存为「正常消息」案例，以后加规则时会拿它检查会不会误伤'] : []), ...(results.length ? results : pending ? [pending] : [])];
+    record.status = [...latest.filter(line => !line.startsWith(UNDO_RESULTS)), `✅ ${result}（${who} · ${when}）`, ...(saved === 'normal' ? ['📝 已把这条内容存为「正常消息」案例，以后加规则时会拿它检查会不会误伤'] : saved === 'advertisement' ? ['📝 已把这条内容存为「广告」案例，以后很像的消息会被自动认出来'] : []), ...(results.length ? results : pending ? [pending] : [])];
     this.write(key, record, 14 * DAY);
     this.log({ action: `notice-${record.kind}-${match[2]}`, chatId: record.chatId, userId: record.userId, actorId: 'telegram:' + callback.from.id, outcome: 'success' });
     await this.renderNotice(id, callback.message);

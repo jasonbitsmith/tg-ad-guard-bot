@@ -5,6 +5,7 @@ import { failureAdvice, operationSteps } from '../src/state/operations.js';
 import { MonitorsMethods } from '../src/state/monitors.js';
 import { NoticesMethods } from '../src/state/notices.js';
 import { BackupMethods } from '../src/state/backup.js';
+import { closestAd, similarity, similarityText } from '../src/similarity.js';
 
 class Records {
   constructor() { this.records = new Map(); this.logs = []; this.alerts = []; }
@@ -72,4 +73,24 @@ test('每周备份后逐份检查能否恢复，坏的会提醒', async () => {
   assert.equal(status.checked, 2); assert.deepEqual(status.failed.map(x => x.id), ['2026-10-12']);
   assert.equal(b.alerts.length, 1); assert.match(b.alerts[0].text, /2026-10-12/);
   assert.equal(b.read('backup:verify-status').checked, 2);
+});
+
+test('和确认过的广告比相似度：换字也认得出，正常话题不误伤', () => {
+  const examples = [
+    { verdict: 'advertisement', text: '出段钞可漂唱包过验糙机 手感一致' },
+    { verdict: 'normal', text: '这个 VPS 一个月多少钱，有人用过吗' },
+  ];
+  assert.ok(closestAd('出段钞 可漂唱 包过验机 手感一模一样', examples).score >= 0.6);
+  assert.equal(closestAd('这个 VPS 多少钱一个月啊', examples), null);
+  assert.equal(closestAd('短句', examples), null);
+  assert.equal(similarity(similarityText('加我 @abcdef1 领福利'), similarityText('加我@user领福利')), 1);
+});
+
+test('私信按钮会把消息存成案例：封禁存广告，不是广告存正常', () => {
+  const n = mixin(NoticesMethods), saved = [];
+  n.editReviewExample = (action, body) => saved.push(body);
+  assert.equal(n.saveExample({ adText: '加我领取福利，日结稳赚' }, 'advertisement'), 'advertisement');
+  assert.equal(n.saveExample({ adText: '短' }, 'normal'), false);
+  assert.equal(n.saveExample({ adText: null }, 'normal'), false);
+  assert.deepEqual(saved, [{ text: '加我领取福利，日结稳赚', verdict: 'advertisement', confirmed: true }]);
 });

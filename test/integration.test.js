@@ -1022,6 +1022,20 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const normal=update(-187,'大家好',{from:{id:9303,first_name:'普通'}});await send(normal);await tick(-187);
     assert.ok(!actions(-187).some(x=>x.method==='deleteMessage'&&x.params.message_id===normal.message.message_id));
   });
+  await t.test('自己学会：很像你确认过的广告会封；同样内容出现在 3 个群会封',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
+    await ns.getByName('admin').editReviewExample('add',{confirmed:true,verdict:'advertisement',text:'专业代开发票 各行各业 税点低 欢迎咨询'});
+    const reworded=update(-188,'专业代开发票，各行各业都可以，税点低欢迎咨询！',{from:{id:9401,first_name:'换字广告'}});await send(reworded);await tick(-188);
+    assert.ok(actions(-188).some(x=>x.method==='banChatMember'&&x.params.user_id===9401));
+    const unrelated=update(-188,'请问大家发票一般怎么开，公司报销要用',{from:{id:9402,first_name:'正常提问'}});await send(unrelated);await tick(-188);
+    assert.ok(!actions(-188).some(x=>x.method==='banChatMember'&&x.params.user_id===9402));
+    const text='VPS 低价出售 价格好说 欢迎来问 联系 @seller_abcd';
+    for(const chatId of [-191,-192,-193]){await send(update(chatId,text,{from:{id:9501,first_name:'到处发'}}));await tick(chatId);}
+    assert.ok(!actions(-191).some(x=>x.method==='banChatMember'&&x.params.user_id===9501));
+    assert.ok(actions(-193).some(x=>x.method==='banChatMember'&&x.params.user_id===9501));
+    // These bans count toward the owner's hourly notice cap; later tests expect room left.
+    await ns.getByName('admin').removeRecordTest('notice-rate:'+Math.floor(Date.now()/3600000));
+  });
   await t.test('完整备份可预览恢复、保留回退包和稳定样本 ID；部分失败可续作',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;
     assert.ok(backup.groups.length>0);assert.ok(!JSON.stringify(backup).includes('fake'));assert.ok(!Object.hasOwn(backup,'session'));

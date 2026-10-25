@@ -3,6 +3,7 @@
 import { normalize } from '../filters.js';
 import { sampleMatches, validateSample } from '../samples.js';
 import { DAY } from './shared.js';
+import { similarityText } from '../similarity.js';
 
 export class SamplesMethods {
 
@@ -67,4 +68,12 @@ export class SamplesMethods {
     return rules;
   }
   invalidateSamples() { this.samplesCache = null; }
+  // The owner's confirmed ad / normal examples, prepared for similarity checks
+  // and cached a minute per group like the sample list.
+  async cachedExamples() {
+    if (this.examplesCache && this.examplesCache.at > Date.now() - 60000) return this.examplesCache.items;
+    const items = (await this.env.GUARD_STATE.getByName('admin').listReviewExamples()).map(x => ({ verdict: x.verdict, text: x.text, compact: similarityText(x.text) }));
+    this.examplesCache = { at: Date.now(), items };
+    return items;
+  }
 }

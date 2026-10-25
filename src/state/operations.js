@@ -95,6 +95,15 @@ export class OperationsMethods {
     const confirmed=verdict.permanentBan||verdict.deleteOnKeyword;items.push({senderId,messageId,at:Date.now(),confirmed});items=items.slice(-30);this.write(key,items,600000);
     if(new Set(items.map(x=>x.senderId)).size>=2&&items.some(x=>x.confirmed)&&verdict.score>0){verdict.reasons.push('10 分钟内多个账号重复相同内容','多个账号发送符号/繁简变体，且已有明确广告证据');verdict.score=Math.max(4,verdict.score);}
   }
+  // Global record of one text (by its campaign fingerprint digest) across
+  // groups for 30 minutes. Groups only ask for messages that already look a
+  // little like an ad, so normal chat never reaches this object.
+  crossGroupSeen(key, chatId, senderId) {
+    const record='cross-group:'+String(key).slice(0,64);
+    let items=this.read(record,[]).filter(x=>x.at>Date.now()-30*60000&&!(x.chatId===String(chatId)&&x.senderId===String(senderId)));
+    items.push({chatId:String(chatId),senderId:String(senderId),at:Date.now()});items=items.slice(-50);this.write(record,items,30*60000);
+    return {groups:new Set(items.map(x=>x.chatId)).size,senders:new Set(items.map(x=>x.senderId)).size};
+  }
   async ruleReplay(body) {
     const config=await this.config(),kind=body.kind,value=String(body.value||'').trim();
     if(!['keyword','domain'].includes(kind)||!value||value.length>253)throw Error('请填写关键词或域名');
