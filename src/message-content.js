@@ -85,3 +85,21 @@ function richMessage(message) {
 export function isGuestMessage(message) {
   return message?.from?.is_bot === true && !!(message.guest_bot_caller_user || message.guest_bot_caller_chat);
 }
+
+// Fields that describe a message (who, where, reply, formatting) rather than
+// carry its content.
+const METADATA = new Set(['message_id', 'message_thread_id', 'direct_messages_topic', 'from', 'sender_chat', 'sender_boost_count', 'sender_business_bot', 'sender_tag', 'date', 'business_connection_id', 'chat', 'forward_origin', 'forward_from', 'forward_from_chat', 'forward_from_message_id', 'forward_signature', 'forward_sender_name', 'forward_date', 'is_topic_message', 'is_automatic_forward', 'reply_to_message', 'external_reply', 'quote', 'reply_to_story', 'reply_to_checklist_task_id', 'via_bot', 'edit_date', 'has_protected_content', 'is_from_offline', 'is_paid_post', 'media_group_id', 'author_signature', 'paid_star_count', 'entities', 'caption_entities', 'link_preview_options', 'suggested_post_info', 'effect_id', 'show_caption_above_media', 'has_media_spoiler', 'reply_markup', 'guest_bot_caller_user', 'guest_bot_caller_chat']);
+// Content the bot reads, or knows to be harmless (media is handled by OCR and
+// media guards; service notices come from Telegram itself).
+const READABLE = new Set(['text', 'caption', 'rich_message', 'photo', 'video', 'animation', 'document', 'audio', 'voice', 'video_note', 'sticker', 'contact', 'poll', 'checklist', 'venue', 'location', 'dice', 'game', 'story', 'invoice', 'paid_media', 'giveaway', 'giveaway_winners', 'giveaway_created', 'giveaway_completed', 'successful_payment', 'refunded_payment', 'users_shared', 'chat_shared', 'write_access_allowed', 'passport_data', 'proximity_alert_triggered', 'boost_added', 'chat_background_set', 'checklist_tasks_done', 'checklist_tasks_added', 'forum_topic_created', 'forum_topic_edited', 'forum_topic_closed', 'forum_topic_reopened', 'general_forum_topic_hidden', 'general_forum_topic_unhidden', 'video_chat_scheduled', 'video_chat_started', 'video_chat_ended', 'video_chat_participants_invited', 'web_app_data', 'new_chat_members', 'left_chat_member', 'new_chat_title', 'new_chat_photo', 'delete_chat_photo', 'group_chat_created', 'supergroup_chat_created', 'channel_chat_created', 'message_auto_delete_timer_changed', 'migrate_to_chat_id', 'migrate_from_chat_id', 'pinned_message', 'connected_website', 'gift', 'unique_gift', 'paid_message_price_changed', 'direct_message_price_changed']);
+
+// Every missed ad so far was a new kind of message the bot did not read yet
+// (contact cards, checklists, buttons). A message with no text and no field
+// the bot knows is returned as its unknown field names, so it can be held
+// back instead of passing unread.
+export function unreadableContent(message) {
+  if (!message || typeof message !== 'object' || message.text || message.caption) return [];
+  const keys = Object.keys(message).filter(key => !METADATA.has(key));
+  if (!keys.length || keys.some(key => READABLE.has(key))) return [];
+  return keys.slice(0, 5).map(key => key.slice(0, 40));
+}

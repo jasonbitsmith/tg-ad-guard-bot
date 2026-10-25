@@ -105,6 +105,23 @@ export class NoticesMethods {
   }
   ownerChats() { return this.owners().filter(id => /^\d{1,16}$/.test(id)).map(Number); }
 
+  // After a new version goes live, tell the owner once what changed, so he
+  // never has to track version numbers himself.
+  async announceVersion(version, changes) {
+    if (!version || this.read('version:announced') === version || this.announcing) return false;
+    const recipients = this.ownerChats();
+    if (!recipients.length) return false;
+    this.announcing = true;
+    try {
+      const text = `✅ 机器人已更新到 v${version}${changes ? '\n\n这次更新：\n' + String(changes).slice(0, 3000) : ''}`;
+      const sent = await Promise.allSettled(recipients.map(chatId => telegram(this.env.BOT_TOKEN)('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true })));
+      const ok = sent.some(item => item.status === 'fulfilled');
+      if (ok) this.write('version:announced', version);
+      this.log({ action: 'version-announced', outcome: ok ? 'success' : 'failed', text: version });
+      return ok;
+    } finally { this.announcing = false; }
+  }
+
   async noticeBan(entry) {
     const target = this.logTarget();
     if (target === 'off') return false;
@@ -128,7 +145,7 @@ export class NoticesMethods {
     const rateKey = `suspect-rate:${Math.floor(Date.now() / 3600000)}`, count = this.read(rateKey, 0) + 1;
     this.write(rateKey, count, 2 * 3600000);
     if (count > 10) return false;
-    const text = ['👀 有点像广告，机器人没把握，先留着没动', `群：${esc(item.chatTitle || item.chatId)}`, `发送人：${person(item.userName, item.userId, item.userUsername)}`, item.reasons?.length ? `可疑点：${esc(item.reasons.join('；'))}` : '', `内容：${esc(String(item.text || '（非文字消息）').slice(0, 300))}`, '是广告就点「删除并封禁」，不是就点「不是广告」。'].filter(Boolean).join('\n');
+    const text = [esc(item.title || '👀 有点像广告，机器人没把握，先留着没动'), `群：${esc(item.chatTitle || item.chatId)}`, `发送人：${person(item.userName, item.userId, item.userUsername)}`, item.reasons?.length ? `可疑点：${esc(item.reasons.join('；'))}` : '', `内容：${esc(String(item.text || '（非文字消息）').slice(0, 300))}`, '是广告就点「删除并封禁」，不是就点「不是广告」。'].filter(Boolean).join('\n');
     return this.sendNotice(recipients, text, [['🚫 删除并封禁', 'ban'], ['✅ 不是广告', 'ignore']], { kind: 'report', chatId: String(item.chatId), userId: String(item.userId), messageId: Number(item.messageId) }, messageLink(item.chatId, item.messageId), { userId: item.userId, username: item.userUsername });
   }
 

@@ -235,6 +235,18 @@ export class MonitorsMethods {
       if(attempt===2||!error.retryable||Number(error.code)===429)throw error;
     }
   }
+  // A group the bot has left (while the webhook missed the notice) kept
+  // raising permission alerts forever. Seen twice at least four minutes apart,
+  // it is taken off the list and the owner is told once.
+  async botGone(chat,reason){
+    const key='bot-gone:'+chat.id,first=this.read(key);
+    if(!first){this.write(key,Date.now(),DAY);return false;}
+    if(Date.now()-first<4*60000)return false;
+    this.unregister(chat.id);this.remove(key);this.remove('incident:permission-'+chat.id);this.remove('incident:queue-'+chat.id);
+    this.log({action:'group-gone',chatId:chat.id,outcome:'success',text:String(chat.title||chat.id).slice(0,100),reasons:[reason]});
+    await this.alertOwner('bot-gone-'+chat.id,'群：'+chat.title+'\n'+reason+'，已从后台列表移除，不会再为它发权限提醒。\n如果还要管理这个群，把机器人重新拉进去即可。').catch(()=>{});
+    return true;
+  }
   async monitorOperations(force=false){
     if(this.monitoring || (!force && this.read('monitor:next',0)>Date.now()))return;
     this.monitoring=true;this.write('monitor:next',Date.now()+5*60000);
@@ -252,7 +264,19 @@ export class MonitorsMethods {
       for(const chat of chats){
         try{const group=this.env.GUARD_STATE.getByName('chat:'+chat.id);if(me)await group.recoverVerificationFailures();const health=await group.healthSummary();await this.checkIncident('queue-'+chat.id,health.recentFailed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n最近 1 小时队列失败 '+health.recentFailed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
         catch{await this.checkIncident('queue-'+chat.id,true,'群：'+chat.title+'\n无法检查执行队列',{delayMs:5*60000,minChecks:2});}
-        if(me)try{const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});await this.checkIncident('permission-'+chat.id,!ADMIN_STATUS.includes(member.status)||!member.can_delete_messages||!member.can_restrict_members,'群：'+chat.title+'\n身份：'+member.status+'；删消息权限：'+(member.can_delete_messages?'有':'无')+'；封禁权限：'+(member.can_restrict_members?'有':'无'));}catch{await this.checkIncident('permission-'+chat.id,true,'群：'+chat.title+'\n暂时无法读取机器人权限（不代表权限已丢失）',{delayMs:5*60000,minChecks:2});}
+        if(!me)continue;
+        // A channel's direct-messages chat cannot ban anyone, so it only needs
+        // the delete right; asking for more there was a standing false alarm.
+        let directMessages=false;try{directMessages=(await this.env.GUARD_STATE.getByName('chat:'+chat.id).chatPurpose()).directMessages;}catch{}
+        try{
+          const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});
+          if(['left','kicked'].includes(member.status)){await this.botGone(chat,'机器人已经不在这个群里（'+(member.status==='kicked'?'被移出':'已退出')+'）');continue;}
+          this.remove('bot-gone:'+chat.id);
+          await this.checkIncident('permission-'+chat.id,!ADMIN_STATUS.includes(member.status)||!member.can_delete_messages||(!directMessages&&!member.can_restrict_members),'群：'+chat.title+(directMessages?'（频道私信）':'')+'\n身份：'+member.status+'；删消息权限：'+(member.can_delete_messages?'有':'无')+(directMessages?'':'；封禁权限：'+(member.can_restrict_members?'有':'无')));
+        }catch(error){
+          if(!error.retryable&&/chat not found|bot was kicked|not a member|bot is not a member|group chat was deactivated|chat was upgraded/i.test(String(error.message))){await this.botGone(chat,'Telegram 说机器人已不在这个群（'+String(error.message).slice(0,120)+'）');continue;}
+          await this.checkIncident('permission-'+chat.id,true,'群：'+chat.title+'\n暂时无法读取机器人权限（不代表权限已丢失）',{delayMs:5*60000,minChecks:2});
+        }
       }
       this.write('monitor:last',new Date().toISOString());
     }finally{this.monitoring=false;}

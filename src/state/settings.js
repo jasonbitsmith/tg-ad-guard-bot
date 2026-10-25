@@ -1,6 +1,6 @@
 // Per-group admin settings edited from the web panel.
 // Methods are copied onto GuardState.prototype in ../state.js.
-import { normalizeDomain, CONTENT_LOCK_TYPES, validateWord, validateNewWord } from '../filters.js';
+import { classify, normalizeDomain, CONTENT_LOCK_TYPES, validateWord, validateNewWord } from '../filters.js';
 import { DAY, normalizeKnowledge } from './shared.js';
 
 export class SettingsMethods {
@@ -19,9 +19,16 @@ export class SettingsMethods {
     }
     return { periodDays: 30, total: [...counts.values()].reduce((sum, count) => sum + count, 0), keywords: [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN')).slice(0, 50).map(([word, count]) => ({ word, count })) };
   }
-  async editWord(action, word) {
+  async editWord(action, word, force = false) {
     word = action === 'add' ? validateNewWord(word) : validateWord(word);
     const config = await this.config();
+    // A new keyword is first tried on the messages the owner confirmed as
+    // normal; if it would delete any of them, he is asked before it is saved.
+    if (action === 'add' && !force && !config.keywords.includes(word)) {
+      const examples = await this.env.GUARD_STATE.getByName('admin').listReviewExamples();
+      const hurt = examples.filter(x => x.verdict === 'normal' && classify({ text: x.text }, [word], false).hits.length);
+      if (hurt.length) throw new Error(`这个关键词会命中 ${hurt.length} 条你确认过的正常消息，例如「${hurt[0].text.slice(0, 60)}」。确定还要添加吗？`);
+    }
     if (action === 'add' && !config.keywords.includes(word)) {
       if (config.keywords.length >= 500) throw new Error('最多 500 个关键词');
       config.keywords.push(word);

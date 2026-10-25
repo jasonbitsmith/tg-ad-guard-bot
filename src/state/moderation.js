@@ -1,4 +1,4 @@
-import { moderationMessage, isGuestMessage } from '../message-content.js';
+import { moderationMessage, isGuestMessage, unreadableContent } from '../message-content.js';
 import { aiReviewCandidate } from '../ai-review.js';
 // Message classification into action plans, commands and callbacks.
 // Methods are copied onto GuardState.prototype in ../state.js.
@@ -142,6 +142,8 @@ export class ModerationMethods {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'content-lock-delete' } };
     }
+    const unknown = !guest && !msg.sender_chat && update.message ? unreadableContent(msg) : [];
+    if (unknown.length) return this.unknownTypePlan(msg, senderId, unknown);
     this.observeTrials(msg);
     let reviewText=text;
     const joined = this.read(`join:${senderId}`, 0);
@@ -237,6 +239,21 @@ export class ModerationMethods {
     // Linked groups are dispatched to independent durable jobs by runJob.
     ops.push({ local: 'processed', messageId: msg.message_id });
     return { ops, entry: { ...entry, action: federationTargets.length ? 'delete-and-federated-permanent-ban' : 'delete-and-permanent-ban', federationTargets } };
+  }
+
+  // A kind of message the bot cannot read yet is never let through unseen. A
+  // member who joined in the last day has it deleted; the owner is shown it
+  // either way (with ban / ignore buttons) and can tell us to support it.
+  unknownTypePlan(msg, senderId, unknown) {
+    const recent = this.read(`join:${senderId}`, 0) > Date.now() - DAY;
+    const reasons = [`机器人还不认识这种消息（${unknown.join('、')}）`, recent ? '发送人一天内刚入群，已先删除' : '老成员发的，先留着没动'];
+    const ops = recent ? [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }] : [];
+    const key = `unknown-notice:${msg.from.id}`;
+    if (!this.read(key)) {
+      this.write(key, true, 6 * 3600000);
+      ops.push({ local: 'owner-suspect', body: { title: recent ? '🆕 新成员发了机器人还不认识的消息，已先删除' : '🆕 有人发了机器人还不认识的消息，先留着没动', chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: msg.from.id, userName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), userUsername: msg.from.username || '', messageId: msg.message_id, text: `（消息类型：${unknown.join('、')}）`, reasons } });
+    }
+    return { ops, entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: senderId, userName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: `（消息类型：${unknown.join('、')}）`, action: recent ? 'unknown-type-delete' : 'review', reasons } };
   }
 
   // A message that looks like an ad but is not certain enough to act on is

@@ -8,11 +8,26 @@ export function campaignFingerprint(text) {
   const traditional = {機:'机',號:'号',錢:'钱',帳:'账',戶:'户',純:'纯',風:'风',險:'险',錄:'录',應:'应',貨:'货',結:'结',賺:'赚',萬:'万',張:'张',來:'来',購:'购',營:'营',銷:'销',兼:'兼'};
   return String(text || '').normalize('NFKC').toLowerCase().replace(/[機號錢帳戶純風險錄應貨結賺萬張來購營銷]/g,c=>traditional[c]).replace(/https?:\/\/\S+|@[a-z0-9_]{5,}/g,'').replace(/[^\p{L}\p{N}]/gu,'').slice(0,400);
 }
+// Telegram's error text, turned into what it means and what to do about it.
+const FAILURE_ADVICE = [
+  [/not enough rights|need administrator rights|CHAT_ADMIN_REQUIRED|have no rights/i, '机器人在这个群缺少管理员权限', '到群设置里给机器人打开「删除消息」和「封禁成员」，再点重试'],
+  [/message to delete not found|message can't be deleted|MESSAGE_ID_INVALID/i, '这条消息已经被删掉或太旧了', '通常不用管，点「忽略」即可'],
+  [/user is an administrator|can't remove chat owner|USER_ADMIN_INVALID|participant is admin/i, '对方是群管理员，机器人动不了', '需要你本人在群里处理，然后点「忽略」'],
+  [/user not found|PARTICIPANT_ID_INVALID|USER_ID_INVALID/i, '找不到这个用户（可能已注销）', '通常不用管，点「忽略」即可'],
+  [/chat not found|bot was kicked|not a member|group chat was deactivated/i, '机器人已经不在这个群里', '如果还要管这个群，把机器人重新拉进去；否则点「忽略」'],
+  [/HIDE_REQUESTER_MISSING|request not found|USER_ALREADY_PARTICIPANT/i, '这个入群申请已经被处理过了', '通常不用管，点「忽略」即可'],
+  [/network|timed? ?out|connection|upstream|Too Many Requests|retry after|50\d/i, '当时网络或 Telegram 暂时出问题', '点重试一般就能完成'],
+];
+export function failureAdvice(error) {
+  if (!error) return null;
+  const match = FAILURE_ADVICE.find(([pattern]) => pattern.test(String(error)));
+  return match ? { reason: match[1], action: match[2] } : { reason: '其他原因：' + String(error).slice(0, 80), action: '可以先点重试；还失败就点「忽略」，或把截图发给我们' };
+}
 export function operationSteps(ops = [], state = 'pending') {
   return ops.filter(x=>x.method || ['federation-dispatch','case-unban'].includes(x.local)).map(x=>({
     method:x.serviceCleanup?'deleteServiceMessage':x.method||x.local,
     status:x.skipped?'skipped':x.done?'success':x.error?(state==='pending'?'retrying':'failed'):'pending',
-    error:x.error||null,skipped:x.skipped||null,doneAt:x.doneAt||null,
+    error:x.error||null,advice:x.error&&!x.done&&!x.skipped?failureAdvice(x.error):null,skipped:x.skipped||null,doneAt:x.doneAt||null,
   }));
 }
 
@@ -45,9 +60,10 @@ export class OperationsMethods {
     for(const log of done){if(ids.has(log.updateId))continue;ids.add(log.updateId);jobs.push({...log,id:log.updateId,status:log.outcome,steps:log.operationSteps||log.steps?.map(x=>({...x,status:x.skipped?'skipped':x.done?'success':'failed'}))||[]});}
     return jobs.slice(0,100);
   }
+  chatPurpose(){return {directMessages:!!this.read('chat')?.is_direct_messages};}
   async groupOverview() {
     const config=await this.config();
-    return {health:this.healthSummary(),lastReceived:this.read('health:last-received'),verification:config.verificationMode,federation:await this.env.GUARD_STATE.getByName('admin').federationTargets(this.read('chat')?.id),quiet:config.quietEnabled,raid:this.raidState(),pendingVerifications:this.sql.exec('SELECT COUNT(*) AS n FROM verifications').toArray()[0].n};
+    return {...this.chatPurpose(),health:this.healthSummary(),lastReceived:this.read('health:last-received'),verification:config.verificationMode,federation:await this.env.GUARD_STATE.getByName('admin').federationTargets(this.read('chat')?.id),quiet:config.quietEnabled,raid:this.raidState(),pendingVerifications:this.sql.exec('SELECT COUNT(*) AS n FROM verifications').toArray()[0].n};
   }
   async operationsOverview() {
     const tg=telegram(this.env.BOT_TOKEN),me=await this.me(tg),federation=this.federation();
@@ -57,7 +73,7 @@ export class OperationsMethods {
       let permissions={},details={},error='';
       try{const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});permissions={deleteMessages:member.status==='creator'||!!member.can_delete_messages,restrictMembers:member.status==='creator'||!!member.can_restrict_members,inviteUsers:member.status==='creator'||!!member.can_invite_users};}catch{error='无法读取权限，请稍后重试';}
       try{details=await this.env.GUARD_STATE.getByName('chat:'+chat.id).groupOverview();}catch{error+=(error?'；':'')+'无法读取本群状态';}
-      return {...chat,...details,permissions,federation:federation.includes(chat.id),error,attention:!!error||!permissions.deleteMessages||!permissions.restrictMembers||!!details.health?.recentFailed||(details.health?.overdueSeconds||0)>300};
+      return {...chat,...details,permissions,federation:federation.includes(chat.id),error,attention:!!error||!permissions.deleteMessages||(!details.directMessages&&!permissions.restrictMembers)||!!details.health?.recentFailed||(details.health?.overdueSeconds||0)>300};
     })));
     return {groups:groups.sort((a,b)=>Number(b.attention)-Number(a.attention)),checked:new Date().toISOString()};
   }
