@@ -69,6 +69,15 @@ export class FederationMethods {
     this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)',id,'{}',JSON.stringify({ops,entry:{chatId,actorId:'web-admin',userId:String(userId),messageId,action:'review-resolve-ban',federationTargets:targets}}),Date.now(),Date.now());
     return {ok:true,queued:true,federationTargets:targets.length};
   }
+  // A failed job the owner has looked at and does not want retried. It stops
+  // counting as a current failure; its record stays in the history.
+  dismissJob(id) {
+    const job=this.sql.exec("SELECT id FROM jobs WHERE id=? AND status='failed'",String(id)).toArray()[0];
+    if(!job)throw new Error('这条任务已经不是失败状态');
+    this.sql.exec("UPDATE jobs SET status='cancelled' WHERE id=?",job.id);
+    this.log({action:'job-dismissed',actorId:'web-admin',updateId:job.id,outcome:'cancelled'});
+    return {ok:true};
+  }
   async retryJob(id) {
     const job=this.sql.exec("SELECT * FROM jobs WHERE id=? AND status='failed'", String(id)).toArray()[0];
     if (!job?.plan) throw new Error('没有可重试的执行计划');

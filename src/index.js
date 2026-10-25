@@ -8,7 +8,21 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.35.2';
+export const VERSION = '2.36.0';
+// Sent to the owner once after this version goes live. Rewrite it with every
+// VERSION bump, in plain words for the owner.
+export const CHANGES = [
+  '• 只有你本人拉机器人进群才生效；别人拉进去会自动退出并通知你',
+  '• 机器人还不认识的新消息类型：刚入群的人发的先删除，同时私信你看看',
+  '• 机器人会自己学：你在私信里点「删除并封禁」或「不是广告」，这条消息就记下来；以后换几个字的同类广告会被自动认出',
+  '• 同样的内容 30 分钟内出现在 3 个群会直接封；出现在 2 个群会私信你确认',
+  '• 机器人已不在的群会自动从后台移除，不再一直报权限问题；频道私信不再提示缺封禁权限',
+  '• 后台「处罚执行」里失败的任务会写清原因和建议，可以重试或忽略',
+  '• 添加关键词前会先拿你确认过的正常消息试一遍，会误伤时先提醒你',
+  '• 后台显示收款提醒最近一次是否发到你的 Telegram',
+  '• 每周备份后自动检查备份能不能用来恢复，有问题会通知你',
+  '• 以后每次更新都会这样私信你更新内容',
+].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
 const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
@@ -148,6 +162,7 @@ async function admin(request, env, url) {
   if(request.method==='GET' && path==='backup/export')return json(await state.exportBackup());
   if(request.method==='GET' && path==='backup/rollback')return json({backup:await state.lastRollback()});
   if(request.method==='GET' && path==='audit')return json(await state.listAudit(Number(url.searchParams.get('before'))||0));
+  if(request.method==='GET' && path==='waffo/status')return json(await env.GUARD_STATE.getByName('waffo:payments').waffoStatus());
   if(request.method==='GET' && path==='incidents')return json({incidents:await state.incidentList()});
   if(request.method==='GET' && path==='trials')return json({trials:await group(env,url.searchParams.get('chatId')).listTrials()});
   if(request.method!=='POST')return json({error:'Not found'},404);
@@ -179,7 +194,7 @@ async function mutateAdmin(request,env,url,state,path){
   if(['trials/add','trials/remove','trials/promote'].includes(path)){const body=await readJson(request,4096);return json(await group(env,body.chatId).editTrial(path.split('/')[1],body));}
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
     const body = await readJson(request, 4096);
-    return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word));
+    return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word, body.force === true));
   }
   if (request.method === 'POST' && ['samples/add','samples/remove','samples/activate','samples/disable'].includes(path)) {
     return json({ samples: await state.editSample(path.split('/')[1], await readJson(request, 4096)) });
@@ -189,6 +204,7 @@ async function mutateAdmin(request,env,url,state,path){
   if(request.method==='POST' && path==='federation/retry'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.retryCase(String(body.id),String(body.chatId)));}
   if(request.method==='POST' && path==='federation/reverse'){const body=await readJson(request,4096);return json(await state.reverseCase(String(body.id)));}
   if(request.method==='POST' && path==='samples/test') return json(await state.testSample(await readJson(request,8192)));
+  if(request.method==='POST' && path==='jobs/dismiss') { const body=await readJson(request,4096);return json(await group(env,body.chatId).dismissJob(body.id)); }
   if(request.method==='POST' && path==='jobs/retry') { const body=await readJson(request,4096);return json(await group(env,body.chatId).retryJob(body.id)); }
   if (request.method === 'POST' && path === 'review/resolve') {
     const body = await readJson(request, 4096);
@@ -318,7 +334,7 @@ export default {
       catch { return new Response('Retry later', { status: 503 }); }
     }
     if (membership?.chat && ['group','supergroup'].includes(membership.chat.type)) {
-      try { await globalState(env).register(membership.chat); return new Response('OK'); }
+      try { await globalState(env).admitGroup(membership); return new Response('OK'); }
       catch { return new Response('Retry later', { status: 503 }); }
     }
     // Telegram does not expose an API to enumerate a bot's existing groups.
@@ -433,6 +449,7 @@ export default {
       ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
       ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
       ctx.waitUntil(globalState(env).ensureAdminMenu().catch(() => null));
+      ctx.waitUntil(globalState(env).announceVersion(VERSION, CHANGES).catch(() => null));
     }
   },
 };

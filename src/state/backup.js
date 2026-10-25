@@ -37,7 +37,22 @@ export class BackupMethods {
     const samples=rows.map(row=>({kind:row.kind,value:row.value,label:row.label,status:row.kind==='text'&&[...row.value].length<6?'disabled':this.read('sample-status:'+row.id,'active')}));
     return validateBackup({schema:1,created:new Date().toISOString(),groups,samples,federation:this.federation()});
   }
-  automaticBackupStatus(){return {enabled:this.env.AUTO_BACKUP_ENABLED!=='false',schedule:'北京时间每周一 03:00，首次启用立即备份',retention:8,last:this.read('backup:auto-status'),backups:this.read('backup:auto-index',[])};}
+  automaticBackupStatus(){return {enabled:this.env.AUTO_BACKUP_ENABLED!=='false',schedule:'北京时间每周一 03:00，首次启用立即备份',retention:8,last:this.read('backup:auto-status'),verified:this.read('backup:verify-status'),backups:this.read('backup:auto-index',[])};}
+  // Saving a backup is not the same as being able to restore it. After each
+  // weekly backup, every kept copy is read back, its checksum compared and its
+  // contents checked the same way a restore would; the owner hears of any that fail.
+  async verifyAutomaticBackups(now=Date.now()){
+    const failed=[];let checked=0;
+    for(const entry of this.read('backup:auto-index',[])){
+      checked++;
+      try{await this.automaticBackup(entry.id);}catch(error){failed.push({id:entry.id,error:String(error.message||'读取失败').slice(0,100)});}
+    }
+    const status={at:new Date(now).toISOString(),checked,failed};
+    this.write('backup:verify-status',status,100*DAY);
+    this.log({action:'automatic-backup-verify',outcome:failed.length?'failed':'success',reasons:failed.map(x=>x.id+'：'+x.error)});
+    if(failed.length)await this.alertOwner('automatic-backup-verify','每周备份检查发现 '+failed.length+' 份备份无法用来恢复：\n'+failed.map(x=>x.id+'：'+x.error).join('\n')+'\n\n其余 '+(checked-failed.length)+' 份正常。最新一份如果正常，就不影响恢复。').catch(()=>{});
+    return status;
+  }
   async automaticBackup(id){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(String(id))||!this.read('backup:auto-index',[]).some(x=>x.id===id))throw Error('未找到自动备份');
     const encoded=await this.env.BOT_KV.get('automatic-backup:'+id);if(!encoded)throw Error('备份已过期或暂时无法读取');const entry=this.read('backup:auto-index',[]).find(x=>x.id===id);if(await digest(encoded)!==entry.checksum)throw Error('备份校验失败，请勿恢复');return validateBackup(JSON.parse(encoded));
@@ -46,7 +61,7 @@ export class BackupMethods {
     if(this.env.AUTO_BACKUP_ENABLED==='false'||this.backingUp||this.read('backup:auto-retry',0)>now)return;
     const local=new Date(now+8*3600000),monday=new Date(local);monday.setUTCDate(local.getUTCDate()-(local.getUTCDay()+6)%7);monday.setUTCHours(3,0,0,0);
     if(local<monday)monday.setUTCDate(monday.getUTCDate()-7);
-    const id=monday.toISOString().slice(0,10);if(this.read('backup:auto-index',[]).some(x=>x.id===id))return;
+    const id=monday.toISOString().slice(0,10);if(this.read('backup:auto-index',[]).some(x=>x.id===id)){if(!this.read('backup:verify-status'))await this.verifyAutomaticBackups(now);return;}
     this.backingUp=true;
     try{
       const backup=await this.exportBackup(),encoded=JSON.stringify(backup),checksum=await digest(encoded);
@@ -55,6 +70,7 @@ export class BackupMethods {
       this.write('backup:auto-index',[entry,...this.read('backup:auto-index',[])].slice(0,8),100*DAY);
       this.write('backup:auto-status',{outcome:'success',at:entry.created,id});this.remove('backup:auto-retry');
       this.log({action:'automatic-backup',outcome:'success',backupId:id,groups:entry.groups,samples:entry.samples});
+      await this.verifyAutomaticBackups(now);
     }catch{
       this.write('backup:auto-status',{outcome:'failed',at:new Date(now).toISOString(),error:'自动备份未完成，15 分钟后重试'});this.write('backup:auto-retry',now+15*60000,DAY);
       this.log({action:'automatic-backup',outcome:'failed',error:'读取群配置或保存备份失败，未写入成功记录'});
@@ -114,7 +130,7 @@ export class BackupMethods {
       trials.push({id:crypto.randomUUID(),kind:body.kind,value,created:Date.now(),hits:0,examples:[]});
     }else{
       const item=trials.find(x=>x.id===body.id);if(!item)throw Error('试运行规则不存在');
-      if(action==='promote'){if(item.kind==='keyword')await this.editWord('add',item.value);else await this.editDomain('add',item.value,'deny');}
+      if(action==='promote'){if(item.kind==='keyword')await this.editWord('add',item.value,true);else await this.editDomain('add',item.value,'deny');}
       else if(action!=='remove')throw Error('操作无效');
       trials=trials.filter(x=>x.id!==body.id);
     }

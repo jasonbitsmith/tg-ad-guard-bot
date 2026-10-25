@@ -50,6 +50,8 @@ export class GuardState extends DurableObject {
     if (!columns.includes('via')) this.sql.exec("ALTER TABLE verifications ADD COLUMN via TEXT NOT NULL DEFAULT 'group'");
     if (!columns.includes('prompt_chat_id')) this.sql.exec('ALTER TABLE verifications ADD COLUMN prompt_chat_id INTEGER');
     for (const chat of LEGACY_CHATS) {
+      // A seeded group the bot has since left must not come back on restart.
+      if (this.read('unregistered:' + chat.id)) continue;
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
     for (const id of REMOVED_CHATS) {

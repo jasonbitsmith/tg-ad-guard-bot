@@ -1,8 +1,10 @@
-import { moderationMessage, isGuestMessage } from '../message-content.js';
+import { moderationMessage, isGuestMessage, unreadableContent } from '../message-content.js';
 import { aiReviewCandidate } from '../ai-review.js';
+import { closestAd } from '../similarity.js';
+import { campaignFingerprint } from './operations.js';
 // Message classification into action plans, commands and callbacks.
 // Methods are copied onto GuardState.prototype in ../state.js.
-import { telegram } from '../telegram.js';
+import { telegram, digest } from '../telegram.js';
 import { classify, normalize, parseCommand, validateWord, validateNewWord } from '../filters.js';
 import { sampleMatches } from '../samples.js';
 import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
@@ -142,6 +144,8 @@ export class ModerationMethods {
       ops.push({ local: 'processed', messageId: msg.message_id });
       return { ops, entry: { ...entry, action: 'content-lock-delete' } };
     }
+    const unknown = !guest && !msg.sender_chat && update.message ? unreadableContent(msg) : [];
+    if (unknown.length) return this.unknownTypePlan(msg, senderId, unknown);
     this.observeTrials(msg);
     let reviewText=text;
     const joined = this.read(`join:${senderId}`, 0);
@@ -182,6 +186,7 @@ export class ModerationMethods {
         if (ocrVerdict.score > verdict.score) Object.assign(verdict, ocrVerdict);
       }
     }
+    await this.learnedSignals(msg, verdict, reviewText, senderId, guest);
     let samples = this.read(`flood:${senderId}`, []).filter(x => x.at > Date.now() - 60000 && x.id !== msg.message_id);
     const fingerprint = normalize(text) || msg.sticker?.file_unique_id || msg.photo?.at(-1)?.file_unique_id || msg.document?.file_unique_id || msg.video?.file_unique_id || '';
     if (fingerprint) samples.push({ id: msg.message_id, at: Date.now(), text: fingerprint });
@@ -237,6 +242,36 @@ export class ModerationMethods {
     // Linked groups are dispatched to independent durable jobs by runJob.
     ops.push({ local: 'processed', messageId: msg.message_id });
     return { ops, entry: { ...entry, action: federationTargets.length ? 'delete-and-federated-permanent-ban' : 'delete-and-permanent-ban', federationTargets } };
+  }
+
+  // Signals the bot learns instead of being told: a message very like an ad
+  // the owner confirmed with a button, and the same text spreading over
+  // several groups at once.
+  async learnedSignals(msg, verdict, text, senderId, guest) {
+    if (verdict.permanentBan || !text) return;
+    const close = closestAd(text, await this.cachedExamples().catch(() => []));
+    if (close?.score >= 0.6) { verdict.permanentBan = true; verdict.score = Math.max(7, verdict.score); verdict.reasons.push(`和你确认过的广告很像（相似度 ${Math.round(close.score * 100)}%）`); return; }
+    if (close?.score >= 0.4) { verdict.score = Math.max(3, verdict.score); verdict.reasons.push(`有点像你确认过的广告（相似度 ${Math.round(close.score * 100)}%）`); }
+    const fingerprint = campaignFingerprint(text);
+    if (guest || msg.sender_chat || verdict.score <= 0 || [...fingerprint].length < 12) return;
+    const seen = await this.env.GUARD_STATE.getByName('admin').crossGroupSeen(await digest(fingerprint), msg.chat.id, senderId).catch(() => null);
+    if (seen?.groups >= 3) { verdict.permanentBan = true; verdict.score = Math.max(7, verdict.score); verdict.reasons.push(`30 分钟内同样的内容出现在 ${seen.groups} 个群`); }
+    else if (seen?.groups >= 2) { verdict.score = Math.max(3, verdict.score); verdict.reasons.push('30 分钟内同样的内容也出现在另一个群'); }
+  }
+
+  // A kind of message the bot cannot read yet is never let through unseen. A
+  // member who joined in the last day has it deleted; the owner is shown it
+  // either way (with ban / ignore buttons) and can tell us to support it.
+  unknownTypePlan(msg, senderId, unknown) {
+    const recent = this.read(`join:${senderId}`, 0) > Date.now() - DAY;
+    const reasons = [`机器人还不认识这种消息（${unknown.join('、')}）`, recent ? '发送人一天内刚入群，已先删除' : '老成员发的，先留着没动'];
+    const ops = recent ? [{ method: 'deleteMessage', params: { chat_id: msg.chat.id, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }] : [];
+    const key = `unknown-notice:${msg.from.id}`;
+    if (!this.read(key)) {
+      this.write(key, true, 6 * 3600000);
+      ops.push({ local: 'owner-suspect', body: { title: recent ? '🆕 新成员发了机器人还不认识的消息，已先删除' : '🆕 有人发了机器人还不认识的消息，先留着没动', chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: msg.from.id, userName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), userUsername: msg.from.username || '', messageId: msg.message_id, text: `（消息类型：${unknown.join('、')}）`, reasons } });
+    }
+    return { ops, entry: { chatId: msg.chat.id, chatTitle: msg.chat.title || '', userId: senderId, userName: [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), messageId: msg.message_id, text: `（消息类型：${unknown.join('、')}）`, action: recent ? 'unknown-type-delete' : 'review', reasons } };
   }
 
   // A message that looks like an ad but is not certain enough to act on is
