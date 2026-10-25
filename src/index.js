@@ -1,3 +1,5 @@
+import { waffoWebhook } from './waffo.js';
+import { adminPwaResponse } from './admin-pwa.js';
 import { diffValues } from './operations.js';
 import { ADMIN_PAGE, ADMIN_JS } from './admin.js';
 import { secureEqual, digest, telegram, verifyWebAppData } from './telegram.js';
@@ -6,9 +8,18 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.32.0';
+export const VERSION = '2.37.0';
+// Sent to the owner once after this version goes live. Rewrite it with every
+// VERSION bump, in plain words for the owner.
+export const CHANGES = [
+  '• 群发选目标改版：按钮用简短的频道名，可以一键全选 / 全不选，确认时显示发几个',
+  '• 群发可以按分组选目标（在后台写「组名：@频道 @频道」），也能一键选上次用过的目标',
+  '• 后台填群发目标可以直接粘贴 t.me 链接',
+  '• 私聊发「群发记录」能看最近 10 次群发的结果，还能从那里修改或撤回',
+].join('\n');
 const COOKIE = '__Host-guard_session';
-const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
+const REMEMBER_SECONDS = 30 * 86400;
+const headers = { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; img-src 'self' https:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" };
 const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra } });
 const globalState = env => env.GUARD_STATE.getByName('admin');
 async function bookscapeState(state, path, body) {
@@ -53,7 +64,9 @@ async function readJson(request, limit = 262144) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 async function admin(request, env, url) {
-  if (request.method === 'GET' && ['/admin','/admin/'].includes(url.pathname)) return new Response(ADMIN_PAGE, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
+  const pwa = adminPwaResponse(request,url,headers,VERSION);
+  if(pwa)return pwa;
+  if (request.method === 'GET' && ['/admin','/admin/'].includes(url.pathname)) return new Response(ADMIN_PAGE.replace('__ADMIN_VERSION__', VERSION), { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   if (request.method === 'GET' && url.pathname === '/admin/app.js') return new Response(ADMIN_JS, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   if (!url.pathname.startsWith('/admin/api/')) return json({ error: 'Not found' }, 404);
   if (!env.ADMIN_PASSWORD || !env.GUARD_STATE) return json({ error: '服务配置缺失' }, 503);
@@ -68,9 +81,12 @@ async function admin(request, env, url) {
     let body;
     try { body = await readJson(request, 4096); } catch { return json({ error: '无效请求' }, 400); }
     if (!await secureEqual(body.password, env.ADMIN_PASSWORD)) { await state.recordLoginFailure(ip); return json({ error: '密码错误' }, 401); }
+    // "Remember this computer" keeps the session for 30 days instead of 8 hours.
+    // Changing ADMIN_PASSWORD still signs every device out at once.
+    const ttl = body.remember === true ? REMEMBER_SECONDS : 28800;
     const session = crypto.randomUUID() + crypto.randomUUID();
-    await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD));
-    return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800` });
+    await state.createSession(await digest(session), await digest(env.ADMIN_PASSWORD), ttl * 1000);
+    return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${ttl}` });
   }
   // Opened from the bot chat as a Telegram Mini App: Telegram signs who opened
   // it, so the owner gets in without typing the password. Anyone else is refused.
@@ -140,6 +156,7 @@ async function admin(request, env, url) {
   if(request.method==='GET' && path==='backup/export')return json(await state.exportBackup());
   if(request.method==='GET' && path==='backup/rollback')return json({backup:await state.lastRollback()});
   if(request.method==='GET' && path==='audit')return json(await state.listAudit(Number(url.searchParams.get('before'))||0));
+  if(request.method==='GET' && path==='waffo/status')return json(await env.GUARD_STATE.getByName('waffo:payments').waffoStatus());
   if(request.method==='GET' && path==='incidents')return json({incidents:await state.incidentList()});
   if(request.method==='GET' && path==='trials')return json({trials:await group(env,url.searchParams.get('chatId')).listTrials()});
   if(request.method!=='POST')return json({error:'Not found'},404);
@@ -171,7 +188,7 @@ async function mutateAdmin(request,env,url,state,path){
   if(['trials/add','trials/remove','trials/promote'].includes(path)){const body=await readJson(request,4096);return json(await group(env,body.chatId).editTrial(path.split('/')[1],body));}
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
     const body = await readJson(request, 4096);
-    return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word));
+    return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word, body.force === true));
   }
   if (request.method === 'POST' && ['samples/add','samples/remove','samples/activate','samples/disable'].includes(path)) {
     return json({ samples: await state.editSample(path.split('/')[1], await readJson(request, 4096)) });
@@ -181,6 +198,7 @@ async function mutateAdmin(request,env,url,state,path){
   if(request.method==='POST' && path==='federation/retry'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.retryCase(String(body.id),String(body.chatId)));}
   if(request.method==='POST' && path==='federation/reverse'){const body=await readJson(request,4096);return json(await state.reverseCase(String(body.id)));}
   if(request.method==='POST' && path==='samples/test') return json(await state.testSample(await readJson(request,8192)));
+  if(request.method==='POST' && path==='jobs/dismiss') { const body=await readJson(request,4096);return json(await group(env,body.chatId).dismissJob(body.id)); }
   if(request.method==='POST' && path==='jobs/retry') { const body=await readJson(request,4096);return json(await group(env,body.chatId).retryJob(body.id)); }
   if (request.method === 'POST' && path === 'review/resolve') {
     const body = await readJson(request, 4096);
@@ -258,6 +276,7 @@ async function mutateAdmin(request,env,url,state,path){
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/webhooks/waffo') return waffoWebhook(request, env);
     if (url.pathname.startsWith('/bookscape/api/')) {
       if (!env.BOOKSCAPE_PUBLISH_KEY || env.BOOKSCAPE_PUBLISH_KEY.length < 32) return json({ error: '发布入口未启用' }, 503);
       if (!await secureEqual(request.headers.get('Authorization'), 'Bearer ' + env.BOOKSCAPE_PUBLISH_KEY)) return json({ error: '发布凭据无效' }, 401);
@@ -309,7 +328,7 @@ export default {
       catch { return new Response('Retry later', { status: 503 }); }
     }
     if (membership?.chat && ['group','supergroup'].includes(membership.chat.type)) {
-      try { await globalState(env).register(membership.chat); return new Response('OK'); }
+      try { await globalState(env).admitGroup(membership); return new Response('OK'); }
       catch { return new Response('Retry later', { status: 503 }); }
     }
     // Telegram does not expose an API to enumerate a bot's existing groups.
@@ -424,6 +443,7 @@ export default {
       ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
       ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
       ctx.waitUntil(globalState(env).ensureAdminMenu().catch(() => null));
+      ctx.waitUntil(globalState(env).announceVersion(VERSION, CHANGES).catch(() => null));
     }
   },
 };

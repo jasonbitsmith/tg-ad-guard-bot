@@ -44,6 +44,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
       async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
       seedLateRetryTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('late-retry','{}','pending',?,?)",Date.now()-10000,Date.now()-600000);}
+      seedVerificationFailureTest(userId,error='declineChatJoinRequest: network timeout or connection failure',action='join-request-declined',rounds=0){
+        const expires=Date.now()-1200000,id='verification-timeout:'+userId+':'+expires,chat=this.read('chat');
+        this.sql.exec("INSERT OR REPLACE INTO verifications(user_id,expires,mode,via) VALUES (?,?,?,?)",String(userId),expires,'button','request');
+        const plan={entry:{action,chatId:chat.id},ops:[{method:action==='join-request-declined'?'declineChatJoinRequest':'banChatMember',params:{chat_id:Number(chat.id),user_id:Number(userId)},error},{local:'clearVerification',userId:String(userId),expires}]};
+        this.sql.exec("INSERT OR REPLACE INTO jobs(id,payload,plan,status,attempts,due,created) VALUES (?,?,?,'failed',6,?,?)",id,'{}',JSON.stringify(plan),Date.now()-1000000,Date.now()-1200000);
+        if(rounds)this.write('verification:network-recovery:'+id,{rounds,next:0},86400000);
+        return id;
+      }
+      jobRecordTest(id){return this.sql.exec('SELECT * FROM jobs WHERE id=?',id).toArray()[0];}
       seedFutureJobTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('future','{}','pending',?,?)",Date.now()+3600000,Date.now()-3600000);}
       expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
@@ -85,6 +94,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
+      if(method==='getChatMember' && params.chat_id===-800 && params.user_id!==555)return MFResponse.json({ok:true,result:{status:params.user_id===8002?'member':'left'}});
       if (method === 'getChatMemberCount') result = 1285;
       if (method === 'getWebhookInfo') result = webhookState;
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
@@ -117,19 +127,44 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(calls.some(call=>call.method==='sendMessage'&&call.params.chat_id===99&&call.params.text.includes('群防日报')));
   });
   await t.test('机器人加入新群时立即登记，无需等待普通消息', async () => {
-    const added={update_id:1,my_chat_member:{chat:{id:-1001234567890,type:'supergroup',title:'新加入测试群'},new_chat_member:{status:'administrator',user:{id:555,is_bot:true}}}};
+    const added={update_id:1,my_chat_member:{chat:{id:-1001234567890,type:'supergroup',title:'新加入测试群'},from:{id:99,first_name:'Owner'},new_chat_member:{status:'administrator',user:{id:555,is_bot:true}}}};
     const response=await mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify(added)});
     assert.equal(response.status,200);
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
     assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567890'&&chat.title==='新加入测试群'));
   });
+  await t.test('别人把机器人拉进新群：自动退群、不登记，并通知所有者', async () => {
+    const before=calls.length;
+    const added={update_id:2,my_chat_member:{chat:{id:-1001234567899,type:'supergroup',title:'陌生人的群'},from:{id:4321,first_name:'路人',username:'stranger_x'},new_chat_member:{status:'administrator',user:{id:555,is_bot:true}}}};
+    const response=await mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify(added)});
+    assert.equal(response.status,200);
+    const state=await mf.getDurableObjectNamespace('GUARD_STATE');
+    assert.ok(!(await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567899'));
+    const later=calls.slice(before);
+    assert.ok(later.some(call=>call.method==='leaveChat'&&call.params.chat_id===-1001234567899));
+    assert.ok(later.some(call=>call.method==='sendMessage'&&call.params.chat_id===99&&call.params.text.includes('陌生人的群')&&call.params.text.includes('@stranger_x')));
+    // A group already on the list (e.g. a co-admin promoting the bot) is left alone.
+    const promoted={update_id:3,my_chat_member:{chat:{id:-1001234567890,type:'supergroup',title:'新加入测试群'},from:{id:4321,first_name:'副管理'},new_chat_member:{status:'administrator',user:{id:555,is_bot:true}}}};
+    await mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify(promoted)});
+    assert.ok(!calls.slice(before).some(call=>call.method==='leaveChat'&&call.params.chat_id===-1001234567890));
+    assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567890'));
+  });
   await t.test('机器人被移出或退出群时自动从后台列表除名', async () => {
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
-    const send=status=>mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify({update_id:1,my_chat_member:{chat:{id:-1001234567891,type:'supergroup',title:'将被移出群'},new_chat_member:{status,user:{id:555,is_bot:true}}}})});
+    const send=status=>mf.dispatchFetch('https://bot.test/webhook/path',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'verify'},body:JSON.stringify({update_id:1,my_chat_member:{chat:{id:-1001234567891,type:'supergroup',title:'将被移出群'},from:{id:99,first_name:'Owner'},new_chat_member:{status,user:{id:555,is_bot:true}}}})});
     assert.equal((await send('member')).status,200);
     assert.ok((await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567891'));
     assert.equal((await send('left')).status,200);
     assert.ok(!(await state.getByName('admin').listChats()).some(chat=>chat.id==='-1001234567891'));
+  });
+  await t.test('后台登录：勾选「保持登录」保留 30 天，不勾选仍是 8 小时', async () => {
+    const login=remember=>mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test',remember})});
+    const kept=await login(true),short=await login(false);
+    assert.match(kept.headers.get('set-cookie'),/Max-Age=2592000/);assert.match(short.headers.get('set-cookie'),/Max-Age=28800/);
+    const cookie=kept.headers.get('set-cookie').split(';')[0];
+    assert.equal((await mf.dispatchFetch('https://bot.test/admin/api/chats',{headers:{Cookie:cookie}})).status,200);
+    const page=await (await mf.dispatchFetch('https://bot.test/admin/')).text();
+    assert.ok(!page.includes('__ADMIN_VERSION__'));assert.match(page,/name="sentinel-version" content="\d+\.\d+\.\d+"/);
   });
   await t.test('后台「退出并移除」让机器人退群并从列表移除', async () => {
     const state=await mf.getDurableObjectNamespace('GUARD_STATE');
@@ -466,6 +501,28 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(actions(-171).some(x=>x.method==='banChatMember'&&x.params.user_id===82));
     await tick(-171,true);assert.equal(await group.verification(81),undefined);
     assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
+  });
+  await t.test('网络恢复只重排仍有效的申请拒绝；已入群、已手动通过、权限失败、封禁和超出次数不重放',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-800');
+    await g.fakeQuietClockTest();await g.editQuiet({id:-800,title:'恢复任务测试'},false,'00:00','08:00',false,0);
+    const ids=[];
+    ids.push(await g.seedVerificationFailureTest(8001));
+    ids.push(await g.seedVerificationFailureTest(8002));
+    ids.push(await g.seedVerificationFailureTest(8003,'not enough rights'));
+    ids.push(await g.seedVerificationFailureTest(8004,undefined,'verification-timeout-ban'));
+    ids.push(await g.seedVerificationFailureTest(8005,undefined,'join-request-declined',2));
+    ids.push(await g.seedVerificationFailureTest(8006));await g.clearVerification(8006);
+    const start=calls.length;
+    const result=await g.recoverVerificationFailures();assert.equal(result.queued,1);
+    assert.equal((await g.jobRecordTest(ids[0])).status,'pending');
+    assert.equal((await g.jobRecordTest(ids[1])).status,'done');assert.equal(await g.verification(8002),undefined);
+    for(const id of ids.slice(2,5))assert.equal((await g.jobRecordTest(id)).status,'failed');
+    assert.equal((await g.jobRecordTest(ids[5])).status,'done');
+    assert.equal((await g.recoverVerificationFailures()).queued,0);
+    assert.ok(!calls.slice(start).some(x=>['banChatMember','declineChatJoinRequest'].includes(x.method)),'恢复步骤只读核对并排队，不直接处罚');
+    const row=await g.jobRecordTest(ids[0]);await g.runJob(row);
+    assert.equal(await g.verification(8001),undefined);assert.equal((await g.jobRecordTest(ids[0])).status,'done');
+    assert.equal(calls.slice(start).filter(x=>x.method==='declineChatJoinRequest'&&x.params.user_id===8001).length,1);
   });
   await t.test('频道验证期间不能发言；按钮答题限 3 次；超时可选择移出', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),channelGroup=ns.getByName('chat:-501');
@@ -906,6 +963,17 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const page=await mf.dispatchFetch('https://bot.test/admin/api/federation/cases?userId=200',{headers:{Cookie:cookie}});assert.equal(page.status,200);assert.equal((await page.json()).cases.length,50);
   });
 
+  await t.test('添加关键词前先用确认过的正常消息试一遍，会误伤时要再确认',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin'),group=ns.getByName('chat:-197');
+    await global.editReviewExample('add',{confirmed:true,verdict:'normal',text:'朋友说要收u盾，这个靠谱吗'});
+    const login=await mf.dispatchFetch('https://bot.test/admin/api/login',{method:'POST',headers:{Origin:'https://bot.test','Content-Type':'application/json'},body:JSON.stringify({password:'password-for-test'})});
+    const cookie=login.headers.get('set-cookie').split(';')[0];
+    const add=body=>mf.dispatchFetch('https://bot.test/admin/api/keywords/add',{method:'POST',headers:{Origin:'https://bot.test',Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({chatId:-197,...body})});
+    const refused=await add({word:'收u'});assert.equal(refused.status,400);assert.match((await refused.json()).error,/会命中 1 条你确认过的正常消息/);
+    assert.ok(!(await group.config()).keywords.includes('收u'));
+    assert.ok((await (await add({word:'收u',force:true})).json()).keywords.includes('收u'));
+    assert.ok((await (await add({word:'完全无关的词'})).json()).keywords.includes('完全无关的词'));
+  });
   await t.test('试运行仅观察；去重命中、域名试运行、正式启用不影响现有拦截',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),group=ns.getByName('chat:-196');
     const trial=(await group.editTrial('add',{kind:'keyword',value:'观察词'})).trials[0];
@@ -937,6 +1005,36 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await send(u);await tick(-186);
     assert.ok(actions(-186).some(x=>x.method==='deleteMessage'&&x.params.message_id===u.message.message_id));
     assert.ok(actions(-186).some(x=>x.method==='banChatMember'&&x.params.user_id===9201));
+  });
+  await t.test('机器人不认识的新消息类型：新人发的先删并私信所有者，老成员的只私信',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
+    await ns.getByName('chat:-187').seedRecordTest('join:9301',Date.now()-60000);
+    const unknown=id=>{const u=update(-187,'',{from:{id,first_name:'新类型'},holiday_card:{title:'加我领福利'}});delete u.message.text;return u;};
+    const before=calls.length;
+    const fresh=unknown(9301);await send(fresh);await tick(-187);
+    assert.ok(actions(-187).some(x=>x.method==='deleteMessage'&&x.params.message_id===fresh.message.message_id));
+    assert.ok(!actions(-187).some(x=>x.method==='banChatMember'&&x.params.user_id===9301));
+    const old=unknown(9302);await send(old);await tick(-187);
+    assert.ok(!actions(-187).some(x=>x.method==='deleteMessage'&&x.params.message_id===old.message.message_id));
+    const dms=calls.slice(before).filter(call=>call.method==='sendMessage'&&call.params.chat_id===99&&String(call.params.text).includes('还不认识'));
+    assert.equal(dms.length,2);assert.ok(dms[0].params.text.includes('holiday_card'));
+    // Ordinary text and known media are not affected.
+    const normal=update(-187,'大家好',{from:{id:9303,first_name:'普通'}});await send(normal);await tick(-187);
+    assert.ok(!actions(-187).some(x=>x.method==='deleteMessage'&&x.params.message_id===normal.message.message_id));
+  });
+  await t.test('自己学会：很像你确认过的广告会封；同样内容出现在 3 个群会封',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE');
+    await ns.getByName('admin').editReviewExample('add',{confirmed:true,verdict:'advertisement',text:'专业代开发票 各行各业 税点低 欢迎咨询'});
+    const reworded=update(-188,'专业代开发票，各行各业都可以，税点低欢迎咨询！',{from:{id:9401,first_name:'换字广告'}});await send(reworded);await tick(-188);
+    assert.ok(actions(-188).some(x=>x.method==='banChatMember'&&x.params.user_id===9401));
+    const unrelated=update(-188,'请问大家发票一般怎么开，公司报销要用',{from:{id:9402,first_name:'正常提问'}});await send(unrelated);await tick(-188);
+    assert.ok(!actions(-188).some(x=>x.method==='banChatMember'&&x.params.user_id===9402));
+    const text='VPS 低价出售 价格好说 欢迎来问 联系 @seller_abcd';
+    for(const chatId of [-191,-192,-193]){await send(update(chatId,text,{from:{id:9501,first_name:'到处发'}}));await tick(chatId);}
+    assert.ok(!actions(-191).some(x=>x.method==='banChatMember'&&x.params.user_id===9501));
+    assert.ok(actions(-193).some(x=>x.method==='banChatMember'&&x.params.user_id===9501));
+    // These bans count toward the owner's hourly notice cap; later tests expect room left.
+    await ns.getByName('admin').removeRecordTest('notice-rate:'+Math.floor(Date.now()/3600000));
   });
   await t.test('完整备份可预览恢复、保留回退包和稳定样本 ID；部分失败可续作',async()=>{
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),global=ns.getByName('admin');const exported=await global.backupTest();assert.ok(exported.backup,exported.error);const backup=exported.backup;

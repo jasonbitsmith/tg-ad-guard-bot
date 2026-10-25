@@ -172,14 +172,58 @@ export class MonitorsMethods {
     }
   }
   incidentList(){return this.sql.exec("SELECT value FROM records WHERE key LIKE 'incident:%' AND expires>? ORDER BY json_extract(value,'$.active') DESC,rowid DESC LIMIT 200",Date.now()).toArray().map(x=>JSON.parse(x.value));}
-  async checkIncident(id,bad,details){
-    const key='incident:'+id;let incident=this.read(key,{id,active:false,notified:false});
-    if(bad){if(!incident.active)incident={id,active:true,notified:false,since:new Date().toISOString()};incident.details=details;incident.checked=new Date().toISOString();this.write(key,incident,30*DAY);
-      if(!incident.notified){const sent=await this.alertOwner('incident-'+id,'运行异常\n'+details);if(sent){incident.notified=true;this.write(key,incident,30*DAY);}}
-    }else if(incident.active || incident.recoveryPending){
-      if(incident.active){incident.active=false;incident.recoveryPending=incident.notified;incident.recovered=new Date().toISOString();}
-      incident.checked=new Date().toISOString();this.write(key,incident,30*DAY);
-      if(incident.recoveryPending && await this.alertOwner('recovered-'+id,'已恢复正常\n'+details)){incident.recoveryPending=false;this.write(key,incident,30*DAY);}
+  async alertOwner(kind, text) {
+    const key = `owner-alert:${String(kind).slice(0, 160)}`;
+    if(this.read(key,false))return false; // honor cooldowns from older releases
+    const recipients = [...new Set(this.owners().filter(id => /^\d{1,16}$/.test(id)))];
+    const tg = telegram(this.env.BOT_TOKEN);
+    const message = `⚠️ 机器人运行提醒\n\n${String(text).slice(0, 3400)}\n\n同类提醒 30 分钟内不会重复发送。`;
+    // Reserve synchronously BEFORE yielding to the network. Per-recipient
+    // durable leases survive eviction and stop concurrent requests from flooding.
+    const targets = recipients.filter(id => !this.read(`${key}:${id}`));
+    const lease = crypto.randomUUID();
+    for (const id of targets) this.write(`${key}:${id}`, { lease, state:'sending' }, 60000);
+    const results = await Promise.allSettled(targets.map(id => tg('sendMessage', { chat_id:Number(id), text:message, disable_web_page_preview:true })));
+    for (let i=0;i<targets.length;i++) {
+      const mark=`${key}:${targets[i]}`;
+      if(this.read(mark)?.lease!==lease)continue;
+      // A timeout may mean Telegram accepted the message but lost the response.
+      // Keep a short backoff instead of immediately emitting the same alert.
+      this.write(mark,{lease,state:results[i].status==='fulfilled'?'sent':'backoff'},results[i].status==='fulfilled'?30*60000:60000);
+    }
+    const sent=results.some(x=>x.status==='fulfilled');
+    if(targets.length)this.log({action:'owner-alert',outcome:sent?'success':'failed',text:String(kind).slice(0,100),recipients:targets.length});
+    return sent;
+  }
+  async checkIncident(id,bad,details,options={}) {
+    // Serialize transitions for one incident; stale in-flight writes must not
+    // overwrite a later recovery or start another round of identical alerts.
+    this.incidentRuns ||= new Map();
+    const previous=this.incidentRuns.get(id)||Promise.resolve();
+    const work=previous.catch(()=>{}).then(()=>this.updateIncident(id,bad,details,options));
+    this.incidentRuns.set(id,work);
+    try{return await work;}finally{if(this.incidentRuns.get(id)===work)this.incidentRuns.delete(id);}
+  }
+  async updateIncident(id,bad,details,{delayMs=0,minChecks=1}={}) {
+    const key='incident:'+id, now=Date.now(), iso=new Date(now).toISOString();
+    let incident=this.read(key,{id,active:false,notified:false});
+    if(bad){
+      if(!incident.active)incident={id,active:true,notified:false,since:iso,checks:0};
+      if(!incident.lastObservation || now-incident.lastObservation>=60000){incident.checks=(incident.checks||0)+1;incident.lastObservation=now;}
+      incident.details=details;incident.checked=iso;
+      this.write(key,incident,30*DAY);
+      if(!incident.notified && now-Date.parse(incident.since)>=delayMs && incident.checks>=minChecks){
+        const sent=await this.alertOwner('incident-'+id,'运行异常\n'+details);
+        if(sent){incident.notified=true;this.write(key,incident,30*DAY);}
+      }
+    }else{
+      if(incident.active){incident.active=false;incident.recoveryPending=incident.notified;incident.recovered=iso;}
+      incident.details=details;incident.checked=iso;incident.checks=0;
+      this.write(key,incident,30*DAY);
+      // Short blips that were never announced recover silently.
+      if(incident.recoveryPending && await this.alertOwner('recovered-'+id,'已恢复正常\n'+details)){
+        incident.recoveryPending=false;this.write(key,incident,30*DAY);
+      }
     }
     return incident;
   }
@@ -191,6 +235,18 @@ export class MonitorsMethods {
       if(attempt===2||!error.retryable||Number(error.code)===429)throw error;
     }
   }
+  // A group the bot has left (while the webhook missed the notice) kept
+  // raising permission alerts forever. Seen twice at least four minutes apart,
+  // it is taken off the list and the owner is told once.
+  async botGone(chat,reason){
+    const key='bot-gone:'+chat.id,first=this.read(key);
+    if(!first){this.write(key,Date.now(),DAY);return false;}
+    if(Date.now()-first<4*60000)return false;
+    this.unregister(chat.id);this.remove(key);this.remove('incident:permission-'+chat.id);this.remove('incident:queue-'+chat.id);
+    this.log({action:'group-gone',chatId:chat.id,outcome:'success',text:String(chat.title||chat.id).slice(0,100),reasons:[reason]});
+    await this.alertOwner('bot-gone-'+chat.id,'群：'+chat.title+'\n'+reason+'，已从后台列表移除，不会再为它发权限提醒。\n如果还要管理这个群，把机器人重新拉进去即可。').catch(()=>{});
+    return true;
+  }
   async monitorOperations(force=false){
     if(this.monitoring || (!force && this.read('monitor:next',0)>Date.now()))return;
     this.monitoring=true;this.write('monitor:next',Date.now()+5*60000);
@@ -199,16 +255,28 @@ export class MonitorsMethods {
       let webhook,probeError;
       try{me=await this.probeTelegram(tg,'getMe');webhook=await this.probeTelegram(tg,'getWebhookInfo');}
       catch(error){probeError=error;me=null;}
-      if(probeError){const detail='Telegram API 状态检查失败\n错误码：'+(probeError.code||'未知')+'\n原因：'+String(probeError.message||'未知错误').slice(0,350);await this.checkIncident('telegram-api',true,detail);}
+      if(probeError){const detail='Telegram API 状态检查失败\n错误码：'+(probeError.code||'未知')+'\n原因：'+String(probeError.message||'未知错误').slice(0,350);await this.checkIncident('telegram-api',true,detail,probeError.retryable?{delayMs:5*60000,minChecks:2}:{});}
       else {const stale=webhook.pending_update_count>0 && webhook.last_error_date*1000>Date.now()-15*60000;
         await this.checkIncident('webhook',!webhook.url || !webhook.url.endsWith('/webhook/'+this.env.WEBHOOK_SECRET) || stale,'Webhook：待接收更新 '+(webhook.pending_update_count||0)+(stale?'，最近出现投递异常':''));
         await this.checkIncident('telegram-api',false,'Telegram API 可用');
       }
       const chats=await this.listChats();
       for(const chat of chats){
-        try{const health=await this.env.GUARD_STATE.getByName('chat:'+chat.id).healthSummary();await this.checkIncident('queue-'+chat.id,health.recentFailed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n最近 1 小时队列失败 '+health.recentFailed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
-        catch{await this.checkIncident('queue-'+chat.id,true,'群：'+chat.title+'\n无法检查执行队列');}
-        if(me)try{const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});await this.checkIncident('permission-'+chat.id,!ADMIN_STATUS.includes(member.status)||!member.can_delete_messages||!member.can_restrict_members,'群：'+chat.title+'\n身份：'+member.status+'；删消息权限：'+(member.can_delete_messages?'有':'无')+'；封禁权限：'+(member.can_restrict_members?'有':'无'));}catch{await this.checkIncident('permission-'+chat.id,true,'群：'+chat.title+'\n无法读取机器人权限');}
+        try{const group=this.env.GUARD_STATE.getByName('chat:'+chat.id);if(me)await group.recoverVerificationFailures();const health=await group.healthSummary();await this.checkIncident('queue-'+chat.id,health.recentFailed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n最近 1 小时队列失败 '+health.recentFailed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
+        catch{await this.checkIncident('queue-'+chat.id,true,'群：'+chat.title+'\n无法检查执行队列',{delayMs:5*60000,minChecks:2});}
+        if(!me)continue;
+        // A channel's direct-messages chat cannot ban anyone, so it only needs
+        // the delete right; asking for more there was a standing false alarm.
+        let directMessages=false;try{directMessages=(await this.env.GUARD_STATE.getByName('chat:'+chat.id).chatPurpose()).directMessages;}catch{}
+        try{
+          const member=await tg('getChatMember',{chat_id:Number(chat.id),user_id:me.id});
+          if(['left','kicked'].includes(member.status)){await this.botGone(chat,'机器人已经不在这个群里（'+(member.status==='kicked'?'被移出':'已退出')+'）');continue;}
+          this.remove('bot-gone:'+chat.id);
+          await this.checkIncident('permission-'+chat.id,!ADMIN_STATUS.includes(member.status)||!member.can_delete_messages||(!directMessages&&!member.can_restrict_members),'群：'+chat.title+(directMessages?'（频道私信）':'')+'\n身份：'+member.status+'；删消息权限：'+(member.can_delete_messages?'有':'无')+(directMessages?'':'；封禁权限：'+(member.can_restrict_members?'有':'无')));
+        }catch(error){
+          if(!error.retryable&&/chat not found|bot was kicked|not a member|bot is not a member|group chat was deactivated|chat was upgraded/i.test(String(error.message))){await this.botGone(chat,'Telegram 说机器人已不在这个群（'+String(error.message).slice(0,120)+'）');continue;}
+          await this.checkIncident('permission-'+chat.id,true,'群：'+chat.title+'\n暂时无法读取机器人权限（不代表权限已丢失）',{delayMs:5*60000,minChecks:2});
+        }
       }
       this.write('monitor:last',new Date().toISOString());
     }finally{this.monitoring=false;}

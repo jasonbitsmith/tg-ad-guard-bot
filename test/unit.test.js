@@ -446,3 +446,26 @@ test('群发目标接受 t.me 链接，分组要写在目标里',()=>{
   assert.throws(()=>parseBroadcastGroups('A：@dmitnews\nA：@Book_Scape',entries),/重复/);
   assert.deepEqual(parseBroadcastGroups('VPS：@someone_else @dmitnews\n空：@nobody_x',entries,false),[{name:'VPS',ids:['@dmitnews']}]);
 });
+
+test('转发自合约喊单频道的晒单/图表会被封，普通频道转发和行情聊天不误伤', () => {
+  const channel = (title, username) => ({ type: 'channel', chat: { id: -1009, type: 'channel', title, ...(username ? { username } : {}) }, message_id: 5, date: 1 });
+  const fwd = (title, caption, photo = true) => ({ chat: { id: -1 }, from: { id: 9, first_name: 'Q' }, forward_origin: channel(title), ...(caption ? { caption } : {}), ...(photo ? { photo: [{ file_unique_id: 'p' }] } : {}) });
+  // Reported album: caption on one photo, the other photo has none.
+  assert.equal(classify(fwd('King的幣圈合約交易軌跡', '#SNDK\n12%-14%📈'), DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(classify(fwd('King的幣圈合約交易軌跡'), DEFAULT_KEYWORDS).permanentBan, true);
+  // Legacy forward fields.
+  const legacy = { chat: { id: -1 }, from: { id: 9 }, photo: [{ file_unique_id: 'p' }], forward_from_chat: { id: -1009, type: 'channel', title: 'BTC合约带单VIP' } };
+  assert.equal(classify(legacy, DEFAULT_KEYWORDS).permanentBan, true);
+  // Crypto news channel: banned only when the post itself pitches calls.
+  assert.equal(classify(fwd('币圈快讯', 'BTC 今日上涨 5%'), DEFAULT_KEYWORDS).permanentBan, false);
+  assert.equal(classify(fwd('币圈快讯', 'BTC 今日上涨 5%'), DEFAULT_KEYWORDS).score, 3);
+  assert.equal(classify(fwd('币圈快讯', '#ETH 做多 止盈 3800 更多请移步VIP'), DEFAULT_KEYWORDS).permanentBan, true);
+  // Ordinary forwards and member chat are untouched.
+  for (const [title, caption] of [['VPS 补货通知', 'DMIT 补货 30% off'], ['科技新闻', '新手机发布'], ['二手交易VIP', '出闲置']]) assert.equal(classify(fwd(title, caption), DEFAULT_KEYWORDS).permanentBan, false, title);
+  const chat = msg('#BTC 今天合约做多赚了 12%，大家怎么看'); chat.photo = [{ file_unique_id: 'x' }];
+  assert.equal(classify(chat, DEFAULT_KEYWORDS).permanentBan, false);
+  // The same screenshot copied instead of forwarded, read by OCR.
+  const copied = msg('#SNDK 12%-14%\nBitget VIP SNDKUSDT 永續 做多 30x 380.64% 更多操作策略請移步至VIP'); copied.photo = [{ file_unique_id: 'y' }];
+  assert.equal(classify(copied, DEFAULT_KEYWORDS).permanentBan, true);
+  assert.equal(normalize('幣圈合約交易軌跡'), '币圈合约交易轨迹');
+});

@@ -1,4 +1,6 @@
 import { DmitRelayMethods } from './state/dmit-relay.js';
+import { WaffoMethods } from './state/waffo.js';
+import { waffoRecipient, waffoBotToken } from './waffo.js';
 import { BroadcastMethods } from './state/broadcast.js';
 import { DurableObject } from 'cloudflare:workers';
 import { telegram } from './telegram.js';
@@ -48,6 +50,8 @@ export class GuardState extends DurableObject {
     if (!columns.includes('via')) this.sql.exec("ALTER TABLE verifications ADD COLUMN via TEXT NOT NULL DEFAULT 'group'");
     if (!columns.includes('prompt_chat_id')) this.sql.exec('ALTER TABLE verifications ADD COLUMN prompt_chat_id INTEGER');
     for (const chat of LEGACY_CHATS) {
+      // A seeded group the bot has since left must not come back on restart.
+      if (this.read('unregistered:' + chat.id)) continue;
       this.sql.exec('INSERT OR IGNORE INTO chats VALUES (?,?)', chat.id, chat.title);
     }
     for (const id of REMOVED_CHATS) {
@@ -92,18 +96,6 @@ export class GuardState extends DurableObject {
         doubles: [1],
       });
     } catch { /* Metrics must never interrupt moderation. */ }
-  }
-  async alertOwner(kind, text) {
-    const key = `owner-alert:${String(kind).slice(0, 60)}`;
-    if (this.read(key, false)) return false;
-    const recipients = this.owners().filter(id => /^\d{1,16}$/.test(id));
-    if (!recipients.length) return false;
-    const tg = telegram(this.env.BOT_TOKEN);
-    const message = `⚠️ 机器人运行提醒\n\n${String(text).slice(0, 3400)}\n\n同类提醒 30 分钟内不会重复发送。`;
-    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: Number(chatId), text: message, disable_web_page_preview: true })));
-    if(sent.some(item=>item.status==='fulfilled'))this.write(key,true,30*60000);
-    this.log({ action: 'owner-alert', outcome: sent.some(item => item.status === 'fulfilled') ? 'success' : 'failed', text: String(kind).slice(0, 100), recipients: recipients.length });
-    return sent.some(item => item.status === 'fulfilled');
   }
   async schedule(when) {
     const current = await this.ctx.storage.getAlarm();
@@ -208,6 +200,13 @@ export class GuardState extends DurableObject {
     }
   }
   async runJob(job) {
+    if(job.id.startsWith('waffo:')) {
+      const plan=job.plan?JSON.parse(job.plan):null;
+      if(this.env.WAFFO_NOTIFY_ENABLED!=='true'||!waffoRecipient(this.env)||plan?.ops?.some(op=>String(op.params?.chat_id)!==waffoRecipient(this.env))){
+        this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
+        this.log({action:'waffo-payment-notification',outcome:'cancelled'});return;
+      }
+    }
     const stopped=(job.id.startsWith('dmit-relay:')&&this.env.DMIT_RELAY_ENABLED!=='true')||(job.id.startsWith('dmit-notify:')&&this.env.DMIT_MONITOR_ENABLED!=='true');
     if(stopped){this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);this.log({action:'dmit-delivery-cancelled',updateId:job.id,outcome:'cancelled',reasons:['用户已关闭补货监控与推送']});return;}
 
@@ -235,7 +234,7 @@ export class GuardState extends DurableObject {
         plan.ops.unshift({local:'case-register',body:{...plan.entry,id:caseId}});plan.ops.push({local:'federation-dispatch',caseId});
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);
       }
-      const tg = telegram(this.env.BOT_TOKEN);
+      const tg = telegram(job.id.startsWith('waffo:') ? waffoBotToken(this.env) : this.env.BOT_TOKEN);
       let deferredDeleteError;
       if(job.id.startsWith('federation:') && await this.env.GUARD_STATE.getByName('admin').caseReversed(plan.entry.caseId)){
         this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
@@ -399,7 +398,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods, WaffoMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);
