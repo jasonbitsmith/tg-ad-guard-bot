@@ -44,6 +44,15 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       async backupTest(){try{return {backup:await this.exportBackup()};}catch(error){return {error:error.message};}}
       async replaceBackupConfig(chat,expected){if(this.read('test:restore-fail')){this.remove('test:restore-fail');throw Error('模拟恢复失败');}return super.replaceBackupConfig(chat,expected);}
       seedLateRetryTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('late-retry','{}','pending',?,?)",Date.now()-10000,Date.now()-600000);}
+      seedVerificationFailureTest(userId,error='declineChatJoinRequest: network timeout or connection failure',action='join-request-declined',rounds=0){
+        const expires=Date.now()-1200000,id='verification-timeout:'+userId+':'+expires,chat=this.read('chat');
+        this.sql.exec("INSERT OR REPLACE INTO verifications(user_id,expires,mode,via) VALUES (?,?,?,?)",String(userId),expires,'button','request');
+        const plan={entry:{action,chatId:chat.id},ops:[{method:action==='join-request-declined'?'declineChatJoinRequest':'banChatMember',params:{chat_id:Number(chat.id),user_id:Number(userId)},error},{local:'clearVerification',userId:String(userId),expires}]};
+        this.sql.exec("INSERT OR REPLACE INTO jobs(id,payload,plan,status,attempts,due,created) VALUES (?,?,?,'failed',6,?,?)",id,'{}',JSON.stringify(plan),Date.now()-1000000,Date.now()-1200000);
+        if(rounds)this.write('verification:network-recovery:'+id,{rounds,next:0},86400000);
+        return id;
+      }
+      jobRecordTest(id){return this.sql.exec('SELECT * FROM jobs WHERE id=?',id).toArray()[0];}
       seedFutureJobTest(){this.sql.exec("INSERT INTO jobs(id,payload,status,due,created) VALUES ('future','{}','pending',?,?)",Date.now()+3600000,Date.now()-3600000);}
       expireVerificationTest(userId){this.sql.exec('UPDATE verifications SET expires=? WHERE user_id=?',Date.now()-1000,String(userId));return this.verification(userId);}
       async inspectTest(force=false) {
@@ -85,6 +94,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       if (failure) { if(!Array.isArray(configured)||!configured.length)failures.delete(key); return MFResponse.json({ ok: false, ...failure }, { status: failure.error_code }); }
       let result = true;
       if (method === 'getMe') result = { id: 555, username: 'GuardBot', is_bot: true };
+      if(method==='getChatMember' && params.chat_id===-800 && params.user_id!==555)return MFResponse.json({ok:true,result:{status:params.user_id===8002?'member':'left'}});
       if (method === 'getChatMemberCount') result = 1285;
       if (method === 'getWebhookInfo') result = webhookState;
       if (method === 'getChatMember') result = { status: params.user_id === 11 ? 'administrator' : params.user_id === 12 ? 'restricted' : params.user_id===88?'kicked':'member', can_restrict_members: false };
@@ -475,6 +485,28 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.ok(actions(-171).some(x=>x.method==='banChatMember'&&x.params.user_id===82));
     await tick(-171,true);assert.equal(await group.verification(81),undefined);
     assert.equal(calls.filter(x=>x.method==='banChatMember'&&x.params.chat_id===-171&&x.params.user_id===81).length,2);
+  });
+  await t.test('网络恢复只重排仍有效的申请拒绝；已入群、已手动通过、权限失败、封禁和超出次数不重放',async()=>{
+    const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),g=ns.getByName('chat:-800');
+    await g.fakeQuietClockTest();await g.editQuiet({id:-800,title:'恢复任务测试'},false,'00:00','08:00',false,0);
+    const ids=[];
+    ids.push(await g.seedVerificationFailureTest(8001));
+    ids.push(await g.seedVerificationFailureTest(8002));
+    ids.push(await g.seedVerificationFailureTest(8003,'not enough rights'));
+    ids.push(await g.seedVerificationFailureTest(8004,undefined,'verification-timeout-ban'));
+    ids.push(await g.seedVerificationFailureTest(8005,undefined,'join-request-declined',2));
+    ids.push(await g.seedVerificationFailureTest(8006));await g.clearVerification(8006);
+    const start=calls.length;
+    const result=await g.recoverVerificationFailures();assert.equal(result.queued,1);
+    assert.equal((await g.jobRecordTest(ids[0])).status,'pending');
+    assert.equal((await g.jobRecordTest(ids[1])).status,'done');assert.equal(await g.verification(8002),undefined);
+    for(const id of ids.slice(2,5))assert.equal((await g.jobRecordTest(id)).status,'failed');
+    assert.equal((await g.jobRecordTest(ids[5])).status,'done');
+    assert.equal((await g.recoverVerificationFailures()).queued,0);
+    assert.ok(!calls.slice(start).some(x=>['banChatMember','declineChatJoinRequest'].includes(x.method)),'恢复步骤只读核对并排队，不直接处罚');
+    const row=await g.jobRecordTest(ids[0]);await g.runJob(row);
+    assert.equal(await g.verification(8001),undefined);assert.equal((await g.jobRecordTest(ids[0])).status,'done');
+    assert.equal(calls.slice(start).filter(x=>x.method==='declineChatJoinRequest'&&x.params.user_id===8001).length,1);
   });
   await t.test('频道验证期间不能发言；按钮答题限 3 次；超时可选择移出', async () => {
     const ns=await mf.getDurableObjectNamespace('GUARD_STATE'),channelGroup=ns.getByName('chat:-501');

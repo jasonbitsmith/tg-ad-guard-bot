@@ -95,18 +95,6 @@ export class GuardState extends DurableObject {
       });
     } catch { /* Metrics must never interrupt moderation. */ }
   }
-  async alertOwner(kind, text) {
-    const key = `owner-alert:${String(kind).slice(0, 60)}`;
-    if (this.read(key, false)) return false;
-    const recipients = this.owners().filter(id => /^\d{1,16}$/.test(id));
-    if (!recipients.length) return false;
-    const tg = telegram(this.env.BOT_TOKEN);
-    const message = `⚠️ 机器人运行提醒\n\n${String(text).slice(0, 3400)}\n\n同类提醒 30 分钟内不会重复发送。`;
-    const sent = await Promise.allSettled(recipients.map(chatId => tg('sendMessage', { chat_id: Number(chatId), text: message, disable_web_page_preview: true })));
-    if(sent.some(item=>item.status==='fulfilled'))this.write(key,true,30*60000);
-    this.log({ action: 'owner-alert', outcome: sent.some(item => item.status === 'fulfilled') ? 'success' : 'failed', text: String(kind).slice(0, 100), recipients: recipients.length });
-    return sent.some(item => item.status === 'fulfilled');
-  }
   async schedule(when) {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > when) await this.ctx.storage.setAlarm(when);
