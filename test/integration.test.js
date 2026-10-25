@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse } from 'miniflare';
-import { broadcastDisplayLabel, broadcastPickerLabel } from '../src/state/broadcast.js';
+import { broadcastDisplayLabel, broadcastPickerLabel, broadcastButtonName } from '../src/state/broadcast.js';
 
 const BROADCAST_CHAT_TITLES = {
   '@jason_vps_deal': 'VPS 补货雷达',
@@ -1477,6 +1477,8 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
 
   const broadcastHandles=['@jason_vps_deal','@wpzyz','@JasonSIMLab','@jason_Telegramx','@Jason_WiseX','@Jason_Prompt'];
   const broadcastLabels=broadcastHandles.map(handle => broadcastDisplayLabel(BROADCAST_CHAT_TITLES[handle.toLowerCase()], handle));
+  const broadcastNames=broadcastHandles.map(handle => broadcastButtonName(BROADCAST_CHAT_TITLES[handle.toLowerCase()], handle));
+  const confirmButton=picker=>picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text.startsWith('✅ 确认发送')).callback_data;
   const broadcastTargets=['@jason_vps_deal','@wpzyz','@jasonsimlab','@jason_telegramx','@jason_wisex','@jason_prompt'];
   const adminDo=async()=> (await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
   const tickAdmin=async(force=false)=>(await adminDo()).inspectTest(force);
@@ -1492,7 +1494,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const start=calls.length;
     await armSend(dm(99,{text:'新公告 https://example.com/a',entities:[{type:'url',offset:4,length:21}]}));
     const prompt=promptSince(start);
-    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,🔔 静音发送：关,📌 发完置顶：关,⏰ 定时发送,取消');
+    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,🔔 静音：关,📌 置顶：关,⏰ 定时发送,取消');
     for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
     assert.match(prompt.params.text,/测试模式/);assert.equal(prompt.params.text.includes('目标：5615131413'),false);
     for(const extra of [{photo:[{file_id:'photo'}]},{video:{file_id:'video'}},{document:{file_id:'doc',file_name:'a.pdf'}}]){
@@ -1547,14 +1549,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await press(button(prompt,'选择目标'));
     const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
     const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
-    assert.deepEqual(toggles.map(item=>item.text),broadcastLabels.map(label=>'☐ '+label));
-    assert.ok(toggles.every(item=>item.text.length<=64&&item.text.length>=1));
-    assert.equal(toggles[0].text,'☐ VPS 补货雷达（@jason_vps_deal）');
-    assert.equal(toggles.at(-1).text.length,64);
-    assert.ok(toggles.at(-1).text.endsWith('…（@Jason_Prompt）'));
-    for(const toggle of toggles)assert.ok(prompt.params.text.includes(toggle.text.slice(2)),toggle.text);
+    assert.deepEqual(toggles.map(item=>item.text),broadcastNames.map(name=>'☐ '+name));
+    assert.equal(toggles[0].text,'☐ VPS 补货雷达');
+    assert.ok(toggles.every(item=>item.text.length<=24));
+    assert.ok(toggles.at(-1).text.endsWith('…'));
+    for(const label of broadcastLabels)assert.ok(picker.params.text.includes(label),label);
+    assert.deepEqual(picker.params.reply_markup.inline_keyboard[0].slice(0,2).map(item=>item.text),['全选','全不选']);
     await press(toggles[1].callback_data);await press(toggles[3].callback_data);
-    await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+    await press(confirmButton(picker));
     await tickAdmin();
     const copies=calls.slice(start).filter(call=>call.method==='copyMessage'||call.method==='copyMessages');
     assert.deepEqual(copies.map(call=>call.params.chat_id),[5615131413]);
@@ -1579,7 +1581,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
     const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
     await press(toggles[0].callback_data);await press(toggles[2].callback_data);
-    await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+    await press(confirmButton(picker));
     await tickAdmin();
     const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
     assert.deepEqual(copies.map(call=>call.params.chat_id),[broadcastTargets[0],broadcastTargets[2]]);
@@ -1644,15 +1646,14 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
       const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:')).map(item=>item.text);
       assert.deepEqual(toggles,[
-        '☐ '+broadcastLabels[0],
-        '☐ ⚠️ '+broadcastLabels[1],
-        '☐ '+broadcastLabels[2],
-        '☐ '+broadcastLabels[3],
-        '☐ '+broadcastLabels[4],
-        '☐ ⚠️ '+broadcastPickerLabel(broadcastLabels[5],true),
+        '☐ '+broadcastNames[0],
+        '☐ ⚠️ '+broadcastNames[1],
+        '☐ '+broadcastNames[2],
+        '☐ '+broadcastNames[3],
+        '☐ '+broadcastNames[4],
+        '☐ ⚠️ '+broadcastNames[5],
       ]);
       assert.ok(toggles.every(text=>text.length<=64&&text.length>=1));
-      assert.ok(toggles.at(-1).endsWith('（@Jason_Prompt）'));
     }finally{failures.delete('getChatMember:@wpzyz');failures.delete('getChatMember:@jason_prompt');}
   });
 
@@ -1751,7 +1752,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
       assert.equal(toggles[1].text,'☐ ⚠️ @wpzyz');
       assert.ok(toggles.every(item=>item.text.length<=64));
       await press(toggles[1].callback_data);
-      await press(picker.params.reply_markup.inline_keyboard.flat().find(item=>item.text==='确认发送').callback_data);
+      await press(confirmButton(picker));
       await tickAdmin();
       const report=calls.slice(failStart).find(call=>call.method==='sendMessage'&&String(call.params.text||'').startsWith('广播结果'));
       assert.ok(report.params.text.includes('选择的目标：@wpzyz'));
@@ -1804,9 +1805,9 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const start=calls.length;
     await armSend(dm(99,{text:'静音置顶 https://example.com/pin'}));
     const prompt=promptSince(start);
-    await press(button(prompt,'🔔 静音发送：关'));await press(button(prompt,'📌 发完置顶：关'));
+    await press(button(prompt,'🔔 静音：关'));await press(button(prompt,'📌 置顶：关'));
     const markup=calls.slice(start).findLast(call=>call.method==='editMessageReplyMarkup').params.reply_markup.inline_keyboard.flat().map(item=>item.text);
-    assert.ok(markup.includes('🔕 静音发送：开')&&markup.includes('📌 发完置顶：开'));
+    assert.ok(markup.includes('🔕 静音：开')&&markup.includes('📌 置顶：开'));
     await press(button(prompt,'发送到全部目标'));
     await tickAdmin();
     const copies=calls.slice(start).filter(call=>call.method==='copyMessage');
@@ -1888,10 +1889,10 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     await press(button(prompt,'选择目标'));
     const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
     const toggles=picker.params.reply_markup.inline_keyboard.flat().filter(item=>String(item.callback_data).startsWith('bc:t:'));
-    await press(button(picker,'⏰ 定时发送所选'));
+    await press(button(picker,'⏰ 定时发送'));
     assert.match(calls.findLast(call=>call.method==='answerCallbackQuery').params.text,/至少一个/);
     await press(toggles[0].callback_data);
-    await press(button(picker,'⏰ 定时发送所选'));
+    await press(button(picker,'⏰ 定时发送'));
     const screen=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('什么时候发'));
     assert.match(screen.params.text,/所选的 1 个目标/);
     await press(button(screen,'自己输入时间'));
@@ -1903,6 +1904,25 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal(calls.slice(start).some(call=>call.method==='copyMessage'),false);
     const scheduled=calls.slice(start).findLast(call=>call.method==='editMessageText'&&String(call.params.text).startsWith('⏰ 已定好'));
     await press(button(scheduled,'取消定时'));
+  });
+
+  await t.test('选择目标页可以全选和全不选',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await armSend(dm(99,{text:'全选发送 https://example.com/all-pick'}));
+    await press(button(promptSince(start),'选择目标'));
+    const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    await press(button(picker,'全选'));
+    const all=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    assert.match(all.params.text,/已选 6\/6/);assert.ok(all.params.reply_markup.inline_keyboard.flat().some(item=>item.text==='✅ 确认发送（6）'));
+    await press(button(picker,'全不选'));
+    const none=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    assert.match(none.params.text,/已选 0\/6/);
+    await press(button(picker,'全选'));
+    await press(confirmButton(picker));
+    await tickAdmin();
+    assert.deepEqual(calls.slice(start).filter(call=>call.method==='copyMessage').map(call=>call.params.chat_id),broadcastTargets);
+    await admin.setBroadcastModeTest('true');
   });
 
   await t.test('后台可以改群发目标，也能恢复默认',async()=>{
@@ -1917,6 +1937,66 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     assert.equal((await admin.broadcastSettings()).targets.length,2);
     const reset=await admin.saveBroadcastTargets('',true);
     assert.equal(reset.custom,false);assert.deepEqual(reset.targets.map(item=>item.handle),['@jason_vps_deal','@wpzyz','@JasonSIMLab','@jason_Telegramx','@Jason_WiseX','@Jason_Prompt']);
+  });
+
+  await t.test('后台目标可以粘贴 t.me 链接，分组能一键选上整组',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const saved=await admin.saveBroadcastTargets('@https://t.me/jason_vps_deal\nhttps://t.me/wpzyz/\nt.me/JasonSIMLab\njason_Telegramx\n@Jason_WiseX\n@Jason_Prompt','',undefined);
+    assert.deepEqual(saved.targets.map(item=>item.handle),broadcastHandles);
+    await assert.rejects(async()=>admin.saveBroadcastTargets('@Jason_WiseX\nhttps://t.me/+abcdefgh'));
+    await assert.rejects(async()=>admin.saveBroadcastTargets(broadcastHandles.join('\n'),false,'VPS：@jason_vps_deal @nobody_here'));
+    await assert.rejects(async()=>admin.saveBroadcastTargets(broadcastHandles.join('\n'),false,'没有冒号'));
+    const grouped=await admin.saveBroadcastTargets(broadcastHandles.join('\n'),false,'VPS：https://t.me/jason_vps_deal、@wpzyz\n手机号：@JasonSIMLab');
+    assert.deepEqual(grouped.groups,[{name:'VPS',members:['@jason_vps_deal','@wpzyz']},{name:'手机号',members:['@JasonSIMLab']}]);
+    assert.deepEqual((await admin.saveBroadcastTargets(broadcastHandles.join('\n'))).groups.map(group=>group.name),['VPS','手机号']);
+    const start=calls.length;
+    await armSend(dm(99,{text:'分组发送 https://example.com/group'}));
+    await press(button(promptSince(start),'选择目标'));
+    const picker=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    await press(button(picker,'📁 VPS'));
+    const picked=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    assert.match(picked.params.text,/已选 2\/6/);assert.ok(picked.params.reply_markup.inline_keyboard.flat().some(item=>item.text==='📁 VPS ✓'));
+    await press(button(picker,'📁 手机号'));await press(button(picker,'📁 VPS'));
+    const swapped=calls.slice(start).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    assert.match(swapped.params.text,/已选 1\/6/);
+    await press(button(picker,'📁 VPS'));
+    await press(confirmButton(picker));
+    await tickAdmin();
+    assert.deepEqual(calls.slice(start).filter(call=>call.method==='copyMessage').map(call=>call.params.chat_id),['@jason_vps_deal','@wpzyz','@jasonsimlab']);
+
+    const again=calls.length;
+    await armSend(dm(99,{text:'再发一次 https://example.com/again'}));
+    await press(button(promptSince(again),'选择目标'));
+    const next=calls.slice(again).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    await press(button(next,'↩️ 上次（3）'));
+    const restored=calls.slice(again).findLast(call=>call.method==='editMessageText'&&JSON.stringify(call.params.reply_markup||{}).includes('bc:t:'));
+    assert.match(restored.params.text,/已选 3\/6/);
+    await press(button(next,'取消'));
+    await admin.saveBroadcastTargets(broadcastHandles.join('\n'),false,'');
+    assert.deepEqual((await admin.broadcastSettings()).groups,[]);
+    await admin.setBroadcastModeTest('true');
+  });
+
+  await t.test('群发记录列出最近的群发，可以撤回',async()=>{
+    const admin=await adminDo();await admin.setBroadcastModeTest('false');
+    const start=calls.length;
+    await armSend(dm(99,{text:'记录里的群发 https://example.com/history'}));
+    await press(button(promptSince(start),'发送到全部目标'));
+    await tickAdmin();
+    await send(dm(99,{text:'群发记录'}));
+    const list=calls.slice(start).findLast(call=>call.method==='sendMessage'&&String(call.params.text).startsWith('最近的群发'));
+    assert.ok(list);
+    assert.match(list.params.text,/1\. 今天 \d\d:\d\d　「记录里的群发 https:\/\/example\.…」/);
+    assert.match(list.params.text,/发到 6 个目标，全部成功/);
+    assert.deepEqual(list.params.reply_markup.inline_keyboard[0].map(item=>item.text),['1. ✏️ 修改文字','1. 撤回']);
+    await press(button(list,'1. 撤回'));
+    await tickAdmin();
+    assert.equal(calls.slice(start).filter(call=>call.method==='deleteMessage').length,6);
+    await send(dm(99,{text:'/群发记录'}));
+    const after=calls.slice(start).findLast(call=>call.method==='sendMessage'&&String(call.params.text).startsWith('最近的群发'));
+    assert.match(after.params.text,/1\. .*\n　 已撤回（原本发到 6 个目标）/);
+    assert.equal(after.params.reply_markup?.inline_keyboard?.[0]?.[0]?.text?.startsWith('1.'),false);
+    await admin.setBroadcastModeTest('true');
   });
 
 });

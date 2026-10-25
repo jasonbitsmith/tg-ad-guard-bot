@@ -8,20 +8,14 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.36.0';
+export const VERSION = '2.37.0';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 只有你本人拉机器人进群才生效；别人拉进去会自动退出并通知你',
-  '• 机器人还不认识的新消息类型：刚入群的人发的先删除，同时私信你看看',
-  '• 机器人会自己学：你在私信里点「删除并封禁」或「不是广告」，这条消息就记下来；以后换几个字的同类广告会被自动认出',
-  '• 同样的内容 30 分钟内出现在 3 个群会直接封；出现在 2 个群会私信你确认',
-  '• 机器人已不在的群会自动从后台移除，不再一直报权限问题；频道私信不再提示缺封禁权限',
-  '• 后台「处罚执行」里失败的任务会写清原因和建议，可以重试或忽略',
-  '• 添加关键词前会先拿你确认过的正常消息试一遍，会误伤时先提醒你',
-  '• 后台显示收款提醒最近一次是否发到你的 Telegram',
-  '• 每周备份后自动检查备份能不能用来恢复，有问题会通知你',
-  '• 以后每次更新都会这样私信你更新内容',
+  '• 群发选目标改版：按钮用简短的频道名，可以一键全选 / 全不选，确认时显示发几个',
+  '• 群发可以按分组选目标（在后台写「组名：@频道 @频道」），也能一键选上次用过的目标',
+  '• 后台填群发目标可以直接粘贴 t.me 链接',
+  '• 私聊发「群发记录」能看最近 10 次群发的结果，还能从那里修改或撤回',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
@@ -181,7 +175,7 @@ async function admin(request, env, url) {
 async function mutateAdmin(request,env,url,state,path){
   if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
   if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
-  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true));}
+  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true,body.groups));}
   if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
   if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
