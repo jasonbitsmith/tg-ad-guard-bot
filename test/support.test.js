@@ -14,7 +14,7 @@ test('双向客服：鉴权、多用户对应、去重、媒体、重试、屏�
  const wrapper=`import worker,{GuardState as Base} from './index.js';
  export class GuardState extends Base {
   async alarm(){}
-  async drainSupportTest(){for(const job of this.sql.exec("SELECT * FROM jobs WHERE status='pending' ORDER BY rowid").toArray())await this.runJob(job);return this.sql.exec('SELECT id,status,attempts,plan FROM jobs ORDER BY rowid').toArray();}
+  async drainSupportTest(){for(const job of this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'support:later:remind:%' ORDER BY rowid").toArray())await this.runJob(job);return this.sql.exec('SELECT id,status,attempts,plan FROM jobs ORDER BY rowid').toArray();}
   supportJobsTest(){return this.sql.exec('SELECT id,status,plan FROM jobs ORDER BY rowid').toArray();}
   mapTest(id){return this.read('support:map:99:'+id);}
  }
