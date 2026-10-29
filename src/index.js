@@ -9,12 +9,17 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.37.1';
+export const VERSION = '2.38.0';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 客服咨询新增“查看用户”按钮，可直接打开对方资料',
-  '• 对方隐私设置不允许显示用户按钮时，仍正常转交咨询，不阻塞客服消息',
+  '• 客服机器人：同一位客户连着发消息，只在第一条前面发一次说明卡，不再刷屏',
+  '• 客服机器人：客户点开始后可以看到常见问题按钮，点一下自动回答，不打扰你',
+  '• 客服机器人：休息时间（默认北京时间 23:00–09:00）客户发消息会自动告诉他你上线后回复',
+  '• 客服机器人：客户等你超过 2 小时没回会提醒你；发 /pending 能看到所有在等的客户',
+  '• 客服机器人：回复客户时发 /t 名字 就能发出常用回复；/msg 用户ID 内容 可以主动发消息',
+  '• 客服机器人：陌生人一上来发明显广告会被自动屏蔽，只给你发一行通知；相册合成一组转给你',
+  '• 以上设置都在管理后台「客服机器人」里改',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
@@ -115,6 +120,7 @@ async function admin(request, env, url) {
     if(path==='verification/members')return json(await state.findVerificationMembers(url.searchParams.get('query')||''));
     if (path === 'links') return json(await state.listLinks());
     if (path === 'broadcast') return json(await state.broadcastSettings());
+    if (path === 'support') return json(await env.GUARD_STATE.getByName('support:inbox').supportAdmin());
     if (path === 'chats') return json({ chats: await state.listChats() });
     if (path === 'samples') return json({ samples: await state.listSamples() });
     if (path === 'federation') return json({ chats: await state.federation() });
@@ -174,6 +180,7 @@ async function admin(request, env, url) {
 async function mutateAdmin(request,env,url,state,path){
   if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
   if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
+  if(path==='support/settings'){const body=await readJson(request,65536);return json(await env.GUARD_STATE.getByName('support:inbox').saveSupportSettings(body));}
   if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true));}
   if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
   if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
