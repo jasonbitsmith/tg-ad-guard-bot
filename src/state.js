@@ -1,3 +1,4 @@
+import { SupportMethods } from './state/support.js';
 import { DmitRelayMethods } from './state/dmit-relay.js';
 import { WaffoMethods } from './state/waffo.js';
 import { waffoRecipient, waffoBotToken } from './waffo.js';
@@ -207,6 +208,9 @@ export class GuardState extends DurableObject {
         this.log({action:'waffo-payment-notification',outcome:'cancelled'});return;
       }
     }
+    if(job.id.startsWith('support:')&&!this.supportJobAllowed(job.plan?JSON.parse(job.plan):null)){
+      this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);return;
+    }
     const stopped=(job.id.startsWith('dmit-relay:')&&this.env.DMIT_RELAY_ENABLED!=='true')||(job.id.startsWith('dmit-notify:')&&this.env.DMIT_MONITOR_ENABLED!=='true');
     if(stopped){this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);this.log({action:'dmit-delivery-cancelled',updateId:job.id,outcome:'cancelled',reasons:['用户已关闭补货监控与推送']});return;}
 
@@ -234,13 +238,14 @@ export class GuardState extends DurableObject {
         plan.ops.unshift({local:'case-register',body:{...plan.entry,id:caseId}});plan.ops.push({local:'federation-dispatch',caseId});
         this.sql.exec('UPDATE jobs SET plan=? WHERE id=?',JSON.stringify(plan),job.id);
       }
-      const tg = telegram(job.id.startsWith('waffo:') ? waffoBotToken(this.env) : this.env.BOT_TOKEN);
+      const tg = telegram(job.id.startsWith('support:') ? this.env.SUPPORT_BOT_TOKEN : job.id.startsWith('waffo:') ? waffoBotToken(this.env) : this.env.BOT_TOKEN);
       let deferredDeleteError;
       if(job.id.startsWith('federation:') && await this.env.GUARD_STATE.getByName('admin').caseReversed(plan.entry.caseId)){
         this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);
         await this.env.GUARD_STATE.getByName('admin').caseStatus(plan.entry.caseId,plan.entry.chatId,{status:'cancelled'});return;
       }
       for (const op of plan.ops) {
+        if(job.id.startsWith('support:')&&!this.supportJobAllowed(plan)){this.sql.exec("UPDATE jobs SET status='done',payload='{}',plan=NULL WHERE id=?",job.id);return;}
         if (op.done) continue;
         activeOp=op;
         if(plan.recovery && JSON.stringify(this.memberBan(plan.recovery.userId))!==JSON.stringify(plan.recovery.ban)){throw Object.assign(Error('成员已有新的处罚，验证解封已停止，请重新核对'),{retryable:false});}
@@ -253,6 +258,7 @@ export class GuardState extends DurableObject {
         } else if(op.local==='case-unban'){
           if(this.read(`ban-owner:${op.userId}`)===op.caseId){await tg('unbanChatMember',{chat_id:Number(op.chatId),user_id:Number(op.userId),only_if_banned:true});this.remove(`ban-owner:${op.userId}`);this.write(`member-ban:${op.userId}`,{action:'unbanned',jobId:job.id});this.allowMember(op.userId);op.undoOutcome='success';}
           else {op.skipped='没有本次封禁的所有权，保留其他封禁';op.undoOutcome='skipped';}
+        } else if(op.local==='support-map'){this.rememberSupportMessages(plan);
         } else if(op.local==='dmit-relay-delivered'){this.markDmitRelayDelivered(op,plan.ops.find(x=>x.method==='copyMessage'||x.method==='sendMessage')?.result);
         } else if(op.local==='broadcast-copied'){await this.broadcastCopied(op,plan);
         } else if(op.local==='broadcast-edit-report'){await this.broadcastEditReport(op,plan);
@@ -346,11 +352,12 @@ export class GuardState extends DurableObject {
       this.log({ ...(plan?.entry || {}), chatId: plan?.entry?.chatId || msg?.chat?.id, userId: plan?.entry?.userId || msg?.from?.id, action: plan?.entry?.action || '处理消息', outcome: retry ? 'retrying' : 'failed', error: String(error.message || 'unknown error').slice(0, 400), updateId: job.id, attempts, operationSteps:operationSteps(plan?.ops,retry?'pending':'failed'), steps: plan?.ops.map(x => ({ method: x.method || x.local, done: !!x.done, skipped:x.skipped, undoOutcome:x.undoOutcome, doneAt:x.doneAt })) || [] });
       // Permanent failures remain visible without retaining full incoming messages indefinitely.
       if (!retry) {
+        if(job.id.startsWith('support:'))await this.alertOwner('support-delivery-failure','客服消息未送达\n方向：'+(plan?.entry?.action==='support-reply'?'回复客户':'接收咨询')+'\n任务：'+job.id+'\n原因：'+String(error.message||'未知错误').slice(0,220)+'\n请检查客服机器人是否被屏蔽，或原消息是否已删除。').catch(()=>{});
         if(job.id.startsWith('broadcast:'))await this.broadcastJobFailed(job,plan,error).catch(()=>{});
         else if(plan?.entry?.action==='dmit-channel-relay')await this.alertOwner('dmit-relay-send','补货同步到 '+plan.entry.channel+' 失败\n消息 '+plan.entry.messageId+'；原因：'+String(error.message).slice(0,160)+'\n请检查机器人是否拥有两个频道的相应权限。').catch(()=>{});
         this.sql.exec("UPDATE jobs SET payload='{}' WHERE id=?", job.id);
         if(plan?.entry?.noticeId)await this.env.GUARD_STATE.getByName('admin').noticeProgress(plan.entry.noticeId,'❌ 解封失败：'+String(error.message||'未知错误').slice(0,150)+'。请到群里手动解封，或检查机器人是否还有封禁权限。',true).catch(()=>{});
-        if(!job.id.startsWith('broadcast:')){
+        if(!job.id.startsWith('broadcast:')&&!job.id.startsWith('support:')){
           // Buttons in a private verification chat run in the group being joined.
           const alertChatId=String(plan?.entry?.chatId || (msg?.chat?.type==='private'?this.read('chat')?.id:msg?.chat?.id) || '');
           const alertChatTitle=(msg?.chat?.type==='private'?'':msg?.chat?.title) || plan?.entry?.chatTitle || (alertChatId===String(this.read('chat')?.id||'')?this.read('chat')?.title:'') || (alertChatId?((await this.env.GUARD_STATE.getByName('admin').listChats().catch(()=>[])).find(x=>String(x.id)===alertChatId)?.title||alertChatId):'');
@@ -398,7 +405,7 @@ export class GuardState extends DurableObject {
 
 // GuardState is split across src/state/*.js by feature. Copy each module's
 // methods onto the class so RPC callers and `this.method()` see one object.
-for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods, WaffoMethods]) {
+for (const mixin of [QuietMethods, RegistryMethods, FederationMethods, ReportsMethods, SamplesMethods, MonitorsMethods, VerificationMethods, ModerationMethods, SettingsMethods, BackupMethods, AuthMethods, ScreeningMethods, NoticesMethods, CommunityMethods, AppealMethods, ProfileMethods, OperationsMethods, LinksMethods, WelcomeMethods, DmitRelayMethods, BroadcastMethods, WaffoMethods, SupportMethods]) {
   for (const name of Object.getOwnPropertyNames(mixin.prototype)) {
     if (name === 'constructor') continue;
     if (Object.hasOwn(GuardState.prototype, name)) throw new Error('Duplicate GuardState method: ' + name);

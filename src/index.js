@@ -1,3 +1,4 @@
+import { supportWebhook } from './support.js';
 import { waffoWebhook } from './waffo.js';
 import { adminPwaResponse } from './admin-pwa.js';
 import { diffValues } from './operations.js';
@@ -8,12 +9,12 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.36.1';
+export const VERSION = '2.37.0';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 修复漏拦：「388全套--有工作室」这类带价格的色情服务广告，现在会直接删除并封号',
-  '• 普通聊天里提到「全套」「工作室」不受影响（比如“全套配置多少钱”）',
+  '• 新增独立客服机器人接入：客户咨询转到你的私聊，回复对应消息即可回给客户',
+  '• 支持文字、图片、语音和文件；加入防刷屏、消息对应校验与屏蔽骚扰功能',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
@@ -274,6 +275,7 @@ async function mutateAdmin(request,env,url,state,path){
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/support/webhook') return supportWebhook(request, env);
     if (url.pathname === '/webhooks/waffo') return waffoWebhook(request, env);
     if (url.pathname.startsWith('/bookscape/api/')) {
       if (!env.BOOKSCAPE_PUBLISH_KEY || env.BOOKSCAPE_PUBLISH_KEY.length < 32) return json({ error: '发布入口未启用' }, 503);
