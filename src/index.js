@@ -8,20 +8,12 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.36.0';
+export const VERSION = '2.36.1';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 只有你本人拉机器人进群才生效；别人拉进去会自动退出并通知你',
-  '• 机器人还不认识的新消息类型：刚入群的人发的先删除，同时私信你看看',
-  '• 机器人会自己学：你在私信里点「删除并封禁」或「不是广告」，这条消息就记下来；以后换几个字的同类广告会被自动认出',
-  '• 同样的内容 30 分钟内出现在 3 个群会直接封；出现在 2 个群会私信你确认',
-  '• 机器人已不在的群会自动从后台移除，不再一直报权限问题；频道私信不再提示缺封禁权限',
-  '• 后台「处罚执行」里失败的任务会写清原因和建议，可以重试或忽略',
-  '• 添加关键词前会先拿你确认过的正常消息试一遍，会误伤时先提醒你',
-  '• 后台显示收款提醒最近一次是否发到你的 Telegram',
-  '• 每周备份后自动检查备份能不能用来恢复，有问题会通知你',
-  '• 以后每次更新都会这样私信你更新内容',
+  '• 修复漏拦：「388全套--有工作室」这类带价格的色情服务广告，现在会直接删除并封号',
+  '• 普通聊天里提到「全套」「工作室」不受影响（比如“全套配置多少钱”）',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;

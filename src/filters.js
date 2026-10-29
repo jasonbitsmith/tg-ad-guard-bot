@@ -164,8 +164,21 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   // can be normal talk, so a sale pitch, link or contact is also required.
   const counterfeitCash = /(?:假|仿真?|高仿)(?:币|钞|人民币|美金|美元)|钞.{0,12}(?:过验|验.?机|手感一致|手感一样|一比一|1比1)|(?:过验|验.?机).{0,12}钞/.test(compact);
   const sexService = /(?:嫖娼|漂唱|飘唱|嫖昌|漂娼|飘娼|约炮|玩妹|白嫖妹|楼凤)/.test(compact);
-  const illegalGoodsPitch = (counterfeitCash || sexService) && !caution
-    && (contact || invitation || hasLink || /(?:出货|日常出|出售|批发|包过|交流群|可漂|可嫖|专用)/.test(compact));
+  // Escort price menus ("388全套--有工作室"): a price right before a service
+  // package (全套/半套/快餐/包夜), plus a venue, a second package or a contact.
+  // "全套" alone is ordinary ("全套配置多少钱"), so the price and the venue or
+  // second package are both required. Explicit act names need only a venue or
+  // contact.
+  const escortVenue = /(?:工作室|上门|空降|楼凤|外围|小妹|妹子|学生妹|嫩妹|兼职妹|技师|会所)/.test(compact);
+  const escortPackages = compact.match(/(?:全套|半套|快餐|包夜|过夜|一条龙|大保健|莞式)/g) || [];
+  // A package followed by an object ("388全套设备") is a purchase, not a menu.
+  const pricedPackage = /\d{3,4}(?:元|块|r|rmb)?(?:全套|半套|快餐|包夜|过夜|一条龙|大保健|莞式)(?!设备|配置|装备|器材|工具|教程|课程|资料|方案|系统|软件|服务器|家具|家电|衣服|下来)/i.test(compact);
+  const explicitAct = /(?:莞式|口爆|毒龙|胸推|冰火|69式|无套|内射)/.test(compact);
+  const escortPitch = !caution && (
+    (pricedPackage && (escortVenue || new Set(escortPackages).size >= 2 || contact || hasLink))
+    || (explicitAct && (escortVenue || pricedPackage || contact || hasLink)));
+  const illegalGoodsPitch = escortPitch || ((counterfeitCash || sexService) && !caution
+    && (contact || invitation || hasLink || /(?:出货|日常出|出售|批发|包过|交流群|可漂|可嫖|专用)/.test(compact)));
   // Doxxing services ("查档秒出" / "一直在秒 从未停歇专业开盒" / "社工最全") sell personal
   // records. A doxxing term must sit next to a service word, or come with a
   // contact/link, or also appear in the sender's name. Victims asking for help
