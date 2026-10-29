@@ -27,6 +27,7 @@ test('双向客服：鉴权、多用户对应、去重、媒体、重试、屏�
   outboundService:async req=>{
    const method=new URL(req.url).pathname.split('/').at(-1),params=await req.json();
    calls.push({method,params,path:new URL(req.url).pathname});
+   if(method==='sendMessage'&&params.reply_markup?.inline_keyboard?.[0]?.[0]?.url==='tg://user?id=105')return MFResponse.json({ok:false,error_code:400,description:'Bad Request: BUTTON_USER_PRIVACY_RESTRICTED'},{status:400});
    if(method==='copyMessage'&&copyFail){copyFail=false;return MFResponse.json({ok:false,error_code:429,description:'limited',parameters:{retry_after:1}},{status:429});}
    return MFResponse.json({ok:true,result:{message_id:++seq}});
   },
@@ -42,11 +43,13 @@ test('双向客服：鉴权、多用户对应、去重、媒体、重试、屏�
  await send(msg(99,'/start'));await state.drainSupportTest();
  assert.ok(calls.some(x=>x.params.chat_id===99&&x.params.text?.includes('客服入口')));
  const a=msg(101,'问题一');await Promise.all([send(a),send(a)]);
- await send(msg(102,undefined,{photo:[{file_id:'image',width:1,height:1}]}));
+ await send(msg(102,undefined,{from:{id:102,first_name:'第二位',username:'CustomerTwo'},photo:[{file_id:'image',width:1,height:1}]}));
  await state.drainSupportTest();
  assert.equal(calls.filter(x=>x.method==='copyMessage'&&x.params.from_chat_id===101).length,1);
  const copyA=calls.find(x=>x.method==='copyMessage'&&x.params.from_chat_id===101);
  assert.ok(copyA);
+ assert.equal(calls.find(x=>x.params.text?.includes('用户 ID：101')).params.reply_markup.inline_keyboard[0][0].url,'tg://user?id=101');
+ assert.equal(calls.find(x=>x.params.text?.includes('用户 ID：102')).params.reply_markup.inline_keyboard[0][0].url,'https://t.me/CustomerTwo');
  const jobs=await state.supportJobsTest();
  // Done plans are pruned; obtain saved durable owner message maps by returned IDs.
  let mapA,mapB;
@@ -62,6 +65,13 @@ test('双向客服：鉴权、多用户对应、去重、媒体、重试、屏�
  copyFail=true;await send(msg(103,'限流后重试'));start=calls.length;
  let pending=await state.drainSupportTest();assert.ok(pending.some(x=>x.status==='pending'));
  await state.drainSupportTest();assert.equal(calls.slice(start).filter(x=>x.params.text?.includes('用户 ID：103')).length,1);
+ // Privacy rejects only the button; the plain header and content still arrive.
+ await send(msg(105,'隐私设置测试'));start=calls.length;await state.drainSupportTest();
+ const privacy=calls.slice(start).filter(x=>x.params.text?.includes('用户 ID：105'));
+ assert.equal(privacy.length,2);assert.ok(privacy[0].params.reply_markup);assert.equal(privacy[1].params.reply_markup,undefined);
+ assert.ok(calls.slice(start).some(x=>x.method==='copyMessage'&&x.params.from_chat_id===105));
+ let privacyMap;for(let mid=1001;mid<=seq;mid++){if((await state.mapTest(mid))?.userId==='105')privacyMap=mid;}assert.ok(privacyMap);
+ await send(msg(99,'隐私用户的回复',{reply_to_message:{message_id:privacyMap}}));start=calls.length;await state.drainSupportTest();assert.ok(calls.slice(start).some(x=>x.method==='copyMessage'&&x.params.chat_id===105));
  // Block a user after their message is queued; content is cancelled before send.
  await send(msg(101,'稍后处理'));await send(msg(99,'/block',{reply_to_message:{message_id:mapA}}));start=calls.length;await state.drainSupportTest();
  assert.ok(!calls.slice(start).some(x=>x.method==='copyMessage'&&x.params.from_chat_id===101));

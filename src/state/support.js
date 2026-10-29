@@ -47,11 +47,23 @@ export class SupportMethods {
     if(/^\/start(?:@\w+)?(?:\s|$)/i.test(text)||text==='/help')return add([say(user,'欢迎联系 Jason Select Support。\n请直接发送你的问题、订单号或截图，Jason 会通过本机器人回复。\n发送内容将转交给 Jason；请勿发送密码、登录验证码或银行卡完整信息。')]);
     if(!supportContent(msg))return add([say(user,'暂不支持该消息类型，请改发文字、图片、语音、视频或文件。')]);
     const header=say(owner,`📩 客服咨询\n用户：${clean([msg.from.first_name,msg.from.last_name].filter(Boolean).join(' '))||'未提供姓名'}${msg.from.username?' @'+clean(msg.from.username,32):''}\n用户 ID：${user}\n请「回复」本条或下面的消息，机器人会把回复发给这位用户。`);
+    const username=typeof msg.from.username==='string'&&/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(msg.from.username)?msg.from.username:null;
+    header.params.reply_markup={inline_keyboard:[[{text:'👤 查看用户',url:username?'https://t.me/'+username:'tg://user?id='+user}]]};
     header.supportIncoming=true;
     const content=copy(owner,msg);content.supportIncoming=true;
     const ops=[header,{local:'support-map'},content,{local:'support-map'}];
     if(!this.read('support:ack:'+user)){this.write('support:ack:'+user,true,60000);ops.push(say(user,'✅ 消息已转交给 Jason，请等待回复。'));}
     return add(ops);
+  }
+  async sendSupportHeader(tg,op){
+    try{return await tg('sendMessage',op.params);}
+    catch(error){
+      // Some accounts cannot be mentioned by ID because of Telegram privacy.
+      // Only a definite rejection of this user button permits a safe resend.
+      if(error.code!==400||!op.params.reply_markup||!/BUTTON_USER_PRIVACY_RESTRICTED|BUTTON_USER_INVALID|USER_ID_INVALID/i.test(error.message))throw error;
+      delete op.params.reply_markup;
+      return tg('sendMessage',op.params);
+    }
   }
   rememberSupportMessages(plan){
     for(const op of plan.ops){
