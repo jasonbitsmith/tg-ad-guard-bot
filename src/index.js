@@ -9,12 +9,12 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.37.0';
+export const VERSION = '2.37.1';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 新增独立客服机器人接入：客户咨询转到你的私聊，回复对应消息即可回给客户',
-  '• 支持文字、图片、语音和文件；加入防刷屏、消息对应校验与屏蔽骚扰功能',
+  '• 客服咨询新增“查看用户”按钮，可直接打开对方资料',
+  '• 对方隐私设置不允许显示用户按钮时，仍正常转交咨询，不阻塞客服消息',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;

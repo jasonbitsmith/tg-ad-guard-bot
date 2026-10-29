@@ -291,7 +291,7 @@ export class GuardState extends DurableObject {
                 if(await this.env.GUARD_STATE.getByName('admin').caseReversed(op.trackCase))op.skipped='联防记录已撤销';
               }
               if(op.recoveryRestore){const fresh=await this.restoreMember(op.params.chat_id,op.params.user_id,tg);op.params=fresh.params;if(JSON.stringify(this.memberBan(plan.recovery.userId))!==JSON.stringify(plan.recovery.ban))throw Object.assign(Error('成员已有新的处罚，验证解封已停止'),{retryable:false});}
-              if(!op.skipped){op.result = await tg(op.method, op.params);
+              if(!op.skipped){op.result = job.id.startsWith('support:')&&op.supportIncoming&&op.method==='sendMessage'?await this.sendSupportHeader(tg,op):await tg(op.method, op.params);
                 if(op.method==='banChatMember'){this.write(`member-ban:${op.params.user_id}`,{action:plan.entry?.action||'ban',jobId:job.id});if(op.trackCase && !op.previouslyBanned)this.write(`ban-owner:${op.params.user_id}`,op.trackCase);else this.remove(`ban-owner:${op.params.user_id}`);}
                 if(op.method==='unbanChatMember'){this.remove(`ban-owner:${op.params.user_id}`);if(!plan.recovery)this.write(`member-ban:${op.params.user_id}`,{action:'unbanned',jobId:job.id});}
               }
