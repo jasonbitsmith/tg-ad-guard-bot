@@ -124,6 +124,7 @@ export class SupportMethods {
     const name=clean([msg.from.first_name,msg.from.last_name].filter(Boolean).join(' '))||'未提供姓名';
     const username=typeof msg.from.username==='string'&&/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(msg.from.username)?msg.from.username:null;
     const who=name+(username?' @'+username:'');
+    this.write('support:profile:'+user,{name,username},365*DAY);
     // Someone Jason has never answered who opens with an obvious ad is blocked
     // instead of being relayed; Jason only gets a one-line notice.
     if(settings.adFilter&&!this.read('support:known:'+user)&&classify(msg,DEFAULT_KEYWORDS).permanentBan){
@@ -152,8 +153,10 @@ export class SupportMethods {
     if(supportOffHours(settings,now)){
       if(!this.read('support:offack:'+user)){this.write('support:offack:'+user,true,6*HOUR);this.write('support:ack:'+user,true,60000);ops.push(say(user,settings.offMessage+'\n（工作时间：北京时间 '+settings.start+'–'+settings.end+'）'));}
     } else if(!this.read('support:ack:'+user)){this.write('support:ack:'+user,true,60000);ops.push(say(user,'✅ 消息已转交给 Jason，请等待回复。'));}
-    if(!this.read('support:waiting:'+user)){
-      this.write('support:waiting:'+user,{since:now,name,username},30*DAY);
+    const waiting=this.read('support:waiting:'+user);
+    if(waiting){this.write('support:waiting:'+user,{...waiting,name,username,revision:updateId},30*DAY);}
+    else{
+      this.write('support:waiting:'+user,{since:now,name,username,revision:updateId},30*DAY);
       if(settings.remindHours>0)this.supportRemind(owner,user,who,now,supportNextOpen(settings,now+settings.remindHours*HOUR),settings.remindHours);
     }
     return add(ops,{},jobId,due);
@@ -178,9 +181,11 @@ export class SupportMethods {
   }
   supportReply(owner,userId,op,msg,add,done='✅ 回复已送达。'){
     if(this.read('support:block:'+userId))return add([say(owner,'该用户已屏蔽。请先 /unblock '+userId,msg.message_id)]);
-    // Answering a customer ends their wait and marks them as a real contact.
-    this.remove('support:waiting:'+userId);this.write('support:known:'+userId,true,365*DAY);
-    return add([op,say(owner,done,msg.message_id)],{entry:{action:'support-reply'},support:{owner,user:String(userId)}});
+    const waiting=this.read('support:waiting:'+userId);
+    const profile=this.read('support:profile:'+userId)||waiting;
+    const who=profile?.name ? clean(profile.name,100)+(profile.username?' @'+clean(profile.username,32):'') : '用户 ID：'+userId;
+    const confirmation=done.replace('。','')+'\n收件人：'+who+'\n用户 ID：'+userId;
+    return add([op,{local:'support-reply-delivered',userId:String(userId),waitingSince:waiting?.since??null,waitingRevision:waiting?.revision??null},say(owner,confirmation,msg.message_id)],{entry:{action:'support-reply'},support:{owner,user:String(userId)}});
   }
   fillSupportAlbum(op,plan){
     const album=this.read(op.key),index=plan.ops.indexOf(op),target=plan.ops[index+1];

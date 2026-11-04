@@ -15,7 +15,7 @@ test('客服工作时间：跨午夜、同一天和关闭',()=>{
 });
 
 test('客服增强：少刷屏、常见问题、休息时间、提醒、待回复、快捷回复、主动发、挡广告、相册',async t=>{
- const calls=[];let seq=1000;
+ const calls=[];let seq=1000,failReply=false;
  const wrapper=`import worker,{GuardState as Base} from './index.js';
  export class GuardState extends Base {
   async alarm(){}
@@ -34,6 +34,7 @@ test('客服增强：少刷屏、常见问题、休息时间、提醒、待回�
   outboundService:async req=>{
    const method=new URL(req.url).pathname.split('/').at(-1),params=await req.json();
    calls.push({method,params});
+   if(method==='copyMessage'&&params.chat_id===207&&failReply)return MFResponse.json({ok:false,error_code:403,description:'blocked'},{status:403});
    if(method==='copyMessages')return MFResponse.json({ok:true,result:params.message_ids.map(()=>({message_id:++seq}))});
    return MFResponse.json({ok:true,result:{message_id:++seq}});
   },
@@ -87,6 +88,18 @@ test('客服增强：少刷屏、常见问题、休息时间、提醒、待回�
  const map202=await findMap(202);await run(msg(99,'好的',{reply_to_message:{message_id:map202}}));
  out=calls.length;await state.remindTest();assert.equal(calls.slice(out).filter(x=>x.params.text?.startsWith('⏰')).length,0);
 
+ // A failed send must keep the customer waiting and never claim delivery.
+ await run(msg(207,'请帮我看看'));const m207=await findMap(207);failReply=true;
+ out=await run(msg(99,'回复',{reply_to_message:{message_id:m207}}));
+ assert.ok(!out.some(x=>x.params.text?.includes('回复已送达')));
+ out=await run(msg(99,'/pending'));assert.ok(out.some(x=>x.params.text?.includes('用户 ID：207')));
+ failReply=false;
+ // A newer incoming message queued before an earlier reply is delivered stays pending.
+ await run(msg(208,'第一个问题'));const m208=await findMap(208);
+ await send(msg(99,'答复',{reply_to_message:{message_id:m208}}));await send(msg(208,'还有一个问题'));
+ out=calls.length;await state.drainTest();out=calls.slice(out);
+ assert.ok(out.some(x=>x.params.text?.includes('收件人：Customer 208')&&x.params.text?.includes('用户 ID：208')));
+ out=await run(msg(99,'/pending'));assert.ok(out.some(x=>x.params.text?.includes('用户 ID：208')));
  // /msg sends to a user directly by ID.
  out=await run(msg(99,'/msg 202 卡已寄出'));
  assert.ok(out.some(x=>x.params.chat_id===202&&x.params.text==='卡已寄出'));
