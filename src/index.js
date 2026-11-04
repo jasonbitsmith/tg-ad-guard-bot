@@ -9,17 +9,11 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.38.0';
+export const VERSION = '2.39.0';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 客服机器人：同一位客户连着发消息，只在第一条前面发一次说明卡，不再刷屏',
-  '• 客服机器人：客户点开始后可以看到常见问题按钮，点一下自动回答，不打扰你',
-  '• 客服机器人：休息时间（默认北京时间 23:00–09:00）客户发消息会自动告诉他你上线后回复',
-  '• 客服机器人：客户等你超过 2 小时没回会提醒你；发 /pending 能看到所有在等的客户',
-  '• 客服机器人：回复客户时发 /t 名字 就能发出常用回复；/msg 用户ID 内容 可以主动发消息',
-  '• 客服机器人：陌生人一上来发明显广告会被自动屏蔽，只给你发一行通知；相册合成一组转给你',
-  '• 以上设置都在管理后台「客服机器人」里改',
+  '• 客服回复送达后显示客户姓名和 ID；发送失败时保留待回复提醒，避免遗漏。',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
