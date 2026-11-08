@@ -9,11 +9,11 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.39.0';
+export const VERSION = '2.39.1';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 客服回复送达后显示客户姓名和 ID；发送失败时保留待回复提醒，避免遗漏。',
+  '• 新增只读队列诊断，帮助排查群组任务积压；不自动重放或删除历史任务。',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
@@ -107,6 +107,7 @@ async function admin(request, env, url) {
   }
   if (request.method === 'GET') {
     if(path==='operations/overview')return json(await state.operationsOverview());
+    if(path==='operations/queue-diagnostics')return json(await group(env,url.searchParams.get('chatId')).queueDiagnostics());
     if(path==='operations/jobs')return json({jobs:await group(env,url.searchParams.get('chatId')).operationList()});
     if(path==='operations/missed')return json({reports:await group(env,url.searchParams.get('chatId')).missedRecords()});
     if(path==='invites')return json(await group(env,url.searchParams.get('chatId')).inviteStats());
