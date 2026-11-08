@@ -99,8 +99,24 @@ export class GuardState extends DurableObject {
     } catch { /* Metrics must never interrupt moderation. */ }
   }
   async schedule(when) {
-    const current = await this.ctx.storage.getAlarm();
-    if (current === null || current > when) await this.ctx.storage.setAlarm(when);
+    const current = await this.ctx.storage.getAlarm(), now = Date.now();
+    if (current === null || current <= now) {
+      const oldest=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND due<=?",now).toArray()[0]?.due;
+      if(oldest && now-oldest>DAY && !this.read('queue:recovery-cutoff',0))this.write('queue:recovery-cutoff',now-DAY,30*DAY);
+    }
+    if (current === null || current <= now || current > when) await this.ctx.storage.setAlarm(when);
+  }
+
+  async ensureQueueWake() {
+    const now=Date.now(), alarm=await this.ctx.storage.getAlarm();
+    const oldest=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND due<=?",now).toArray()[0]?.due;
+    if(this.running || !oldest || now-oldest<5*60000 || (alarm!==null && alarm>now))return {rearmed:false};
+    // Protect old group events when recovering from prolonged downtime. They
+    // remain reviewable instead of replaying old bans or expired requests.
+    if(now-oldest>DAY)this.write('queue:recovery-cutoff',now-DAY,30*DAY);
+    await this.ctx.storage.setAlarm(now+200);
+    this.log({action:'queue-wakeup',outcome:'rearmed',overdueSeconds:Math.round((now-oldest)/1000)});
+    return {rearmed:true};
   }
 
   async fetch(request) {
@@ -182,7 +198,7 @@ export class GuardState extends DurableObject {
         const job=this.sql.exec('SELECT * FROM jobs WHERE id=?',id).toArray()[0];await this.runJob(job);
       }
       this.sql.exec('DELETE FROM records WHERE expires<=?', Date.now());
-      this.sql.exec("DELETE FROM jobs WHERE status!='pending' AND created<?", Date.now() - 7 * DAY);
+      this.sql.exec("DELETE FROM jobs WHERE status NOT IN ('pending','quarantined') AND created<?", Date.now() - 7 * DAY);
       this.sql.exec('DELETE FROM logs WHERE ts<?', Date.now() - 30 * DAY);
       this.sql.exec('DELETE FROM member_profiles WHERE seen<?',Date.now()-90*DAY);
       await this.quietTick().catch(error => this.log({ action: 'quiet-switch', outcome: 'failed', error: String(error.message || '').slice(0, 200) }));
@@ -201,6 +217,12 @@ export class GuardState extends DurableObject {
     }
   }
   async runJob(job) {
+    const recoveryCutoff=this.read('queue:recovery-cutoff',0);
+    if(recoveryCutoff && job.created<=recoveryCutoff && /^(?:u:|federation:|verification-timeout:)/.test(job.id)) {
+      this.sql.exec("UPDATE jobs SET status='quarantined' WHERE id=? AND status='pending'",job.id);
+      this.log({action:'stale-job-quarantined',outcome:'quarantined',type:job.id.split(':')[0],updateId:job.id,created:job.created});
+      return;
+    }
     if(job.id.startsWith('waffo:')) {
       const plan=job.plan?JSON.parse(job.plan):null;
       if(this.env.WAFFO_NOTIFY_ENABLED!=='true'||!waffoRecipient(this.env)||plan?.ops?.some(op=>String(op.params?.chat_id)!==waffoRecipient(this.env))){
