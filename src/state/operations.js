@@ -60,6 +60,12 @@ export class OperationsMethods {
     for(const log of done){if(ids.has(log.updateId))continue;ids.add(log.updateId);jobs.push({...log,id:log.updateId,status:log.outcome,steps:log.operationSteps||log.steps?.map(x=>({...x,status:x.skipped?'skipped':x.done?'success':'failed'}))||[]});}
     return jobs.slice(0,100);
   }
+  async queueDiagnostics() {
+    const now=Date.now();
+    const rows=this.sql.exec("SELECT id,attempts,due,created,plan FROM jobs WHERE status='pending' ORDER BY rowid LIMIT 20").toArray();
+    const types=this.sql.exec("SELECT CASE WHEN instr(id,':')>0 THEN substr(id,1,instr(id,':')-1) ELSE id END AS type,COUNT(*) AS count FROM jobs WHERE status='pending' GROUP BY type").toArray();
+    return {now,alarm:await this.ctx.storage.getAlarm(),running:this.running,types,oldest:rows.map(row=>{let action=null;try{action=JSON.parse(row.plan||'{}').entry?.action||null;}catch{}return {type:row.id.split(':')[0],attempts:row.attempts,due:row.due,created:row.created,planned:row.plan!==null,action};})};
+  }
   chatPurpose(){return {directMessages:!!this.read('chat')?.is_direct_messages};}
   async groupOverview() {
     const config=await this.config();
