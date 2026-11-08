@@ -181,6 +181,12 @@ export class GuardState extends DurableObject {
         const id=`verification-timeout:${pending.user_id}:${pending.expires}`;
         if(this.sql.exec('SELECT id FROM jobs WHERE id=?',id).toArray().length)continue;
         const user=Number(pending.user_id),clear={local:'clearVerification',userId:pending.user_id,expires:pending.expires},failed=Number(this.verification(pending.user_id)?.attempts||0)>=maxAttempts(pending.mode,pending.via)?'答错次数用完':'未在验证时限内完成验证';
+        // Never reject an applicant who could not receive the challenge.
+        if(pending.via==='request' && !pending.prompt_message_id){
+          this.clearVerification(pending.user_id);
+          this.log({chatId:chat.id,action:'join-request-undelivered',outcome:'needs-review',reasons:['验证消息未送达，申请保留待人工处理']});
+          continue;
+        }
         let plan;
         if(pending.via==='request'){
           // A join request is only declined; the person can apply again.
