@@ -9,11 +9,11 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.39.2';
+export const VERSION = '2.39.3';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 修复群任务调度卡住后的自动恢复；超过一天的积压任务先隔离，避免执行过期封禁。',
+  '• 入群验证私信未送达时保留申请，不因未收到验证而自动拒绝。',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
