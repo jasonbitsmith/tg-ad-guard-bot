@@ -98,7 +98,7 @@ export class ReportsMethods {
     // A failed job keeps its row for 7 days so it can be retried; alerts only
     // look at the last hour so one old failure does not hide new ones.
     const recentFailed=this.sql.exec("SELECT COUNT(*) AS n FROM jobs WHERE status='failed' AND due>?",Date.now()-3600000).toArray()[0]?.n||0;
-    return { recentFailed, overdueSeconds:overdue?Math.round((Date.now()-overdue)/1000):0, pending: pending?.n || 0, failed: rows.find(x => x.status === 'failed')?.n || 0, oldestPendingSeconds: pending ? Math.round((Date.now()-pending.oldest)/1000) : 0, lastCompletion: this.read('health:last-completion') };
+    return { recentFailed, overdueSeconds:overdue?Math.round((Date.now()-overdue)/1000):0, pending: pending?.n || 0, failed: rows.find(x => x.status === 'failed')?.n || 0, quarantined: rows.find(x => x.status === 'quarantined')?.n || 0, oldestPendingSeconds: pending ? Math.round((Date.now()-pending.oldest)/1000) : 0, lastCompletion: this.read('health:last-completion') };
   }
 }
 

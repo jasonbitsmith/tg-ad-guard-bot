@@ -262,7 +262,7 @@ export class MonitorsMethods {
       }
       const chats=await this.listChats();
       for(const chat of chats){
-        try{const group=this.env.GUARD_STATE.getByName('chat:'+chat.id);if(me)await group.recoverVerificationFailures();const health=await group.healthSummary();await this.checkIncident('queue-'+chat.id,health.recentFailed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n最近 1 小时队列失败 '+health.recentFailed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
+        try{const group=this.env.GUARD_STATE.getByName('chat:'+chat.id);if(me)await group.recoverVerificationFailures();await group.ensureQueueWake();const health=await group.healthSummary();await this.checkIncident('queue-'+chat.id,health.recentFailed>0 || health.overdueSeconds>300,'群：'+chat.title+'\n最近 1 小时队列失败 '+health.recentFailed+'，到期未执行最久 '+health.overdueSeconds+' 秒');}
         catch{await this.checkIncident('queue-'+chat.id,true,'群：'+chat.title+'\n无法检查执行队列',{delayMs:5*60000,minChecks:2});}
         if(!me)continue;
         // A channel's direct-messages chat cannot ban anyone, so it only needs
