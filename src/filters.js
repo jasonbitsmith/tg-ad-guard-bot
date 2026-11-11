@@ -191,6 +191,13 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
     new RegExp(`${doxxService}.{0,12}${doxxTerm}|${doxxTerm}.{0,12}${doxxService}`, 'u').test(compact)
     || (doxxInBody && (contact || hasLink))
     || (new RegExp(doxxTerm, 'u').test(compactName) && (doxxInBody || contact || hasLink)));
+  // Require multiple sales signals; mere references to cigarettes, brands,
+  // or a mention in an ordinary discussion must not trigger a ban.
+  const tobaccoText=normalize(text.replace(/🚬/gu,'烟')).replace(/[^\p{L}\p{N}@]+/gu,'');
+  const tobaccoProduct=/(?:外烟|香烟|烟草|卷烟|香菸|菸草)/.test(tobaccoText);
+  const tobaccoSale=/(?:正品|免税|税免|免稅|稅免|代购|出售|批发|现货|货源)/.test(tobaccoText);
+  const tobaccoQuestion=/(?:请问|能否|能不能|可不可以|可以买|有没有|哪里买|哪儿买|在哪里买|多少钱|怎么购买|谁知道|求助|警惕|谨防|骗局|诈骗|举报)/.test(tobaccoText)||/[?？]/.test(text);
+  const tobaccoPitch=tobaccoProduct && tobaccoSale && (contact||hasLink) && !tobaccoQuestion && !caution;
   let score = 0;
   const reasons = [];
   const add = (points, reason) => { score += points; reasons.push(reason); };
@@ -223,6 +230,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (commerceCardPitch && commercePlatforms.length) add(4, `跨境电商专用卡推销：${commercePlatforms.slice(0, 4).join('、')}`);
   if (illegalGoodsPitch) add(7, counterfeitCash ? '包含假钞/假币售卖引流' : '包含色情服务引流');
   if (doxxPitch) add(7, '包含开盒/查档（个人信息查询）引流');
+  if (tobaccoPitch) add(7, '包含外烟售卖及联系方式引流');
   if (contactCardAd) add(7, '分享的联系人名片带广告名字');
   else if (contactCard) add(4, '分享了联系人名片（带电话号码）');
   if (isNew && (hasLink || contact)) add(1, '新成员引流信号');
@@ -230,7 +238,7 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   if (caution && !contact && !invitation) { score = Math.max(0, score - 3); reasons.push('存在风险提醒语境，降低置信度'); }
   // These are the confirmed campaign templates chosen for immediate removal
   // from the group.
-  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || callChannelForward || contractCallPitch || contactCardAd || illegalGoodsPitch || doxxPitch;
+  const permanentBan = (recruitmentSlogan && dailyIncome) || paidPhotoRecruitment || douyinRecruitment || accountSupplyPitch || accountSalePitch || photoGigPitch || phonePhotoGigPitch || profileContactPitch || moneyLaunderingPitch || cityGroupLure || earnHandlePitch || investmentLeadPitch || codeMoneyPitch || resalePitch || cryptoChartPitch || callChannelForward || contractCallPitch || contactCardAd || illegalGoodsPitch || doxxPitch || tobaccoPitch;
   return { score, reasons, hits, deleteOnKeyword: hits.length > 0, domains, blockedDomains, hasLink, contact: contact || contactCard, contactCard, permanentBan, level: score >= 7 ? 'high' : score >= 4 ? 'medium' : score > 0 ? 'low' : 'clean' };
 }
 

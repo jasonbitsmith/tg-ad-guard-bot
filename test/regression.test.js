@@ -15,6 +15,8 @@ const KEYWORDS = [...DEFAULT_KEYWORDS, 'u'];
 
 const CASES = [
   // 漏拦
+  { when: '2026-11-11', what: '英国话题：正品外烟、免税和联系方式广告', expect: 'ban', message: { text: '正品外🚬 税/免 @MK00852\n七星 和平 骆驼 万宝路 好彩' } },
+  { when: '2026-11-11', what: '拆字外烟广告与账号引流', expect: 'ban', message: { text: '免.税 外.烟 正品 @seller999' } },
   { when: '2026-10-15', what: '名片广告「点我头像 - 币圈+美股」', expect: 'ban', message: { contact: { first_name: '点我头像 - 币圈+美股', phone_number: '+8613594323629' } } },
   { when: '2026-10-16', what: '清单消息里的假币广告和入群链接', expect: 'ban', message: { checklist: { title: '假币玩妹嫖娼🔥假钞日常出货都可', tasks: [{ id: 1, text: '假币日常🔥使用交流群' }, { id: 2, text: 'https://t.me/+t9xrbFouuXQ2ZDlx' }] } } },
   { when: '2026-10-16', what: '谐音假钞广告（段钞 / 漂唱 / 验糙机）', expect: 'ban', message: { text: '出段钞可漂唱包过验糙机 手感一致 @abcdef1' } },
@@ -27,6 +29,8 @@ const CASES = [
   { when: '2026-10-28', what: '「日常交流」里 yang bai 连发三次的价格色情广告「388全套--有工作室」', expect: 'ban', message: { text: '388全套--有工作室' } },
   { when: '2026-10-28', what: '同类价格菜单写法（快餐 / 包夜 / 可上门）', expect: 'ban', message: { text: '快餐300 包夜800 可上门' } },
   // 误封 / 不该处理的正常消息
+  { when: '2026-11-11', what: '英国机场免税店正常提问', expect: 'clean', message: { text: '英国机场免税店可以买香烟吗？' } },
+  { when: '2026-11-11', what: '免税与正常讨论带提及不永久封禁', expect: 'light', message: { text: '@friend123 英国机场免税店有万宝路吗？' } },
   { when: '2026-10-13', what: '关键词 u 误伤 Ultra（英文关键词只匹配整词）', expect: 'clean', message: { text: 'Ultra 套餐值得买吗' } },
   { when: '2026-10-14', what: '只提到 USDT 的正常提问不能封号', expect: 'light', message: { text: 'USDT 怎么买比较安全？' } },
   { when: '2026-10-15', what: '普通人名名片：只删不封', expect: 'act', message: { contact: { first_name: '张伟', phone_number: '+8613594323629' } } },
