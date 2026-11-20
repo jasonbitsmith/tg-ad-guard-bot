@@ -15,6 +15,9 @@ const KEYWORDS = [...DEFAULT_KEYWORDS, 'u'];
 
 const CASES = [
   // 漏拦
+  { when: '2026-11-20', what: '转发 Monster 货币宇宙中心合约收益图片', expect: 'ban', message: { photo: [{file_unique_id:'example'}], caption: 'SOL\n上漲獲利雖然小倉\n漲幅有 5%', forward_origin: {type:'channel',chat:{type:'channel',title:'😈Monster-貨幣宇宙中心'}} } },
+  { when: '2026-11-20', what: '非目标来源的正常 SOL 行情截图', expect: 'clean', message: { photo: [{file_unique_id:'example'}], caption: 'SOL 上涨了 5%', forward_origin: {type:'channel',chat:{type:'channel',title:'市场行情'}} } },
+  { when: '2026-11-20', what: '引用可疑频道提醒风险，不永久封禁', expect: 'clean', message: { photo: [{file_unique_id:'example'}], caption: '警惕风险，不要相信这样的收益', forward_origin: {type:'channel',chat:{type:'channel',title:'😈Monster-貨幣宇宙中心'}} } },
   { when: '2026-10-15', what: '名片广告「点我头像 - 币圈+美股」', expect: 'ban', message: { contact: { first_name: '点我头像 - 币圈+美股', phone_number: '+8613594323629' } } },
   { when: '2026-10-16', what: '清单消息里的假币广告和入群链接', expect: 'ban', message: { checklist: { title: '假币玩妹嫖娼🔥假钞日常出货都可', tasks: [{ id: 1, text: '假币日常🔥使用交流群' }, { id: 2, text: 'https://t.me/+t9xrbFouuXQ2ZDlx' }] } } },
   { when: '2026-10-16', what: '谐音假钞广告（段钞 / 漂唱 / 验糙机）', expect: 'ban', message: { text: '出段钞可漂唱包过验糙机 手感一致 @abcdef1' } },

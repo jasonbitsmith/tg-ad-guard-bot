@@ -139,7 +139,11 @@ export function classify(msg, keywords, isNew = false, domainPolicy = {}) {
   const forwardTitle = forwardChannel ? normalize([forwardChannel.title, forwardChannel.username].filter(Boolean).join(' ')).replace(/[^\p{L}\p{N}]+/gu, '') : '';
   const callTitle = /(?:合约|带单|喊单|跟单|交易信号|交易轨迹|操盘|实盘|策略|信号|vip|signals?)/i.test(forwardTitle);
   const cryptoTitle = /(?:币圈|炒币|加密|crypto|btc|eth|usdt|比特|以太|期货|永续|现货|trading|trader)/i.test(forwardTitle);
-  const callChannelForward = !caution && ((callTitle && cryptoTitle) || (cryptoTitle && /(?:vip|移步|带单|喊单|跟单|止盈|止损|入场|做多|做空|多单|空单)/i.test(body)));
+  // Confirmed channel campaign: require this specific source, a media post and
+  // an investment-profit claim so normal discussions or risk warnings survive.
+  const monsterForward = !!forwardChannel && /monster货币宇宙中心/i.test(forwardTitle)
+    && hasMedia && /(?:获利|獲利|盈利|收益|利润)/.test(body) && !caution;
+  const callChannelForward = !caution && (monsterForward || (callTitle && cryptoTitle) || (cryptoTitle && /(?:vip|移步|带单|喊单|跟单|止盈|止损|入场|做多|做空|多单|空单)/i.test(body)));
   const cryptoChannelForward = !callChannelForward && cryptoTitle && !caution;
   // The same posts copied rather than forwarded: a media message whose text
   // (caption or OCR of the screenshot) shows a contract trade and a VIP lure.
