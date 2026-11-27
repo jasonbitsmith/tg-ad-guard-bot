@@ -303,11 +303,12 @@ export class ModerationMethods {
 
   contentLock(msg, locks = {}) {
     const active = type => locks?.[type]?.enabled === true ? locks[type] : null;
+    const entities = [...(msg.entities || []), ...(msg.caption_entities || [])];
     const kinds = [
-      ['invite', /(?:https?:\/\/)?t\.me\/(?:joinchat\/|\+)/i.test([msg.text, msg.caption, ...(msg.entities || []).map(item => item.url || '')].filter(Boolean).join(' ')), 'Telegram 群邀请链接'],
+      ['invite', /(?:https?:\/\/)?(?:t\.me|telegram\.me)\/(?:joinchat\/|\+)/i.test([msg.text, msg.caption, ...entities.map(item => item.url || '')].filter(Boolean).join(' ')), 'Telegram 群邀请链接'],
       ['forward', !!(msg.forward_origin || msg.forward_date || msg.forward_from || msg.forward_from_chat), '转发消息'],
       ['inline', !!msg.via_bot, '内联机器人消息'],
-      ['link', (msg.entities || msg.caption_entities || []).some(item => item.type === 'url' || item.type === 'text_link') || /(?:https?:\/\/|www\.)/i.test(msg.text || msg.caption || ''), '网址链接'],
+      ['link', entities.some(item => item.type === 'url' || item.type === 'text_link') || /(?:https?:\/\/|www\.)/i.test(msg.text || msg.caption || ''), '网址链接'],
       ['photo', !!msg.photo?.length, '图片'],
       ['video', !!msg.video || !!msg.video_note, '视频'],
       ['gif', !!msg.animation, 'GIF 动图'],
@@ -384,7 +385,7 @@ export class ModerationMethods {
         if (config.keywords.length >= 500) return reply('词库已达 500 个，请先清理。');
         if (!config.keywords.includes(word)) config.keywords.push(word);
       } else config.keywords = config.keywords.filter(w => w !== word);
-      this.saveConfig(config, `群内${command.command}`);
+      this.saveConfig(config, `群内 /${command}`);
       return reply(`已${command === 'addword' ? '添加' : '移除'}本群关键词：${word}`);
     }
     const target = /^\d{1,16}$/.test(arg) ? Number(arg) : msg.reply_to_message?.from?.id;

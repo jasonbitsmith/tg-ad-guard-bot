@@ -28,6 +28,20 @@ import { OperationsMethods, operationSteps } from './state/operations.js';
 import { LinksMethods } from './state/links.js';
 import { WelcomeMethods } from './state/welcome.js';
 
+export const UNORDERED_JOB_PREFIXES = Object.freeze([
+  'verification-timeout:',
+  'federation:',
+  'undo:',
+  'verification-release:',
+  'cleanup:',
+  'dmit-relay:',
+  'dmit-notify:',
+  'broadcast:',
+  'support:later:',
+]);
+const ORDERED_JOB_SQL = UNORDERED_JOB_PREFIXES.map(prefix => `id NOT LIKE '${prefix}%'`).join(' AND ');
+const UNORDERED_JOB_SQL = UNORDERED_JOB_PREFIXES.map(prefix => `id LIKE '${prefix}%'`).join(' OR ');
+
 export class GuardState extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -171,7 +185,7 @@ export class GuardState extends DurableObject {
       for (let n = 0; n < 10 && Date.now() - started < 20000; n++) {
         // Keep each group's processing order across retries. Otherwise a later warning
         // could be overwritten by a previously planned event that was rate-limited.
-        const job = this.sql.exec("SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'dmit-relay:%' AND id NOT LIKE 'dmit-notify:%' AND id NOT LIKE 'broadcast:%' AND id NOT LIKE 'support:later:%') OR due<=?) ORDER BY rowid LIMIT 1",Date.now()).toArray()[0];
+        const job = this.sql.exec(`SELECT * FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-release:%' AND ((${ORDERED_JOB_SQL}) OR due<=?) ORDER BY rowid LIMIT 1`, Date.now()).toArray()[0];
         if (!job || job.due > Date.now()) break;
         await this.runJob(job);
       }
@@ -212,8 +226,8 @@ export class GuardState extends DurableObject {
       this.pruneActivity();
     } finally {
       this.running = false;
-      const next = this.sql.exec("SELECT due FROM jobs WHERE status='pending' AND id NOT LIKE 'verification-timeout:%' AND id NOT LIKE 'federation:%' AND id NOT LIKE 'undo:%' AND id NOT LIKE 'verification-release:%' AND id NOT LIKE 'cleanup:%' AND id NOT LIKE 'broadcast:%' AND id NOT LIKE 'support:later:%' ORDER BY rowid LIMIT 1").toArray()[0]?.due;
-      const timeoutDue=this.sql.exec("SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (id LIKE 'verification-timeout:%' OR id LIKE 'federation:%' OR id LIKE 'undo:%' OR id LIKE 'verification-release:%' OR id LIKE 'cleanup:%' OR id LIKE 'broadcast:%' OR id LIKE 'support:later:%')").toArray()[0]?.due;
+      const next = this.sql.exec(`SELECT due FROM jobs WHERE status='pending' AND ${ORDERED_JOB_SQL} ORDER BY rowid LIMIT 1`).toArray()[0]?.due;
+      const timeoutDue = this.sql.exec(`SELECT MIN(due) AS due FROM jobs WHERE status='pending' AND (${UNORDERED_JOB_SQL})`).toArray()[0]?.due;
       const verificationDue = this.sql.exec("SELECT expires FROM verifications WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id='verification-timeout:' || verifications.user_id || ':' || verifications.expires) ORDER BY expires LIMIT 1").toArray()[0]?.expires;
       const albumDue = this.nextBroadcastAlbumDue();
       const due = [next, timeoutDue, verificationDue, albumDue].filter(value => Number.isFinite(value)).sort((a, b) => a - b)[0];

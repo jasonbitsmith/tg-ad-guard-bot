@@ -9,11 +9,14 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.39.3';
+export const VERSION = '2.39.4';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 入群验证私信未送达时保留申请，不因未收到验证而自动拒绝。',
+  '• 修复群内 /addword、/removeword 保存规则版本时名称显示异常的问题。',
+  '• 修复带图消息在配文隐藏群邀请链接时可能绕过「群邀请链接」内容限制的问题。',
+  '• 修复日报权限巡检对频道私信聊天误报缺少封禁权限的问题，并把 OCR 额度恢复提醒改为北京时间显示。',
+  '• 统一任务队列的定时唤醒前缀分类，避免后台任务延迟唤醒。',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;

@@ -1,6 +1,6 @@
-# 协作规则（Codex 与 Claude 共用）
+# 协作规则（Codex、Claude 与 Gemini 共用）
 
-这个仓库由 Codex 和 Claude 两个助手同时维护。线上只有一个 Worker（`tg-ad-guard-bot`）和一个 Telegram webhook，任何一次部署都会整体覆盖线上代码，所以必须遵守下面的规则。
+这个仓库由 Codex、Claude 和 Gemini 三个助手共同维护。线上只有一个 Worker（`tg-ad-guard-bot`）和一个 Telegram webhook，任何一次部署都会整体覆盖线上代码，所以必须遵守下面的规则。
 
 ## 唯一来源
 
@@ -9,7 +9,7 @@
 
 ## 分支
 
-- Codex 只用 `codex/<主题>` 分支，Claude 只用 `claude/<主题>` 分支。
+- Codex 只用 `codex/<主题>` 分支，Claude 只用 `claude/<主题>` 分支，Gemini 只用 `gemini/<主题>` 分支。
 - 不直接推送 `main`，不修改对方前缀的分支。
 - 每项改动开一个 PR 到 `main`，由 Jason 审核合并。开 PR 前先合入最新的 `main`，冲突在自己分支上解决。
 

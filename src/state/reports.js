@@ -1,8 +1,15 @@
 // Daily report and per-group health summaries.
 // Methods are copied onto GuardState.prototype in ../state.js.
 import { telegram } from '../telegram.js';
-import { DAY } from './shared.js';
+import { DAY, ADMIN_STATUS } from './shared.js';
 import { suspicious } from './moderation.js';
+
+export function chatPermissionIssue(chat, member, directMessages = false) {
+  if (!ADMIN_STATUS.includes(member?.status)) return { title: chat.title, problem: '机器人不是管理员，广告删不掉也封不了', fix: '请在群设置里把机器人设为管理员。' };
+  if (member.status === 'creator') return null;
+  const missing = [!member.can_delete_messages && '删除消息', !directMessages && !member.can_restrict_members && '封禁成员'].filter(Boolean);
+  return missing.length ? { title: chat.title, problem: `机器人缺少「${missing.join('」「')}」权限`, fix: '请到群设置 → 管理员 → 机器人，把它打开。' } : null;
+}
 
 export class ReportsMethods {
   dailySummary(from, to) {
@@ -61,11 +68,11 @@ export class ReportsMethods {
     const adUsers=new Set(summaries.flatMap(item=>item.adUsers));
     const tg = telegram(this.env.BOT_TOKEN); const me = await this.me(tg);
     const checks = await Promise.all(chats.map(async chat => {
+      let directMessages = false;
+      try { directMessages = (await this.env.GUARD_STATE.getByName('chat:' + chat.id).chatPurpose()).directMessages; } catch {}
       try {
         const member = await tg('getChatMember', { chat_id: Number(chat.id), user_id: me.id });
-        if (member.status !== 'administrator') return { title: chat.title, problem: '机器人不是管理员，广告删不掉也封不了', fix: '请在群设置里把机器人设为管理员。' };
-        const missing = [!member.can_delete_messages && '删除消息', !member.can_restrict_members && '封禁成员'].filter(Boolean);
-        return missing.length ? { title: chat.title, problem: `机器人缺少「${missing.join('」「')}」权限`, fix: '请到群设置 → 管理员 → 机器人，把它打开。' } : null;
+        return chatPermissionIssue(chat, member, directMessages);
       }
       catch { return { title: chat.title, problem: '查不到机器人的权限，可能已被移出群', fix: '请确认机器人还在群里并且是管理员。' }; }
     }));

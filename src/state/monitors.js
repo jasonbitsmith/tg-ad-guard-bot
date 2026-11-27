@@ -5,6 +5,12 @@ import { dmitNotification, dmitOfficialNotification, parseDmitOfficialRestocks, 
 import { AI_REVIEW_MODEL, AI_REVIEW_PROMPT, parseAiReview } from '../ai-review.js';
 import { DAY, ADMIN_STATUS } from './shared.js';
 
+export function formatBeijingClock(time) {
+  if (!Number.isFinite(time)) return '约 1 小时后';
+  const d = new Date(time + 8 * 3600000);
+  return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}（北京时间）`;
+}
+
 export class MonitorsMethods {
   dmitStatus() {
     return this.env.DMIT_MONITOR_ENABLED!=='true'?{enabled:false,state:'已关闭'}:this.read('dmit:status', { enabled:true, state:'尚未执行' });
@@ -27,7 +33,7 @@ export class MonitorsMethods {
       this.log({action:'ocr-quota-exhausted',chatId:msg.chat.id,messageId:msg.message_id,outcome:'skipped'});
       const alertKey='ocr:quota-alert:'+msg.chat.id;
       if(!this.read(alertKey)){
-        const sent=await this.env.GUARD_STATE.getByName('admin').alertOwner('ocr-quota-'+msg.chat.id,'OCR 图片识别额度已用完\n群：'+(msg.chat.title||msg.chat.id)+'\n本轮上限：'+quota.limit+' 次；恢复时间：'+new Date(quota.resetAt).toISOString()+'\n文字、链接等其他过滤仍继续运行。').catch(()=>{});
+        const sent=await this.env.GUARD_STATE.getByName('admin').alertOwner('ocr-quota-'+msg.chat.id,'OCR 图片识别额度已用完\n群：'+(msg.chat.title||msg.chat.id)+'\n本轮上限：'+quota.limit+' 次；恢复时间：'+formatBeijingClock(quota.resetAt)+'\n文字、链接等其他过滤仍继续运行。').catch(()=>{});
         if(sent)this.write(alertKey,true,Math.max(1,quota.resetAt-Date.now()));
       }
       return '';

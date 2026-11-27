@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { unreadableContent } from '../src/message-content.js';
 import { failureAdvice, operationSteps } from '../src/state/operations.js';
-import { MonitorsMethods } from '../src/state/monitors.js';
+import { MonitorsMethods, formatBeijingClock } from '../src/state/monitors.js';
+import { ModerationMethods } from '../src/state/moderation.js';
+import { chatPermissionIssue } from '../src/state/reports.js';
 import { NoticesMethods } from '../src/state/notices.js';
 import { BackupMethods } from '../src/state/backup.js';
 import { closestAd, similarity, similarityText } from '../src/similarity.js';
@@ -93,4 +95,63 @@ test('私信按钮会把消息存成案例：封禁存广告，不是广告存�
   assert.equal(n.saveExample({ adText: '短' }, 'normal'), false);
   assert.equal(n.saveExample({ adText: null }, 'normal'), false);
   assert.deepEqual(saved, [{ text: '加我领取福利，日结稳赚', verdict: 'advertisement', confirmed: true }]);
+});
+
+test('内容限制：图片配文隐藏群邀请链接会被 invite 锁拦截', () => {
+  const m = mixin(ModerationMethods);
+  const locks = { invite: { enabled: true, action: 'ban' } };
+  const photoInvite = {
+    photo: [{ file_unique_id: 'p1' }],
+    caption: '点这里进群',
+    caption_entities: [{ type: 'text_link', offset: 0, length: 5, url: 'https://t.me/+secretInvite' }],
+  };
+  assert.deepEqual(m.contentLock(photoInvite, locks), { action: 'ban', label: 'Telegram 群邀请链接' });
+  const tgMeInvite = {
+    caption: '加入',
+    caption_entities: [{ type: 'text_link', offset: 0, length: 2, url: 'https://telegram.me/joinchat/abc' }],
+  };
+  assert.deepEqual(m.contentLock(tgMeInvite, locks), { action: 'ban', label: 'Telegram 群邀请链接' });
+  assert.equal(m.contentLock({ photo: [{ file_unique_id: 'p2' }], caption: '正常图片说明' }, locks), null);
+});
+
+test('群内 /addword 与 /removeword 保存配置版本时记录清晰原因', async () => {
+  const m = mixin(ModerationMethods);
+  const saved = [];
+  let current = { keywords: ['旧词'] };
+  m.config = async () => structuredClone(current);
+  m.saveConfig = (config, reason) => { current = config; saved.push(reason); };
+  const msg = { chat: { id: -1001, title: '测试群', type: 'supergroup' }, from: { id: 99 } };
+  await m.commandPlan({ command: 'addword', arg: '测试词' }, msg, async () => ({}));
+  await m.commandPlan({ command: 'removeword', arg: '测试词' }, msg, async () => ({}));
+  assert.deepEqual(saved, ['群内 /addword', '群内 /removeword']);
+});
+
+test('日报权限检查：群主和频道私信聊天不误报缺少封禁权限', () => {
+  const chat = { id: '-1001', title: '频道私信' };
+  assert.equal(chatPermissionIssue(chat, { status: 'creator' }, false), null);
+  assert.equal(chatPermissionIssue(chat, { status: 'administrator', can_delete_messages: true, can_restrict_members: false }, true), null);
+  assert.match(chatPermissionIssue(chat, { status: 'administrator', can_delete_messages: false, can_restrict_members: false }, true).problem, /删除消息/);
+  assert.doesNotMatch(chatPermissionIssue(chat, { status: 'administrator', can_delete_messages: false, can_restrict_members: false }, true).problem, /封禁成员/);
+  assert.match(chatPermissionIssue(chat, { status: 'administrator', can_delete_messages: true, can_restrict_members: false }, false).problem, /封禁成员/);
+  assert.match(chatPermissionIssue(chat, { status: 'member' }, false).problem, /不是管理员/);
+});
+
+test('OCR 额度用完提醒使用北京时间显示恢复时间', async () => {
+  assert.equal(formatBeijingClock(Date.UTC(2026, 10, 27, 15, 30)), '11月27日 23:30（北京时间）');
+  const m = mixin(MonitorsMethods);
+  const alerts = [];
+  m.env = {
+    BOT_TOKEN: 'x',
+    OCR_ENABLED: 'true',
+    OCR_MAX_PER_CHAT_HOUR: '1',
+    AI: {},
+    GUARD_STATE: { getByName: () => ({ alertOwner: async (kind, text) => { alerts.push({ kind, text }); return true; } }) },
+  };
+  const resetAt = Date.now() + 1800000;
+  m.write('ocr:quota:-1001', { used: 1, resetAt }, 3600000);
+  const out = await m.ocr({ chat: { id: -1001, title: '测试群' }, message_id: 1, photo: [{ file_id: 'f1', file_unique_id: 'u1', file_size: 12000 }] }, async () => ({}));
+  assert.equal(out, '');
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].text, /（北京时间）/);
+  assert.doesNotMatch(alerts[0].text, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
 });

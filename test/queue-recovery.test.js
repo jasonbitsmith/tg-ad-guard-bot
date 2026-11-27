@@ -35,3 +35,21 @@ test('入群验证未送达时超时不拒绝申请',async t=>{
  const mf=new Miniflare(convertV4MiniflareOptions({compatibilityDate:'2026-09-22',compatibilityFlags:['nodejs_compat'],modules:[{type:'ESModule',path:'wrapper.js',contents:wrapper},{type:'ESModule',path:'index.js',contents:await readFile(new URL('../dist/index.js',import.meta.url),'utf8')}],durableObjects:{GUARD_STATE:{className:'GuardState',useSQLite:true}},kvNamespaces:['BOT_KV'],bindings:{BOT_TOKEN:'fake',ADMIN_IDS:'99'},outboundService:async req=>{sent.push(new URL(req.url).pathname);return MFResponse.json({ok:true,result:{message_id:10}});}}));
  t.after(()=>mf.dispose());const state=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('chat:-1001');await state.seed();await state.tick();assert.ok(!sent.some(x=>x.endsWith('/declineChatJoinRequest')));
 });
+
+test('队列下次唤醒时间对延迟类任务取最早到期时间，不被先入队的晚到期任务挡住',async t=>{
+ const wrapper=`import worker,{GuardState as Base} from './index.js';
+ export class GuardState extends Base {
+  async seedAndTick(){
+   const now=Date.now(), later=now+60000, sooner=now+5000;
+   this.sql.exec("INSERT INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)",'dmit-relay:later','{}',JSON.stringify({ops:[]}),later,now);
+   this.sql.exec("INSERT INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)",'dmit-relay:sooner','{}',JSON.stringify({ops:[]}),sooner,now);
+   await super.alarm();
+   return {alarm:await this.ctx.storage.getAlarm(),sooner,later};
+  }
+ }
+ export default worker;`;
+ const mf=new Miniflare(convertV4MiniflareOptions({compatibilityDate:'2026-09-22',compatibilityFlags:['nodejs_compat'],modules:[{type:'ESModule',path:'wrapper.js',contents:wrapper},{type:'ESModule',path:'index.js',contents:await readFile(new URL('../dist/index.js',import.meta.url),'utf8')}],durableObjects:{GUARD_STATE:{className:'GuardState',useSQLite:true}},kvNamespaces:['BOT_KV'],bindings:{BOT_TOKEN:'fake',ADMIN_IDS:'99',DMIT_RELAY_ENABLED:'true'}}));
+ t.after(()=>mf.dispose());const state=(await mf.getDurableObjectNamespace('GUARD_STATE')).getByName('admin');
+ const {alarm,sooner,later}=await state.seedAndTick();
+ assert.ok(alarm>=sooner && alarm<later-10000,`alarm ${alarm} should wake near ${sooner}, not ${later}`);
+});
