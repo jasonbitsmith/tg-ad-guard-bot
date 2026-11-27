@@ -9,14 +9,15 @@ import { isAutomatedClient } from './state/links.js';
 import { BANNERS } from './assets/welcome-banner.js';
 export { GuardState } from './state.js';
 
-export const VERSION = '2.39.4';
+export const VERSION = '2.40.0';
 // Sent to the owner once after this version goes live. Rewrite it with every
 // VERSION bump, in plain words for the owner.
 export const CHANGES = [
-  '• 修复群内 /addword、/removeword 保存规则版本时名称显示异常的问题。',
-  '• 修复带图消息在配文隐藏群邀请链接时可能绕过「群邀请链接」内容限制的问题。',
-  '• 修复日报权限巡检对频道私信聊天误报缺少封禁权限的问题，并把 OCR 额度恢复提醒改为北京时间显示。',
-  '• 统一任务队列的定时唤醒前缀分类，避免后台任务延迟唤醒。',
+  '• 新增老成员渐进式信任：长期正常发言的活跃群友遇到非铁证规则时转人工复核，降低误封风险（可在后台「入群筛查与系统提示」开关）。',
+  '• 群管新增 /mute 时长（临时禁言）和 /purge（回复批量清理最多 100 条刷屏消息）指令。',
+  '• 一键群发新增目标分组预设、单条消息附带跳转按钮（自动关联推广短链 /go/名称），以及后台与 /broadcasts 定时群发看板与取消。',
+  '• 客服机器人新增 /note 客户备注标签（来消息与 /pending 自动带出），后台支持直接回复客户、编辑备注和标记已处理。',
+  '• 性能优化：预编译广告过滤正则、合并后台 POST 请求体单次解析，并节流低频 Cron 维护检查。',
 ].join('\n');
 const COOKIE = '__Host-guard_session';
 const REMEMBER_SECONDS = 30 * 86400;
@@ -163,108 +164,106 @@ async function admin(request, env, url) {
   if(request.method==='GET' && path==='incidents')return json({incidents:await state.incidentList()});
   if(request.method==='GET' && path==='trials')return json({trials:await group(env,url.searchParams.get('chatId')).listTrials()});
   if(request.method!=='POST')return json({error:'Not found'},404);
-  const body=await readJson(request.clone(),600000);
+  const body=await readJson(request,adminBodyLimit(path));
   const excluded=['samples/preview','samples/test','backup/preview'];
-  if(excluded.includes(path))return mutateAdmin(request,env,url,state,path);
+  if(excluded.includes(path))return mutateAdmin(request,env,url,state,path,body);
   let before={};try{before=await state.auditSnapshot(path,body);}catch{}
   const actor='session:'+String(await digest(session)).slice(0,12), operation=crypto.randomUUID();
   await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'started',changes:[]});
   try{
-    const response=await mutateAdmin(request,env,url,state,path);let after={};try{after=await state.auditSnapshot(path,body);}catch{}
+    const response=await mutateAdmin(request,env,url,state,path,body);let after={};try{after=await state.auditSnapshot(path,body);}catch{}
     await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:response.ok?'success':'failed',target:body.id||body.word||body.domain||null,changes:diffValues(before,after)});
     return response;
   }catch(error){let after={};try{after=await state.auditSnapshot(path,body);}catch{}await state.recordAudit({operation,actor,action:path,chatId:body.chatId||null,status:'failed',error:String(error.message).slice(0,200),changes:diffValues(before,after)});throw error;}
 }
-async function mutateAdmin(request,env,url,state,path){
+function adminBodyLimit(path){
+  if(path==='backup/preview')return 600000;
+  if(path==='support/settings')return 65536;
+  if(path.startsWith('review-examples/'))return 20000;
+  if(path.startsWith('announcements/')||path.startsWith('knowledge/'))return 16384;
+  if(['broadcast/targets','broadcast/groups','links/upsert','links/remove','welcome-rules','content-locks','samples/test','support/reply'].includes(path))return 8192;
+  return 4096;
+}
+async function mutateAdmin(request,env,url,state,path,body){
   if(path==='dmit-relay/retry')return json(await state.retryDmitRelays());
   if(path==='dmit-relay/check'){await state.checkDmitRelayPermissions();await state.monitorDmitRelay();return json(await state.relayStatus());}
-  if(path==='support/settings'){const body=await readJson(request,65536);return json(await env.GUARD_STATE.getByName('support:inbox').saveSupportSettings(body));}
-  if(path==='broadcast/targets'){const body=await readJson(request,8192);return json(await state.saveBroadcastTargets(body.targets,body.reset===true));}
-  if(['links/upsert','links/remove'].includes(path)){const body=await readJson(request,8192);return json(await state.editLink(path.split('/')[1],body.item));}
-  if(path==='emergency'){const body=await readJson(request,4096);return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));}
-  if(path==='rules/replay'){const body=await readJson(request,4096);return json(await group(env,body.chatId).ruleReplay(body));}
-  if(path==='members/recover'){const body=await readJson(request,4096);if(body.scope==='group')group(env,body.chatId);return json(await state.recoverMember(body));}
-  if(path==='ai-review'){const body=await readJson(request,4096);return json(await group(env,body.chatId).editAiReview(body.enabled));}
-  if(path==='groups/remove'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.leaveGroup(body.chatId));}
-  if(path==='verification/release'){const body=await readJson(request,4096);return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));}
-  if(path==='backup/preview'){const body=await readJson(request,600000);return json(await state.previewBackup(body.backup));}
-  if(path==='backup/restore'){const body=await readJson(request,4096);return json(await state.restoreBackup(body.token));}
-  if(['trials/add','trials/remove','trials/promote'].includes(path)){const body=await readJson(request,4096);return json(await group(env,body.chatId).editTrial(path.split('/')[1],body));}
+  if(path==='support/settings')return json(await env.GUARD_STATE.getByName('support:inbox').saveSupportSettings(body));
+  if(path==='support/reply')return json(await env.GUARD_STATE.getByName('support:inbox').adminSupportReply(body.userId,body.text));
+  if(path==='support/done')return json(await env.GUARD_STATE.getByName('support:inbox').adminSupportDone(body.userId));
+  if(path==='support/note')return json(await env.GUARD_STATE.getByName('support:inbox').adminSupportNote(body.userId,body.note));
+  if(path==='broadcast/targets')return json(await state.saveBroadcastTargets(body.targets,body.reset===true));
+  if(path==='broadcast/groups')return json(await state.saveBroadcastGroups(body.groupsText));
+  if(path==='broadcast/cancel')return json(await state.cancelScheduledByToken(body.token));
+  if(['links/upsert','links/remove'].includes(path))return json(await state.editLink(path.split('/')[1],body.item));
+  if(path==='emergency')return json(await group(env,body.chatId).setEmergency(body.enabled,body.minutes));
+  if(path==='rules/replay')return json(await group(env,body.chatId).ruleReplay(body));
+  if(path==='members/recover'){if(body.scope==='group')group(env,body.chatId);return json(await state.recoverMember(body));}
+  if(path==='ai-review')return json(await group(env,body.chatId).editAiReview(body.enabled));
+  if(path==='groups/remove'){group(env,body.chatId);return json(await state.leaveGroup(body.chatId));}
+  if(path==='verification/release')return json(await group(env,body.chatId).releaseVerification(body.chatId,body.userId));
+  if(path==='backup/preview')return json(await state.previewBackup(body.backup));
+  if(path==='backup/restore')return json(await state.restoreBackup(body.token));
+  if(['trials/add','trials/remove','trials/promote'].includes(path))return json(await group(env,body.chatId).editTrial(path.split('/')[1],body));
   if (request.method === 'POST' && ['keywords/add','keywords/remove'].includes(path)) {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editWord(path.split('/')[1], body.word, body.force === true));
   }
   if (request.method === 'POST' && ['samples/add','samples/remove','samples/activate','samples/disable'].includes(path)) {
-    return json({ samples: await state.editSample(path.split('/')[1], await readJson(request, 4096)) });
+    return json({ samples: await state.editSample(path.split('/')[1], body) });
   }
-  if(request.method==='POST' && ['review-examples/add','review-examples/remove'].includes(path))return json({examples:await state.editReviewExample(path.split('/')[1],await readJson(request,20000))});
-  if(request.method==='POST' && path==='samples/preview'){const body=await readJson(request,4096);return json(await state.previewSample(body.id));}
-  if(request.method==='POST' && path==='federation/retry'){const body=await readJson(request,4096);group(env,body.chatId);return json(await state.retryCase(String(body.id),String(body.chatId)));}
-  if(request.method==='POST' && path==='federation/reverse'){const body=await readJson(request,4096);return json(await state.reverseCase(String(body.id)));}
-  if(request.method==='POST' && path==='samples/test') return json(await state.testSample(await readJson(request,8192)));
-  if(request.method==='POST' && path==='jobs/dismiss') { const body=await readJson(request,4096);return json(await group(env,body.chatId).dismissJob(body.id)); }
-  if(request.method==='POST' && path==='jobs/retry') { const body=await readJson(request,4096);return json(await group(env,body.chatId).retryJob(body.id)); }
+  if(request.method==='POST' && ['review-examples/add','review-examples/remove'].includes(path))return json({examples:await state.editReviewExample(path.split('/')[1],body)});
+  if(request.method==='POST' && path==='samples/preview')return json(await state.previewSample(body.id));
+  if(request.method==='POST' && path==='federation/retry'){group(env,body.chatId);return json(await state.retryCase(String(body.id),String(body.chatId)));}
+  if(request.method==='POST' && path==='federation/reverse')return json(await state.reverseCase(String(body.id)));
+  if(request.method==='POST' && path==='samples/test') return json(await state.testSample(body));
+  if(request.method==='POST' && path==='jobs/dismiss') return json(await group(env,body.chatId).dismissJob(body.id));
+  if(request.method==='POST' && path==='jobs/retry') return json(await group(env,body.chatId).retryJob(body.id));
   if (request.method === 'POST' && path === 'review/resolve') {
-    const body = await readJson(request, 4096);
     const chatId = String(body.chatId), userId = Number(body.userId), messageId = Number(body.messageId);
     group(env, chatId);
     if (!Number.isSafeInteger(userId) || userId <= 0 || !Number.isSafeInteger(messageId) || messageId <= 0) throw new Error('无效的审查记录');
     return json(await group(env,chatId).queueReview(chatId,userId,messageId));
   }
   if (request.method === 'POST' && path === 'federation') {
-    const body = await readJson(request, 4096);
     return json({ chats: await state.setFederation(body.chatId, body.enabled === true) });
   }
   if (request.method === 'POST' && ['domains/allow/add','domains/allow/remove','domains/deny/add','domains/deny/remove'].includes(path)) {
-    const body = await readJson(request, 4096); const [, list, action] = path.split('/');
+    const [, list, action] = path.split('/');
     return json(await group(env, body.chatId).editDomain(action, body.domain, list));
   }
   if (request.method === 'POST' && path === 'welcome-rules') {
-    const body = await readJson(request, 8192);
     return json(await group(env, body.chatId).editWelcome(body.welcomeMessage, body.rulesMessage, { enabled: body.enabled, buttons: body.buttons, deleteMinutes: body.deleteMinutes, keepLatest: body.keepLatest, showCount: body.showCount, banner: body.banner }));
   }
   if (request.method === 'POST' && path === 'welcome-preview') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).welcomePreview(String(body.chatId)));
   }
   if (request.method === 'POST' && path === 'verification') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editVerification(body.mode, body.minutes, body.channel, body.timeoutAction));
   }
   if (request.method === 'POST' && path === 'screening') {
-    const body = await readJson(request, 4096);
-    return json(await group(env, body.chatId).editScreening(body.casEnabled, body.profileCheckEnabled, body.deleteServiceMessages));
+    return json(await group(env, body.chatId).editScreening(body.casEnabled, body.profileCheckEnabled, body.deleteServiceMessages, body.veteranTrustEnabled));
   }
   if (request.method === 'POST' && ['announcements/upsert', 'announcements/remove'].includes(path)) {
-    const body = await readJson(request, 16384);
     return json(await group(env, body.chatId).editAnnouncement(path.split('/')[1], body.item));
   }
   if (request.method === 'POST' && path === 'raid') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editRaid(body.enabled, body.limit, body.minutes));
   }
   if (request.method === 'POST' && path === 'new-member-link-guard') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editNewMemberLinkGuard(body.enabled, body.minutes));
   }
   if (request.method === 'POST' && path === 'new-member-media-guard') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).editNewMemberMediaGuard(body.enabled, body.minutes));
   }
   if (request.method === 'POST' && path === 'content-locks') {
-    const body = await readJson(request, 8192);
     return json(await group(env, body.chatId).editContentLocks(body.locks));
   }
   if (request.method === 'POST' && ['knowledge/upsert', 'knowledge/remove'].includes(path)) {
-    const body = await readJson(request, 16384);
     return json(await group(env, body.chatId).editKnowledge(path.split('/')[1], body.item));
   }
   if (request.method === 'POST' && path === 'config/restore') {
-    const body = await readJson(request, 4096);
     return json(await group(env, body.chatId).restoreConfig(body.versionId));
   }
   if (request.method === 'POST' && path === 'quiet') {
-    const body = await readJson(request, 4096);
     const registered = await state.listChats();
     const targets = body.scope === 'all' ? registered : registered.filter(item => item.id === String(body.chatId));
     if (!targets.length && body.scope !== 'all') targets.push({ id: body.chatId, title: body.chatId });
@@ -386,6 +385,10 @@ export default {
         await globalState(env).ensureAdminMenu().catch(()=>null);
         return new Response('OK');
       }
+      if(/^(\/broadcasts|定时群发)$/i.test(text)){
+        await globalState(env).broadcastScheduledOverview(privateMessage.chat.id).catch(()=>null);
+        return new Response('OK');
+      }
       if(logTarget){
         let reply;
         try{reply=logTarget[1]?'✅ 处理记录：'+(await globalState(env).describeLogTarget(await globalState(env).setLogTarget(logTarget[1]))):'处理记录当前：'+(await globalState(env).describeLogTarget())+'\n\n/log me 发给我\n/log @频道用户名 发到频道（先把机器人加为频道管理员）\n/log off 关闭';}
@@ -434,20 +437,25 @@ export default {
   },
   async scheduled(controller, env, ctx) {
     if (env.GUARD_STATE) {
+      const minute = new Date(controller.scheduledTime || Date.now()).getUTCMinutes();
       ctx.waitUntil(globalState(env).runAutomaticBackup());
       ctx.waitUntil(globalState(env).monitorDmitRelay().catch(()=>null));
       if (env.DMIT_MONITOR_ENABLED === 'true') ctx.waitUntil(globalState(env).monitorDmit());
       // Each group's own alarm already runs quiet-hours switching every minute
       // while quiet mode is on; this sweep is only a safety net, so it wakes
       // every group every 15 minutes instead of every minute.
-      if (new Date(controller.scheduledTime || Date.now()).getUTCMinutes() % 15 === 0) ctx.waitUntil(globalState(env).runQuietMaintenance());
+      if (minute % 15 === 0) ctx.waitUntil(globalState(env).runQuietMaintenance());
       ctx.waitUntil(globalState(env).sendDailyReport());
       ctx.waitUntil(globalState(env).sendWeeklyReport().catch(() => null));
       ctx.waitUntil(globalState(env).monitorOperations());
-      ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
-      ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
-      ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
-      ctx.waitUntil(globalState(env).ensureAdminMenu().catch(() => null));
+      // Low-frequency one-time / hourly setup checks run every 10 minutes
+      // instead of every minute to reduce contention on the single admin DO.
+      if (minute % 10 === 0) {
+        ctx.waitUntil(globalState(env).ensureWebhookUpdates().catch(() => null));
+        ctx.waitUntil(globalState(env).ensureAppealHint().catch(() => null));
+        ctx.waitUntil(globalState(env).ensureBotProfile().catch(() => null));
+        ctx.waitUntil(globalState(env).ensureAdminMenu().catch(() => null));
+      }
       ctx.waitUntil(globalState(env).announceVersion(VERSION, CHANGES).catch(() => null));
     }
   },

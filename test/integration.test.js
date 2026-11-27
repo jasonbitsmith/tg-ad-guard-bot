@@ -1492,7 +1492,7 @@ test('Cloudflare 本地运行：去重、重试、处罚、权限、多群和后
     const start=calls.length;
     await armSend(dm(99,{text:'新公告 https://example.com/a',entities:[{type:'url',offset:4,length:21}]}));
     const prompt=promptSince(start);
-    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,🔔 静音发送：关,📌 发完置顶：关,⏰ 定时发送,取消');
+    assert.ok(prompt);assert.equal(prompt.params.reply_markup.inline_keyboard.flat().map(item=>item.text).join(','),'发送到全部目标,选择目标,🔔 静音发送：关,📌 发完置顶：关,🔗 添加跳转按钮,⏰ 定时发送,取消');
     for(const label of broadcastLabels)assert.ok(prompt.params.text.includes(label),label);
     assert.match(prompt.params.text,/测试模式/);assert.equal(prompt.params.text.includes('目标：5615131413'),false);
     for(const extra of [{photo:[{file_id:'photo'}]},{video:{file_id:'video'}},{document:{file_id:'doc',file_name:'a.pdf'}}]){

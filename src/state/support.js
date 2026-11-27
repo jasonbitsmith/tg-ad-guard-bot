@@ -8,7 +8,7 @@ const copy=(to,msg)=>({method:'copyMessage',params:{chat_id:Number(to),from_chat
 const isStart=text=>/^\/start(?:@\w+)?(?:\s|$)/i.test(text)||text==='/help';
 const TIME=/^([01]\d|2[0-3]):[0-5]\d$/;
 export const SUPPORT_DEFAULTS=Object.freeze({faq:[],hoursEnabled:true,start:'09:00',end:'23:00',offMessage:'现在是休息时间，Jason 上线后会第一时间回复你。',remindHours:2,templates:[],adFilter:true});
-const OWNER_HELP='客服入口已准备好。用户发来的消息会转到这里。\n\n回复客户：用 Telegram「回复」对应咨询消息，再发文字、图片或文件。\n\n回复咨询时还可以发：\n/t 名字 发送快捷回复（只发 /t 查看全部名字）\n/done 不用回复，标记为已处理\n/block 屏蔽骚扰\n\n不用回复也能发：\n/pending 列出还在等你回复的客户\n/msg 用户ID 内容 主动给客户发消息\n/unblock 用户ID 解除屏蔽\n\n常见问题按钮、工作时间、提醒和快捷回复在管理后台「客服机器人」里设置。请勿发送密码或验证码。';
+const OWNER_HELP='客服入口已准备好。用户发来的消息会转到这里。\n\n回复客户：用 Telegram「回复」对应咨询消息，再发文字、图片或文件。\n\n回复咨询时还可以发：\n/t 名字 发送快捷回复（只发 /t 查看全部名字）\n/note 备注内容 给客户加备注（/note 清除 可删除）\n/done 不用回复，标记为已处理\n/block 屏蔽骚扰\n\n不用回复也能发：\n/pending 列出还在等你回复的客户\n/note 用户ID 备注内容 给指定客户加备注\n/msg 用户ID 内容 主动给客户发消息\n/unblock 用户ID 解除屏蔽\n\n常见问题按钮、工作时间、提醒、备注和快捷回复也可在管理后台「客服机器人」里操作。请勿发送密码或验证码。';
 // Blocks of text separated by a blank line: first line is the title, the rest the body.
 function parseBlocks(text,max,titleMax,bodyMax,label){
   const blocks=String(text||'').replace(/\r/g,'').split(/\n[ \t]*\n/).map(x=>x.trim()).filter(Boolean);
@@ -37,11 +37,43 @@ export function supportNextOpen(settings,t){
 export class SupportMethods {
   supportConfig(){return {...SUPPORT_DEFAULTS,...this.read('support:settings',{})};}
   async supportSettings(){return this.supportConfig();}
+  supportNote(userId){return String(this.read('support:note:'+userId,'')||'');}
+  saveSupportNote(userId,rawNote){
+    const id=String(userId||'').trim();
+    if(!/^[1-9]\d{0,15}$/.test(id))throw Error('用户 ID 无效');
+    const note=clean(String(rawNote||'').trim(),200).trim();
+    if(!note||/^(?:clear|清除|删除)$/i.test(note)){this.remove('support:note:'+id);return '';}
+    this.write('support:note:'+id,note,365*DAY);
+    return note;
+  }
   supportWaiting(){
     return this.sql.exec("SELECT key,value FROM records WHERE key LIKE 'support:waiting:%' AND expires>? ",Date.now()).toArray()
       .map(row=>({userId:row.key.slice('support:waiting:'.length),...JSON.parse(row.value)})).sort((a,b)=>a.since-b.since);
   }
-  async supportAdmin(){return {settings:this.supportConfig(),waiting:this.supportWaiting().map(x=>({userId:x.userId,name:x.name,username:x.username,since:x.since}))};}
+  async supportAdmin(){return {settings:this.supportConfig(),waiting:this.supportWaiting().map(x=>({userId:x.userId,name:x.name,username:x.username,since:x.since,note:this.supportNote(x.userId)}))};}
+  async adminSupportReply(userId,text){
+    const owner=supportOwner(this.env),id=String(userId||'').trim(),body=String(text||'').trim();
+    if(!owner||!this.env.SUPPORT_BOT_TOKEN)throw Error('客服机器人未配置');
+    if(!/^[1-9]\d{0,15}$/.test(id)||id===owner)throw Error('用户 ID 无效');
+    if(!body||body.length>4000)throw Error('回复内容需为 1–4000 个字');
+    if(this.read('support:block:'+id))throw Error('该用户已屏蔽，请先在客服机器人里 /unblock '+id);
+    const waiting=this.read('support:waiting:'+id),now=Date.now();
+    const ops=[say(id,body),{local:'support-reply-delivered',userId:id,waitingSince:waiting?.since??null,waitingRevision:waiting?.revision??null}];
+    const plan={ops,entry:{action:'support-reply',actorId:'web-admin',userId:id,text:body.slice(0,200)},support:{owner,user:id}};
+    await this.schedule(now+200);
+    this.sql.exec('INSERT OR IGNORE INTO jobs(id,payload,plan,due,created) VALUES (?,?,?,?,?)','support:admin:'+crypto.randomUUID(),'{}',JSON.stringify(plan),now,now);
+    return this.supportAdmin();
+  }
+  async adminSupportDone(userId){
+    const id=String(userId||'').trim();
+    if(!/^[1-9]\d{0,15}$/.test(id))throw Error('用户 ID 无效');
+    this.remove('support:waiting:'+id);
+    return this.supportAdmin();
+  }
+  async adminSupportNote(userId,note){
+    this.saveSupportNote(userId,note);
+    return this.supportAdmin();
+  }
   async saveSupportSettings(body={}){
     const settings={
       faq:parseBlocks(body.faqText,8,30,1000,'常见问题').map(([q,a])=>({q,a})),
@@ -85,6 +117,25 @@ export class SupportMethods {
       const unblock=text.match(/^\/unblock\s+([1-9]\d{0,15})$/);
       if(unblock){this.remove('support:block:'+unblock[1]);return add([say(owner,'已解除该用户的客服屏蔽。')]);}
       if(text==='/pending')return add(this.supportPendingOps(owner));
+      const directNote=text.match(/^\/note\s+([1-9]\d{0,15})(?:\s+([\s\S]+))?$/);
+      if(directNote){
+        if(directNote[2]===undefined){
+          const current=this.supportNote(directNote[1]);
+          return add([say(owner,current?`📝 用户 ${directNote[1]} 的备注：\n${current}`:`用户 ${directNote[1]} 还没有备注。用法：/note ${directNote[1]} 备注内容`,msg.message_id)]);
+        }
+        const saved=this.saveSupportNote(directNote[1],directNote[2]);
+        return add([say(owner,saved?`✅ 已保存用户 ${directNote[1]} 的备注：${saved}`:`✅ 已清除用户 ${directNote[1]} 的备注。`,msg.message_id)]);
+      }
+      const replyNote=text.match(/^\/note(?:\s+([\s\S]+))?$/);
+      if(replyNote&&target){
+        if(replyNote[1]===undefined){
+          const current=this.supportNote(target.userId);
+          return add([say(owner,current?`📝 备注：${current}`:'这位客户还没有备注。回复发 /note 内容 即可添加。',msg.message_id)]);
+        }
+        const saved=this.saveSupportNote(target.userId,replyNote[1]);
+        return add([say(owner,saved?`✅ 已保存备注：${saved}`:'✅ 已清除该客户备注。',msg.message_id)]);
+      }
+      if(replyNote)return add([say(owner,'用法：回复客户消息发 /note 备注内容，或直接发 /note 用户ID 备注内容（发 /note 清除 可删除）。',msg.message_id)]);
       const direct=text.match(/^\/msg\s+([1-9]\d{0,15})\s+([\s\S]+)$/);
       if(direct){
         if(direct[1]===owner)return add([say(owner,'不能给自己发。',msg.message_id)]);
@@ -136,7 +187,8 @@ export class SupportMethods {
     // gone quiet; consecutive messages from one person arrive as plain copies.
     const last=this.read('support:last-sender');
     if(last?.user!==user||now-last.at>HEADER_GAP){
-      const header=say(owner,`📩 客服咨询\n用户：${who}\n用户 ID：${user}\n请「回复」本条或下面的消息，机器人会把回复发给这位用户。`);
+      const note=this.supportNote(user);
+      const header=say(owner,`📩 客服咨询\n用户：${who}\n用户 ID：${user}${note?'\n📝 备注：'+note:''}\n请「回复」本条或下面的消息，机器人会把回复发给这位用户。`);
       header.params.reply_markup={inline_keyboard:[[{text:'👤 查看用户',url:username?'https://t.me/'+username:'tg://user?id='+user}]]};
       header.supportIncoming=true;ops.push(header,{local:'support-map'});
     }
@@ -173,8 +225,9 @@ export class SupportMethods {
     const ops=[say(owner,`共有 ${waiting.length} 位客户等你回复${waiting.length>10?'，下面是等得最久的 10 位':''}。直接「回复」下面某一条就能回那位客户；不用回的回复 /done。`)];
     for(const item of waiting.slice(0,10)){
       const hours=Math.floor((Date.now()-item.since)/HOUR),wait=hours?hours+' 小时':Math.max(1,Math.floor((Date.now()-item.since)/60000))+' 分钟';
-      const note=say(owner,`⏳ 已等 ${wait}\n用户：${item.name||'未提供姓名'}${item.username?' @'+item.username:''}\n用户 ID：${item.userId}`);
-      note.supportIncoming=true;note.supportUser=item.userId;ops.push(note);
+      const note=this.supportNote(item.userId);
+      const noteMsg=say(owner,`⏳ 已等 ${wait}\n用户：${item.name||'未提供姓名'}${item.username?' @'+item.username:''}\n用户 ID：${item.userId}${note?'\n📝 备注：'+note:''}`);
+      noteMsg.supportIncoming=true;noteMsg.supportUser=item.userId;ops.push(noteMsg);
     }
     ops.push({local:'support-map'});
     return ops;

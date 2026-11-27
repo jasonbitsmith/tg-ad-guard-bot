@@ -11,6 +11,29 @@ import { DAY, ADMIN_STATUS, HELP, normalizeKnowledge } from './shared.js';
 
 export const suspicious = (score, aiUnsure) => Number(score) >= 3 || (Number(score) >= 2 && aiUnsure);
 const who = user => `<a href="tg://user?id=${user.id}">${String(user.first_name || '新朋友').slice(0, 40).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</a>`;
+const MUTE_PERMISSIONS = Object.freeze({
+  can_send_messages: false, can_send_audios: false, can_send_documents: false, can_send_photos: false,
+  can_send_videos: false, can_send_video_notes: false, can_send_voice_notes: false, can_send_polls: false,
+  can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false,
+  can_pin_messages: false, can_manage_topics: false,
+});
+export function parseMuteDuration(raw = '') {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return 10 * 60;
+  const match = /^(\d{1,5})\s*(m|min|mins|分钟|分|h|hr|hrs|小时|时|d|day|days|天|日)?$/u.exec(value);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) return null;
+  const unit = match[2] || 'm';
+  const mult = /^(?:d|day|days|天|日)$/.test(unit) ? 86400 : /^(?:h|hr|hrs|小时|时)$/.test(unit) ? 3600 : 60;
+  const seconds = amount * mult;
+  return seconds >= 60 && seconds <= 365 * 86400 ? seconds : null;
+}
+export function formatMuteDuration(seconds) {
+  if (seconds % 86400 === 0) return `${seconds / 86400} 天`;
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
+  return `${Math.round(seconds / 60)} 分钟`;
+}
 
 export class ModerationMethods {
   async plan(update) {
@@ -87,7 +110,7 @@ export class ModerationMethods {
         if (command.command === 'spam' && await this.privileged(tg, chatId, msg.from.id)) return this.spamPlan(msg,tg);
         if (command.command === 'missed' && await this.privileged(tg,chatId,msg.from.id)) return this.missedPlan(msg,tg);
         if (command.command === 'report') return this.reportPlan(msg, tg, command.arg);
-        if (['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','ban','kick'].includes(command.command) && await this.privileged(tg, chatId, msg.from.id)) return this.commandPlan(command, msg, tg);
+        if (['start','help','status','addword','removeword','listwords','warnings','clearwarn','allow','unallow','unban','unmute','mute','ban','kick','purge'].includes(command.command) && await this.privileged(tg, chatId, msg.from.id)) return this.commandPlan(command, msg, tg);
         const note = this.findKnowledgeCommand(command.command, await this.config());
         if (!note && command.command === 'rules') { const rules = await this.rulesCommandPlan(msg); if (rules) return rules; }
         if (note) return { ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: note.response, reply_to_message_id: msg.message_id, allow_sending_without_reply: true, disable_web_page_preview: true } }], entry: { chatId, chatTitle: msg.chat.title || '', userId: msg.from.id, action: 'knowledge-command', outcome: 'pending', text: note.title, reasons: [`/${note.command}`] } };
@@ -223,6 +246,17 @@ export class ModerationMethods {
     if (mediaQuarantine && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'new-member-media-quarantine', reasons: [...entry.reasons, emergencyNewcomer?'应急模式：近两小时加入成员的媒体暂时隔离':`新成员媒体隔离（入群 ${policy.newMemberMediaMinutes} 分钟内）`] } };
     if (emergencyLink && verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: [{ method: 'deleteMessage', params: { chat_id: chatId, message_id: msg.message_id } }, { local: 'processed', messageId: msg.message_id }], entry: { ...entry, action: 'emergency-link-quarantine', reasons: [...entry.reasons, '应急模式：暂时限制新成员链接，不仅凭链接封号'] } };
     if (verdict.score < 4 && !verdict.deleteOnKeyword) return { ops: this.suspectOps(msg, update, verdict, text, guest, aiReview?.decision === 'uncertain'), entry: { ...entry, action: 'review' } };
+    const hardEvidence = verdict.permanentBan || verdict.blockedDomains?.length > 0 || (verdict.sampleIds?.length || sampleHits.length) > 0 || verdict.score >= 7;
+    if (policy.veteranTrustEnabled !== false && !guest && !msg.sender_chat && !hardEvidence) {
+      const trust = this.memberTrustStats(msg.from.id);
+      if (trust.veteran) {
+        verdict.reasons.unshift(`老成员渐进式信任（活跃 ${trust.activeDays} 天 / ${trust.totalMessages} 条发言）：非铁证不直接封禁，转人工复核`);
+        return {
+          ops: this.suspectOps(msg, update, verdict, text, guest, true),
+          entry: { ...entry, reasons: verdict.reasons, action: 'review', veteranTrust: { activeDays: trust.activeDays, totalMessages: trust.totalMessages } },
+        };
+      }
+    }
     const ops = [...new Set(verdict.contextMessageIds || [msg.message_id])].map(id=>({method:'deleteMessage',params:{chat_id:chatId,message_id:id}}));
     if (verdict.contactCard && !verdict.permanentBan && verdict.score < 7) {
       ops.push({ local: 'processed', messageId: msg.message_id });
@@ -365,9 +399,41 @@ export class ModerationMethods {
     const chatId = msg.chat.id;
     const entry = { chatId, chatTitle: msg.chat.title || '', actorId: msg.from.id, action: command, text: arg.slice(0, 100), reasons: ['管理员操作'] };
     const reply = text => ({ ops: [{ method: 'sendMessage', params: { chat_id: chatId, text: text.slice(0, 4000) } }], entry });
-    if (['ban','kick','unban','unmute'].includes(command) && !this.owners().includes(String(msg.from.id))) {
+    if (['ban','kick','unban','unmute','mute'].includes(command) && !this.owners().includes(String(msg.from.id))) {
       const actor = await this.member(tg, chatId, msg.from.id);
       if (actor.status !== 'creator' && !actor.can_restrict_members) return reply('你没有限制群成员的管理权限，未执行该操作。');
+    }
+    if (command === 'purge') {
+      if (!this.owners().includes(String(msg.from.id))) {
+        const actor = await this.member(tg, chatId, msg.from.id);
+        if (actor.status !== 'creator' && !actor.can_delete_messages) return reply('你没有删除群消息的管理权限，未执行该操作。');
+      }
+      const startId = msg.reply_to_message?.message_id;
+      if (!Number.isSafeInteger(startId) || startId >= msg.message_id || (msg.reply_to_message?.chat?.id && msg.reply_to_message.chat.id !== chatId)) {
+        return reply('请回复要开始清理的那条消息后发送 /purge（或 /purge 数量，最多 100 条）。');
+      }
+      const requested = arg.trim() ? Number(arg.trim()) : null;
+      if (requested !== null && (!Number.isInteger(requested) || requested < 1 || requested > 100)) {
+        return reply('清理数量须为 1–100 的整数，例如 /purge 20。');
+      }
+      const totalSpan = msg.message_id - startId + 1;
+      if (requested === null && totalSpan > 100) {
+        return reply(`所选范围共 ${totalSpan} 条消息，超过单次 100 条上限；请回复更近的消息，或指定数量（如 /purge 50）。`);
+      }
+      const ids = [];
+      const limit = requested === null ? totalSpan : Math.min(requested, totalSpan);
+      for (let id = startId; id < startId + limit; id++) ids.push(id);
+      if (!ids.includes(msg.message_id)) {
+        if (ids.length >= 100) ids[ids.length - 1] = msg.message_id;
+        else ids.push(msg.message_id);
+      }
+      return {
+        ops: [
+          { method: 'deleteMessages', params: { chat_id: chatId, message_ids: ids }, optional: true },
+          { method: 'sendMessage', params: { chat_id: chatId, text: `🧹 已清理 ${ids.length} 条消息。` }, cleanupAfter: 8000, optional: true },
+        ],
+        entry: { ...entry, action: 'purge', text: `${startId}..${ids.at(-1)} (${ids.length})` },
+      };
     }
     if (command === 'start' || command === 'help') return reply(HELP);
     if (command === 'status') {
@@ -387,6 +453,27 @@ export class ModerationMethods {
       } else config.keywords = config.keywords.filter(w => w !== word);
       this.saveConfig(config, `群内 /${command}`);
       return reply(`已${command === 'addword' ? '添加' : '移除'}本群关键词：${word}`);
+    }
+    if (command === 'mute') {
+      if (msg.chat.type !== 'supergroup') return reply('普通群不支持禁言权限操作。');
+      const idMatch = /^(\d{1,16})(?:\s+([\s\S]+))?$/.exec(arg.trim());
+      const muteTarget = idMatch ? Number(idMatch[1]) : (msg.reply_to_message?.sender_chat ? null : msg.reply_to_message?.from?.id);
+      const durationRaw = idMatch ? (idMatch[2] || '').trim() : arg.trim();
+      if (!muteTarget || !Number.isSafeInteger(muteTarget)) return reply('用法：回复用户消息发送 /mute 30m（支持 10m、2h、1d，默认 10 分钟），或 /mute 用户ID 30m。');
+      const seconds = parseMuteDuration(durationRaw);
+      if (!seconds) return reply('禁言时长无效，支持 1 分钟到 365 天，例如：/mute 30m、/mute 2h、/mute 1d。');
+      entry.userId = muteTarget;
+      const member = await this.member(tg, chatId, muteTarget);
+      if (ADMIN_STATUS.includes(member.status) || this.owners().includes(String(muteTarget)) || muteTarget === (await this.me(tg)).id) return reply('不能对群管理员、机器人所有者或机器人自身执行处罚。');
+      if (member.status === 'kicked') return reply('该用户已被封禁，无需禁言。');
+      const until_date = Math.floor(Date.now() / 1000) + seconds;
+      return {
+        ops: [
+          { method: 'restrictChatMember', params: { chat_id: chatId, user_id: muteTarget, permissions: MUTE_PERMISSIONS, use_independent_chat_permissions: true, until_date } },
+          { method: 'sendMessage', params: { chat_id: chatId, text: `🔇 已禁言 ${muteTarget}，时长 ${formatMuteDuration(seconds)}。` } },
+        ],
+        entry: { ...entry, action: 'mute', reasons: [`管理员手动禁言 ${formatMuteDuration(seconds)}`] },
+      };
     }
     const target = /^\d{1,16}$/.test(arg) ? Number(arg) : msg.reply_to_message?.from?.id;
     if (!target || !Number.isSafeInteger(target) || (msg.reply_to_message?.sender_chat && !arg)) return reply('请回复普通用户的消息，或在指令后填写数字用户 ID。频道身份请由管理员在 Telegram 中处理。');

@@ -55,6 +55,20 @@ export class CommunityMethods {
     this.sql.exec('DELETE FROM activity WHERE day<?', cutoff);
     this.sql.exec('DELETE FROM activity_days WHERE day<?', cutoff);
   }
+  // Progressive trust for established group members: active across >= 3 days
+  // with >= 15 messages, not a recent joiner, and no active warnings or bans.
+  memberTrustStats(userId) {
+    if (!/^\d{1,16}$/.test(String(userId))) return { activeDays: 0, totalMessages: 0, veteran: false };
+    this.activityTables();
+    const row = this.sql.exec('SELECT COUNT(DISTINCT day) AS days, COALESCE(SUM(messages),0) AS messages FROM activity WHERE user_id=?', String(userId)).toArray()[0] || {};
+    const activeDays = Number(row.days || 0);
+    const totalMessages = Number(row.messages || 0);
+    const recentJoin = this.read(`join:${userId}`, 0) > Date.now() - 7 * DAY;
+    const hasWarn = Number(this.read(`warn:${userId}`, 0)) > 0;
+    const hasBan = !!this.memberBan(userId);
+    const veteran = activeDays >= 3 && totalMessages >= 15 && !recentJoin && !hasWarn && !hasBan;
+    return { activeDays, totalMessages, veteran };
+  }
   // Global object: Monday 09:00 Beijing, last Monday–Sunday for every group.
   async sendWeeklyReport(now = Date.now()) {
     const local = new Date(now + 8 * 3600000);

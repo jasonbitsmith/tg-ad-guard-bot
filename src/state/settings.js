@@ -64,13 +64,15 @@ export class SettingsMethods {
     this.log({ action: 'verification-update', actorId: 'web-admin', outcome: 'success', text: `${mode}:${value}:${config.verificationChannel}:${timeoutAction}` });
     return { verificationMode: config.verificationMode, verificationMinutes: config.verificationMinutes, verificationChannel: config.verificationChannel, verificationTimeoutAction: config.verificationTimeoutAction };
   }
-  async editScreening(casEnabled, profileCheckEnabled, deleteServiceMessages) {
+  async editScreening(casEnabled, profileCheckEnabled, deleteServiceMessages, veteranTrustEnabled) {
     if (![casEnabled, profileCheckEnabled, deleteServiceMessages].every(value => typeof value === 'boolean')) throw new Error('筛查设置无效');
+    if (veteranTrustEnabled !== undefined && typeof veteranTrustEnabled !== 'boolean') throw new Error('筛查设置无效');
     const config = await this.config();
     config.casEnabled = casEnabled; config.profileCheckEnabled = profileCheckEnabled; config.deleteServiceMessages = deleteServiceMessages;
+    if (typeof veteranTrustEnabled === 'boolean') config.veteranTrustEnabled = veteranTrustEnabled;
     this.saveConfig(config, '入群筛查与系统提示');
-    this.log({ action: 'screening-update', actorId: 'web-admin', outcome: 'success', text: `${casEnabled}:${profileCheckEnabled}:${deleteServiceMessages}` });
-    return { casEnabled, profileCheckEnabled, deleteServiceMessages };
+    this.log({ action: 'screening-update', actorId: 'web-admin', outcome: 'success', text: `${casEnabled}:${profileCheckEnabled}:${deleteServiceMessages}:${config.veteranTrustEnabled !== false}` });
+    return { casEnabled, profileCheckEnabled, deleteServiceMessages, ...(typeof veteranTrustEnabled === 'boolean' ? { veteranTrustEnabled: config.veteranTrustEnabled } : {}) };
   }
   async editRaid(enabled, limit, minutes) {
     const joins = Number(limit), duration = Number(minutes);
