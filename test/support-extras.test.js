@@ -115,6 +115,11 @@ test('客服增强：少刷屏、常见问题、休息时间、提醒、待回�
  assert.deepEqual(out.find(x=>x.params.chat_id===203).params.reply_markup,undefined);
  out=await run(msg(203,'/start'));assert.deepEqual(out[0].params.reply_markup,{remove_keyboard:true});
 
+ // 2026-11-27: promotional sales campaign with photo and hidden link must not enter the inbox.
+ out=await run(msg(301,undefined,{photo:[{file_id:'promo',width:1,height:1}],caption:'四百万月活用户的选择\n快搜百万 usdt 拉新活动来袭\n现在购买广告，锁定低价！\n点击这里购买广告并领取内部5折优惠券',caption_entities:[{type:'text_link',offset:0,length:2,url:'https://example.com/promo'}]}));
+ assert.ok(!out.some(x=>x.method==='copyMessage'));assert.match(out[0].params.text,/疑似广告/);assert.ok(await state.blockedTest(301));
+ out=await run(msg(302,'你好，我购买的广告套餐怎么退款？这是订单链接 https://example.com/order'));
+ assert.ok(out.some(x=>x.method==='copyMessage'&&x.params.from_chat_id===302));
  // Ads from strangers are blocked with a one-line notice; ordinary questions with links are not.
  out=await run(msg(204,'有码来吃肉 一天8K'));
  assert.ok(!out.some(x=>x.method==='copyMessage'));assert.match(out[0].params.text,/疑似广告/);

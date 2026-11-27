@@ -1,5 +1,5 @@
 import { supportOwner, supportContent } from '../support.js';
-import { classify, DEFAULT_KEYWORDS } from '../filters.js';
+import { classify, DEFAULT_KEYWORDS, normalize } from '../filters.js';
 import { DAY } from './shared.js';
 const HOUR=3600000,HEADER_GAP=10*60000,ALBUM_WAIT=2000;
 const clean=(s,max=100)=>String(s||'').replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g,' ').slice(0,max);
@@ -7,6 +7,20 @@ const say=(id,text,reply)=>({method:'sendMessage',params:{chat_id:Number(id),tex
 const copy=(to,msg)=>({method:'copyMessage',params:{chat_id:Number(to),from_chat_id:msg.chat.id,message_id:msg.message_id}});
 const isStart=text=>/^\/start(?:@\w+)?(?:\s|$)/i.test(text)||text==='/help';
 const TIME=/^([01]\d|2[0-3]):[0-5]\d$/;
+// High-confidence promotional solicitation for a support inbox. Require an
+// ad purchase pitch, an incentive, and an actual destination; a customer
+// discussing their own order or reporting spam must still reach the owner.
+export function supportPromotion(msg){
+  const body=normalize(msg.text||msg.caption||'');
+  const compact=body.replace(/[^\p{L}\p{N}]+/gu,'');
+  const entities=msg.entities||msg.caption_entities||[];
+  const destination=/(?:https?:\/\/|t\.me\/|www\.)/i.test(body)||entities.some(e=>e.type==='url'||(e.type==='text_link'&&typeof e.url==='string'));
+  const pitch=/(?:购买|投放|购买推广|投放推广|推广投放|买广告|买推广).{0,12}(?:广告|推广)|(?:广告|推广).{0,12}(?:投放|购买|低价)/.test(compact);
+  const incentive=/(?:优惠券|折优惠|折扣|限量|锁定低价|拉新活动|领取优惠|内部价)/.test(compact);
+  const question=/(?:退款|订单|售后|投诉|举报|警惕|诈骗|骗局|怎么|如何|为什么|无法|不能|请问)/.test(compact)||/[?？]/.test(body);
+  return destination && pitch && incentive && !question;
+}
+
 export const SUPPORT_DEFAULTS=Object.freeze({faq:[],hoursEnabled:true,start:'09:00',end:'23:00',offMessage:'现在是休息时间，Jason 上线后会第一时间回复你。',remindHours:2,templates:[],adFilter:true});
 const OWNER_HELP='客服入口已准备好。用户发来的消息会转到这里。\n\n回复客户：用 Telegram「回复」对应咨询消息，再发文字、图片或文件。\n\n回复咨询时还可以发：\n/t 名字 发送快捷回复（只发 /t 查看全部名字）\n/done 不用回复，标记为已处理\n/block 屏蔽骚扰\n\n不用回复也能发：\n/pending 列出还在等你回复的客户\n/msg 用户ID 内容 主动给客户发消息\n/unblock 用户ID 解除屏蔽\n\n常见问题按钮、工作时间、提醒和快捷回复在管理后台「客服机器人」里设置。请勿发送密码或验证码。';
 // Blocks of text separated by a blank line: first line is the title, the rest the body.
@@ -127,7 +141,7 @@ export class SupportMethods {
     this.write('support:profile:'+user,{name,username},365*DAY);
     // Someone Jason has never answered who opens with an obvious ad is blocked
     // instead of being relayed; Jason only gets a one-line notice.
-    if(settings.adFilter&&!this.read('support:known:'+user)&&classify(msg,DEFAULT_KEYWORDS).permanentBan){
+    if(settings.adFilter&&!this.read('support:known:'+user)&&(classify(msg,DEFAULT_KEYWORDS).permanentBan||supportPromotion(msg))){
       this.write('support:block:'+user,{ad:true,at:now},3650*DAY);this.remove('support:waiting:'+user);
       return add([say(owner,'🚫 已拦截一条疑似广告，并屏蔽了发送者\n用户：'+who+'\n用户 ID：'+user+(msg.text||msg.caption?'\n内容开头：'+clean(msg.text||msg.caption,80):'')+'\n如果拦错了，发 /unblock '+user)],{support:{owner,user:owner}});
     }
